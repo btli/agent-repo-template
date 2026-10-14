@@ -1,0 +1,2304 @@
+[
+  {
+    "id": "opened",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    }
+  },
+  {
+    "id": "disabled",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "disabled",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "enabled": false
+  },
+  {
+    "id": "self",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "helper[bot]",
+        "type": "Bot"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "self",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "other-bot",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "other[bot]",
+        "type": "Bot"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "bot",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "bot-type",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "automation",
+        "type": "Bot"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "bot",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "skip-label",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "agent:skip"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "skip-label",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "bot-off-marker",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "off",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "comments": [
+      {
+        "user": {
+          "login": "HELPER[bot]"
+        },
+        "body": "<!-- agent:off run=123 -->"
+      }
+    ]
+  },
+  {
+    "id": "human-off-marker",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "comments": [
+      {
+        "user": {
+          "login": "contributor"
+        },
+        "body": "<!-- agent:off run=123 -->"
+      }
+    ]
+  },
+  {
+    "id": "unrelated-bot-off-marker",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "comments": [
+      {
+        "user": {
+          "login": "other[bot]"
+        },
+        "body": "<!-- agent:off run=123 -->"
+      }
+    ]
+  },
+  {
+    "id": "content-edit",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {
+        "body": {
+          "from": "Steps to reproduce"
+        }
+      },
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    }
+  },
+  {
+    "id": "title-edit",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {
+        "title": {
+          "from": "old"
+        }
+      },
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    }
+  },
+  {
+    "id": "no-op-edit",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {},
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "no-op-edit",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "non-content-edit",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {
+        "labels": {
+          "from": []
+        }
+      },
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "no-op-edit",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "debounce",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {
+        "body": {
+          "from": "Steps to reproduce"
+        }
+      },
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "debounce",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "runs": [
+      {
+        "id": 1,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T11:55:00Z"
+      }
+    ]
+  },
+  {
+    "id": "debounce-boundary",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {
+        "body": {
+          "from": "Steps to reproduce"
+        }
+      },
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "runs": [
+      {
+        "id": 1,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T11:50:00Z"
+      }
+    ]
+  },
+  {
+    "id": "cycle-cap",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "cycle-cap",
+      "tier2_allowed": false,
+      "capped": true
+    },
+    "runs": [
+      {
+        "id": 1,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T10:00:00Z"
+      },
+      {
+        "id": 2,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T10:00:00Z"
+      },
+      {
+        "id": 3,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T10:00:00Z"
+      }
+    ]
+  },
+  {
+    "id": "cycle-boundary",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "runs": [
+      {
+        "id": 1,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T10:00:00Z"
+      },
+      {
+        "id": 2,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T10:00:00Z"
+      }
+    ]
+  },
+  {
+    "id": "current-run-excluded",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "runs": [
+      {
+        "id": 1,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T10:00:00Z"
+      },
+      {
+        "id": 2,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T10:00:00Z"
+      },
+      {
+        "id": 99,
+        "display_title": "agent-triage #12",
+        "created_at": "2026-10-14T11:55:00Z"
+      }
+    ]
+  },
+  {
+    "id": "exact-display-title",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "runs": [
+      {
+        "id": 0,
+        "display_title": "agent-triage #120",
+        "created_at": "2026-10-14T11:55:00Z"
+      },
+      {
+        "id": 1,
+        "display_title": "agent-triage #12 extra",
+        "created_at": "2026-10-14T11:55:00Z"
+      },
+      {
+        "id": 2,
+        "display_title": "other",
+        "created_at": "2026-10-14T11:55:00Z"
+      },
+      {
+        "id": 4,
+        "display_title": "agent-triage #12x",
+        "created_at": "2026-10-14T11:55:00Z"
+      }
+    ]
+  },
+  {
+    "id": "author-cap",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "tier2-author-cap",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "name": "tier2-20261014-contributor"
+      },
+      {
+        "name": "tier2-20261014-contributor"
+      }
+    ]
+  },
+  {
+    "id": "global-cap",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "tier2-global-cap",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      }
+    ]
+  },
+  {
+    "id": "tier2-boundary",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014"
+      },
+      {
+        "name": "tier2-20261014-contributor"
+      }
+    ]
+  },
+  {
+    "id": "other-day-artifacts",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013"
+      },
+      {
+        "name": "tier2-20261013-contributor"
+      },
+      {
+        "name": "tier2-20261013-contributor"
+      }
+    ]
+  },
+  {
+    "id": "third-party-comment",
+    "event_name": "issue_comment",
+    "workflow": "triage",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "third-party",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": []
+      },
+      "comment": {
+        "body": "I can reproduce this",
+        "user": {
+          "login": "reporter"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "third-party-comment",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "reporter-needs-info",
+    "event_name": "issue_comment",
+    "workflow": "triage",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "needs-info"
+          }
+        ]
+      },
+      "comment": {
+        "body": "I can reproduce this",
+        "user": {
+          "login": "contributor"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    }
+  },
+  {
+    "id": "reporter-without-needs-info",
+    "event_name": "issue_comment",
+    "workflow": "triage",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": []
+      },
+      "comment": {
+        "body": "I can reproduce this",
+        "user": {
+          "login": "contributor"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "not-needs-info",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "authorized-triage",
+    "event_name": "issue_comment",
+    "workflow": "triage",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": []
+      },
+      "comment": {
+        "body": "/triage",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "write",
+      "permission": "write"
+    }
+  },
+  {
+    "id": "unauthorized-triage",
+    "event_name": "issue_comment",
+    "workflow": "triage",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": []
+      },
+      "comment": {
+        "body": "/triage",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "unauthorized",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "read",
+      "permission": "read"
+    }
+  },
+  {
+    "id": "authorized-fix",
+    "event_name": "issue_comment",
+    "workflow": "fix",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": []
+      },
+      "comment": {
+        "body": "/fix handle the None case",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "write",
+      "permission": "write"
+    }
+  },
+  {
+    "id": "unauthorized-fix",
+    "event_name": "issue_comment",
+    "workflow": "fix",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": []
+      },
+      "comment": {
+        "body": "/fix handle the None case",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "unauthorized",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "read",
+      "permission": "read"
+    }
+  },
+  {
+    "id": "authorized-review",
+    "event_name": "issue_comment",
+    "workflow": "review",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "PR discussion",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "MEMBER",
+        "labels": [],
+        "pull_request": {
+          "url": "https://api.github.com/repos/your-org/project/pulls/24"
+        }
+      },
+      "comment": {
+        "body": "/review",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "write",
+      "permission": "write"
+    }
+  },
+  {
+    "id": "unauthorized-review",
+    "event_name": "issue_comment",
+    "workflow": "review",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "PR discussion",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "MEMBER",
+        "labels": [],
+        "pull_request": {
+          "url": "https://api.github.com/repos/your-org/project/pulls/24"
+        }
+      },
+      "comment": {
+        "body": "/review",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "unauthorized",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "read",
+      "permission": "read"
+    }
+  },
+  {
+    "id": "authorized-agent-off",
+    "event_name": "issue_comment",
+    "workflow": "triage",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": []
+      },
+      "comment": {
+        "body": "/agent off",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "agent-off",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "write",
+      "permission": "write"
+    }
+  },
+  {
+    "id": "unauthorized-agent-off",
+    "event_name": "issue_comment",
+    "workflow": "triage",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": []
+      },
+      "comment": {
+        "body": "/agent off",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "unauthorized",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "read",
+      "permission": "read"
+    }
+  },
+  {
+    "id": "unauthorized-label",
+    "event_name": "issues",
+    "workflow": "fix",
+    "payload": {
+      "action": "labeled",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "label": {
+        "name": "agent:fix"
+      },
+      "issue": {
+        "number": 31,
+        "title": "Fix parser edge case",
+        "body": "Parser mishandles this input",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "agent:fix"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "unauthorized",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "read"
+    }
+  },
+  {
+    "id": "authorized-label",
+    "event_name": "issues",
+    "workflow": "fix",
+    "payload": {
+      "action": "labeled",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "label": {
+        "name": "agent:fix"
+      },
+      "issue": {
+        "number": 31,
+        "title": "Fix parser edge case",
+        "body": "Parser mishandles this input",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "agent:fix"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "write"
+    }
+  },
+  {
+    "id": "no-fix-trigger",
+    "event_name": "issues",
+    "workflow": "fix",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "unsupported-event",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "first-time-review",
+    "event_name": "pull_request_target",
+    "workflow": "review",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "pull_request": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "Updates the parser",
+        "draft": false,
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "FIRST_TIME_CONTRIBUTOR",
+        "labels": [],
+        "head": {
+          "ref": "feature/messages",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "repo": {
+            "full_name": "your-org/project"
+          }
+        },
+        "base": {
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "needs-review-command",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "known-review",
+    "event_name": "pull_request_target",
+    "workflow": "review",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "pull_request": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "Updates the parser",
+        "draft": false,
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [],
+        "head": {
+          "ref": "feature/messages",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "repo": {
+            "full_name": "your-org/project"
+          }
+        },
+        "base": {
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    }
+  },
+  {
+    "id": "human-draft",
+    "event_name": "pull_request_target",
+    "workflow": "review",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "pull_request": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "Updates the parser",
+        "draft": true,
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [],
+        "head": {
+          "ref": "feature/messages",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "repo": {
+            "full_name": "your-org/project"
+          }
+        },
+        "base": {
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "draft",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "agent-draft",
+    "event_name": "pull_request_target",
+    "workflow": "review",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "pull_request": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "Updates the parser",
+        "draft": true,
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "NONE",
+        "labels": [],
+        "head": {
+          "ref": "agent/fix-3",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "repo": {
+            "full_name": "your-org/project"
+          }
+        },
+        "base": {
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    }
+  },
+  {
+    "id": "agent-synchronize-self",
+    "event_name": "pull_request_target",
+    "workflow": "review",
+    "payload": {
+      "action": "synchronize",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "helper[bot]",
+        "type": "Bot"
+      },
+      "pull_request": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "Updates the parser",
+        "draft": true,
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "NONE",
+        "labels": [],
+        "head": {
+          "ref": "agent/fix-3",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "repo": {
+            "full_name": "your-org/project"
+          }
+        },
+        "base": {
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    }
+  },
+  {
+    "id": "fork-agent-synchronize",
+    "event_name": "pull_request_target",
+    "workflow": "review",
+    "payload": {
+      "action": "synchronize",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "helper[bot]",
+        "type": "Bot"
+      },
+      "pull_request": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "Updates the parser",
+        "draft": true,
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "NONE",
+        "labels": [],
+        "head": {
+          "ref": "agent/fix-3",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "repo": {
+            "full_name": "your-org/fork"
+          }
+        },
+        "base": {
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "self",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "human-synchronize",
+    "event_name": "pull_request_target",
+    "workflow": "review",
+    "payload": {
+      "action": "synchronize",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "pull_request": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "Updates the parser",
+        "draft": false,
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [],
+        "head": {
+          "ref": "feature/messages",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "repo": {
+            "full_name": "your-org/project"
+          }
+        },
+        "base": {
+          "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "unsupported-event",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "pr-cannot-triage",
+    "event_name": "issue_comment",
+    "workflow": "triage",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "PR discussion",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "MEMBER",
+        "labels": [],
+        "pull_request": {
+          "url": "https://api.github.com/repos/your-org/project/pulls/24"
+        }
+      },
+      "comment": {
+        "body": "/review",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "unsupported-event",
+      "tier2_allowed": false,
+      "capped": false
+    }
+  },
+  {
+    "id": "fix-human-pr",
+    "event_name": "issue_comment",
+    "workflow": "fix",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "PR discussion",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "MEMBER",
+        "labels": [],
+        "pull_request": {
+          "url": "https://api.github.com/repos/your-org/project/pulls/24"
+        }
+      },
+      "comment": {
+        "body": "/fix address feedback",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "not-agent-draft",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "write"
+    }
+  },
+  {
+    "id": "fix-agent-draft",
+    "event_name": "issue_comment",
+    "workflow": "fix",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "PR discussion",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "MEMBER",
+        "labels": [],
+        "pull_request": {
+          "url": "https://api.github.com/repos/your-org/project/pulls/24"
+        }
+      },
+      "comment": {
+        "body": "/fix address feedback",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "write"
+    },
+    "pull": {
+      "number": 24,
+      "title": "Improve validation messages",
+      "body": "Updates the parser",
+      "draft": true,
+      "user": {
+        "login": "contributor"
+      },
+      "author_association": "NONE",
+      "labels": [],
+      "head": {
+        "ref": "agent/fix-3",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "repo": {
+          "full_name": "your-org/project"
+        }
+      },
+      "base": {
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  },
+  {
+    "id": "fix-agent-nondraft",
+    "event_name": "issue_comment",
+    "workflow": "fix",
+    "payload": {
+      "action": "created",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "maintainer",
+        "type": "User"
+      },
+      "issue": {
+        "number": 24,
+        "title": "Improve validation messages",
+        "body": "PR discussion",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "MEMBER",
+        "labels": [],
+        "pull_request": {
+          "url": "https://api.github.com/repos/your-org/project/pulls/24"
+        }
+      },
+      "comment": {
+        "body": "/fix address feedback",
+        "user": {
+          "login": "maintainer"
+        }
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "not-agent-draft",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "permission": {
+      "role_name": "write"
+    },
+    "pull": {
+      "number": 24,
+      "title": "Improve validation messages",
+      "body": "Updates the parser",
+      "draft": false,
+      "user": {
+        "login": "contributor"
+      },
+      "author_association": "NONE",
+      "labels": [],
+      "head": {
+        "ref": "agent/fix-3",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "repo": {
+          "full_name": "your-org/project"
+        }
+      },
+      "base": {
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  }
+]
