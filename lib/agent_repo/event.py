@@ -26,6 +26,7 @@ class Event:
     body: str
     labels: tuple[str, ...]
     draft: bool
+    edited_fields: tuple[str, ...] = ()
 
 
 def load_event(name: str, path: Path) -> Event:
@@ -56,6 +57,12 @@ def load_event(name: str, path: Path) -> Event:
     base = item.get("base") or {}
     label_data = payload.get("label") or {}
     labels_data = item.get("labels") or []
+    changes = payload.get("changes")
+    edited_fields = (
+        tuple(sorted(changes))
+        if payload.get("action") == "edited" and isinstance(changes, dict)
+        else ()
+    )
     return Event(
         name=name,
         action=str(payload.get("action", "")),
@@ -78,4 +85,5 @@ def load_event(name: str, path: Path) -> Event:
         body=str(item.get("body", "")),
         labels=tuple(label.get("name", "") for label in labels_data),
         draft=bool(item.get("draft", False)),
+        edited_fields=edited_fields,
     )

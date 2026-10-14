@@ -11,7 +11,7 @@ RELEASES = ROOT / "tests" / "fixtures" / "releases"
 ARTIFACT_SCHEMAS = ("decision", "review", "fix")
 
 
-def test_release_fixtures_validate():
+def _validate_release_fixtures():
     if not RELEASES.exists():
         return
 
@@ -42,6 +42,10 @@ def test_release_fixtures_validate():
             assert not errors, f"{fixture.relative_to(ROOT)}: {errors}"
 
 
+def test_release_fixtures_validate():
+    _validate_release_fixtures()
+
+
 def test_unknown_release_fixture_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     release = tmp_path / "v0.1.0"
     release.mkdir()
@@ -50,4 +54,4 @@ def test_unknown_release_fixture_is_rejected(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setattr(sys.modules[__name__], "RELEASES", tmp_path)
 
     with pytest.raises(AssertionError, match="unrecognized release fixture"):
-        test_release_fixtures_validate()
+        _validate_release_fixtures()
