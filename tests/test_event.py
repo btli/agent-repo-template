@@ -2,58 +2,148 @@ import json
 from pathlib import Path
 
 import pytest
-from agent_repo.event import load_event
+from agent_repo.event import Event, load_event
 
 EVENTS = Path("tests/fixtures/events")
 
 
 @pytest.mark.parametrize(
-    ("filename", "name", "action", "is_pr"),
+    ("filename", "expected"),
     [
-        ("issues.opened.json", "issues", "opened", False),
-        ("issue_comment.created.issue.json", "issue_comment", "created", False),
-        ("issue_comment.created.pr.json", "issue_comment", "created", True),
-        ("issues.labeled.json", "issues", "labeled", False),
-        ("pull_request_target.opened.json", "pull_request_target", "opened", True),
+        (
+            "issues.opened.json",
+            Event(
+                name="issues",
+                action="opened",
+                repo="your-org/project",
+                number=12,
+                is_pr=False,
+                sender="contributor",
+                sender_is_bot=False,
+                author="contributor",
+                author_association="CONTRIBUTOR",
+                comment_body=None,
+                comment_author=None,
+                label=None,
+                head_ref=None,
+                head_repo=None,
+                base_sha=None,
+                head_sha=None,
+                default_branch="main",
+                title="Validation fails for empty input",
+                body="Steps to reproduce",
+                labels=("type:bug",),
+                draft=False,
+            ),
+        ),
+        (
+            "issue_comment.created.issue.json",
+            Event(
+                name="issue_comment",
+                action="created",
+                repo="your-org/project",
+                number=12,
+                is_pr=False,
+                sender="reporter",
+                sender_is_bot=False,
+                author="contributor",
+                author_association="CONTRIBUTOR",
+                comment_body="I can reproduce this",
+                comment_author="reporter",
+                label=None,
+                head_ref=None,
+                head_repo=None,
+                base_sha=None,
+                head_sha=None,
+                default_branch="main",
+                title="Validation fails for empty input",
+                body="Steps to reproduce",
+                labels=(),
+                draft=False,
+            ),
+        ),
+        (
+            "issue_comment.created.pr.json",
+            Event(
+                name="issue_comment",
+                action="created",
+                repo="your-org/project",
+                number=24,
+                is_pr=True,
+                sender="maintainer",
+                sender_is_bot=False,
+                author="contributor",
+                author_association="MEMBER",
+                comment_body="/review",
+                comment_author="maintainer",
+                label=None,
+                head_ref=None,
+                head_repo=None,
+                base_sha=None,
+                head_sha=None,
+                default_branch="main",
+                title="Improve validation messages",
+                body="PR discussion",
+                labels=(),
+                draft=False,
+            ),
+        ),
+        (
+            "issues.labeled.json",
+            Event(
+                name="issues",
+                action="labeled",
+                repo="your-org/project",
+                number=31,
+                is_pr=False,
+                sender="maintainer",
+                sender_is_bot=False,
+                author="contributor",
+                author_association="CONTRIBUTOR",
+                comment_body=None,
+                comment_author=None,
+                label="agent:fix",
+                head_ref=None,
+                head_repo=None,
+                base_sha=None,
+                head_sha=None,
+                default_branch="main",
+                title="Fix parser edge case",
+                body="Parser mishandles this input",
+                labels=("agent:fix",),
+                draft=False,
+            ),
+        ),
+        (
+            "pull_request_target.opened.json",
+            Event(
+                name="pull_request_target",
+                action="opened",
+                repo="your-org/project",
+                number=24,
+                is_pr=True,
+                sender="contributor",
+                sender_is_bot=False,
+                author="contributor",
+                author_association="CONTRIBUTOR",
+                comment_body=None,
+                comment_author=None,
+                label=None,
+                head_ref="feature/messages",
+                head_repo="your-org/project",
+                base_sha="b" * 40,
+                head_sha="a" * 40,
+                default_branch="main",
+                title="Improve validation messages",
+                body="Updates the parser",
+                labels=(),
+                draft=False,
+            ),
+        ),
     ],
 )
-def test_fixtures_map_expected_fields(filename: str, name: str, action: str, is_pr: bool):
-    event = load_event(name, EVENTS / filename)
-    payload = json.loads((EVENTS / filename).read_text())
-    number = payload["issue"]["number"] if "issue" in payload else payload["pull_request"]["number"]
-    assert event.name == name
-    assert event.action == action
-    assert event.repo == payload["repository"]["full_name"]
-    assert event.number == number
-    assert event.is_pr is is_pr
-    assert event.sender == payload["sender"]["login"]
-    assert event.default_branch == "main"
-    if filename == "issues.opened.json":
-        assert (event.author, event.author_association, event.title, event.body, event.labels) == (
-            "contributor",
-            "CONTRIBUTOR",
-            "Validation fails for empty input",
-            "Steps to reproduce",
-            ("type:bug",),
-        )
-    elif filename.startswith("issue_comment"):
-        expected_comment = (
-            ("I can reproduce this", "reporter")
-            if filename.endswith("issue.json")
-            else ("/review", "maintainer")
-        )
-        assert (event.comment_body, event.comment_author) == expected_comment
-    elif filename == "issues.labeled.json":
-        assert event.label == "agent:fix"
-        assert event.labels == ("agent:fix",)
-    else:
-        assert (event.head_ref, event.head_repo, event.base_sha, event.head_sha, event.draft) == (
-            "feature/messages",
-            "your-org/project",
-            "b" * 40,
-            "a" * 40,
-            False,
-        )
+def test_fixtures_map_expected_fields(filename: str, expected: Event):
+    assert load_event(expected.name, EVENTS / filename) == expected
 
 
 @pytest.mark.parametrize(

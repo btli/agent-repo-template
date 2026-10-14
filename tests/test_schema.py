@@ -44,7 +44,10 @@ def test_array_string_and_number_boundaries():
 
 
 def test_schemas_use_only_supported_keywords():
-    for path in Path("schemas").glob("*.json"):
+    schema_dir = Path(__file__).resolve().parents[1] / "schemas"
+    paths = list(schema_dir.glob("*.json"))
+    assert paths
+    for path in paths:
         schema = json.loads(path.read_text())
 
         def visit(node, schema_path):
@@ -63,12 +66,19 @@ def test_schemas_use_only_supported_keywords():
 
 
 def test_every_schema_has_schema_version_const():
-    paths = list(Path("schemas").glob("*.json"))
-    assert paths
+    schema_dir = Path(__file__).resolve().parents[1] / "schemas"
+    paths = [schema_dir / f"{name}.schema.json" for name in ("decision", "review", "fix")]
     for path in paths:
         schema = json.loads(path.read_text())
         assert schema["properties"]["schema_version"] == {"const": "1"}
 
 
+def test_config_schema_has_version_const():
+    schema = load_schema("config")
+    assert "version" in schema["required"]
+    assert schema["properties"]["version"] == {"const": 1}
+    assert "schema_version" not in schema["properties"]
+
+
 def test_config_schema_loads_from_repository():
-    assert load_schema("config")["properties"]["schema_version"]["const"] == "1"
+    assert load_schema("config")["properties"]["version"]["const"] == 1

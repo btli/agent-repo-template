@@ -3,7 +3,6 @@
   "additionalProperties": false,
   "required": ["version", "mode", "system_one", "models", "thresholds", "close", "triage", "limits", "commands", "fix"],
   "properties": {
-    "schema_version": {"const": "1"},
     "version": {"const": 1},
     "mode": {
       "type": "object",

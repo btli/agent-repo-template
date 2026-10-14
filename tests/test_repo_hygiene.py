@@ -5,7 +5,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_OWNERS = {
-    "btli",
     "your-org",
     "actions",
     "astral-sh",
@@ -15,6 +14,18 @@ ALLOWED_OWNERS = {
     "mikefarah",
     "omnigent-ai",
 }
+ALLOWED_BTLI_REPOSITORIES = {"agent-repo-template", "agent-repo-template-sandbox"}
+GITHUB_REPOSITORY_PATTERN = r"(?<!api\.)github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"
+
+
+def _unexpected_github_repositories(text: str) -> list[tuple[str, str]]:
+    repositories = re.findall(GITHUB_REPOSITORY_PATTERN, text)
+    return [
+        (owner, repo)
+        for owner, repo in repositories
+        if owner not in ALLOWED_OWNERS
+        and not (owner == "btli" and repo in ALLOWED_BTLI_REPOSITORIES)
+    ]
 
 
 def test_lib_imports_stdlib_only():
@@ -33,11 +44,24 @@ def test_lib_imports_stdlib_only():
 
 def test_no_unexpected_github_owners():
     for path in ROOT.rglob("*"):
-        if not path.is_file() or ".git" in path.parts or ".venv" in path.parts:
+        if (
+            not path.is_file()
+            or ".git" in path.parts
+            or ".venv" in path.parts
+            or "__pycache__" in path.parts
+        ):
             continue
         text = path.read_text(errors="ignore")
-        for owner in re.findall(r"(?<!api\.)github\.com/([A-Za-z0-9_.-]+)", text):
-            assert owner in ALLOWED_OWNERS, (path, owner)
+        unexpected = _unexpected_github_repositories(text)
+        assert not unexpected, (path, unexpected)
+
+
+def test_btli_repository_allowlist_is_limited():
+    assert _unexpected_github_repositories("https://github.com/btli/agent-repo-template") == []
+    sandbox_repository = "/".join(("https://github.com", "btli", "agent-repo-template-sandbox"))
+    assert _unexpected_github_repositories(sandbox_repository) == []
+    other_repository = "/".join(("https://github.com", "btli", "other-repo"))
+    assert _unexpected_github_repositories(other_repository) == [("btli", "other-repo")]
 
 
 def test_actions_pinned_to_sha():
