@@ -1,25 +1,25 @@
 {
   "request": {
     "model": "jev-latest",
-    "state": "Help! My payouts have been failing for 3 days.",
+    "state": "I was charged twice for my subscription this month. Please refund the extra charge.",
     "questions": {
-      "is_urgent": {
+      "billing": {
         "type": "noul",
-        "instructions": "Does this convey urgency?"
+        "instructions": "Is this message about billing?"
       }
     }
   },
   "response": {
-    "model": "jev-1.13.0",
+    "model": "jev-latest",
     "answers": {
-      "is_urgent": {
+      "billing": {
         "type": "noul",
-        "noul": 0.95
+        "noul": 0.98
       }
     },
     "usage": {
-      "input_tokens": 296,
-      "output_tokens": 20
+      "input_tokens": 120,
+      "output_tokens": 12
     }
   }
 }
