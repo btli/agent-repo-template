@@ -34,7 +34,7 @@ class SystemOneError(Exception):
     """A safe, credential-free System One client error."""
 
 
-# TypeSafe's documented endpoint accepts up to 255 choice criteria.
+# Unverified: TypeSafe's schema sets no maximum for choice criteria.
 PROVIDERS: dict[str, dict[str, str | int]] = {
     # TypeSafe API reference: https://api.typesafe.ai/redoc
     "jev": {
@@ -178,10 +178,11 @@ def _parse_noul(question: Question, answer: dict[str, object]) -> Answer | None:
     probability = _unit_probability(answer.get("noul"))
     if probability is None:
         return None
+    value = "yes" if probability >= 0.5 else "no"
     return Answer(
         id=question.id,
-        value="yes" if probability >= 0.5 else "no",
-        p=probability,
+        value=value,
+        p=probability if value == "yes" else 1.0 - probability,
     )
 
 

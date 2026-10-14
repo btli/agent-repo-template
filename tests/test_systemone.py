@@ -85,11 +85,19 @@ def test_parse_response_uses_documented_answer_shapes(provider: str) -> None:
     )
 
     expected = {
-        "jev": Answer(id="is_urgent", value="yes", p=0.95),
+        "jev": Answer(id="billing", value="yes", p=0.98),
         "databricks-openjev": Answer(id="intent", value="duplicate_charge", p=0.965),
         "gateway": Answer(id="urgency", value="high", p=1.0),
     }
     assert result == {expected[provider].id: expected[provider]}
+    if provider == "jev":
+        question = _questions(documented["request"])
+        no_answer = parse_response(
+            ProviderConfig(provider="jev", model="jev-latest"),
+            b'{"answers":{"billing":{"type":"noul","noul":0.1}}}',
+            question,
+        )
+        assert no_answer == {"billing": Answer(id="billing", value="no", p=0.9)}
 
 
 @pytest.mark.parametrize(
@@ -154,9 +162,9 @@ def test_choice_not_in_question_options_is_none() -> None:
 
 @pytest.mark.parametrize(
     ("noul", "value", "probability"),
-    [(0.9, "yes", 0.9), (0.1, "no", 0.1)],
+    [(0.9, "yes", 0.9), (0.1, "no", 0.9)],
 )
-def test_noul_probability_is_the_probability_of_true(
+def test_noul_probability_is_the_probability_of_the_chosen_value(
     noul: float, value: str, probability: float
 ) -> None:
     result = parse_response(
