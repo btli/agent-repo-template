@@ -1,0 +1,9 @@
+on: push
+permissions: {}
+jobs:
+  check:
+    environment: release
+    permissions: {contents: write}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ secrets.NPM_TOKEN }}"

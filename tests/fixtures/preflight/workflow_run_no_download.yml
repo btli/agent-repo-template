@@ -1,0 +1,7 @@
+on: {workflow_run: {workflows: [Build], types: [completed]}}
+permissions: {}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo safe

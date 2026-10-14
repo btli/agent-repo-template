@@ -1,0 +1,8 @@
+on: push
+permissions: write-all
+jobs:
+  check:
+    permissions: {}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo safe
