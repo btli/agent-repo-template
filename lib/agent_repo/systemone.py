@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import math
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -222,18 +221,11 @@ def _unit_probability(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     probability = float(value)
-    if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+    if not 0.0 <= probability <= 1.0:
         return None
     return probability
 
 
 def _send(request: urllib.request.Request, timeout: float) -> bytes:
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError:
-        raise
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            raise TimeoutError from None
-        raise
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
