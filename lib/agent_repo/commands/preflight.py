@@ -51,7 +51,7 @@ def _load(workflows_dir: Path, api: GitHub, branch: str) -> tuple[dict[str, obje
     local = {
         path.name: path for path in workflows_dir.iterdir() if path.name.endswith((".yml", ".yaml"))
     }
-    if set(local) != set(expected):
+    if local.keys() != expected.keys():
         raise ValueError("workflow files do not match default branch")
     workflows = {}
     for name, path in sorted(local.items()):

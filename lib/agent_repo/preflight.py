@@ -97,7 +97,6 @@ def _branches(config: object, target: str, *, glob: bool) -> bool:
             not isinstance(values, list) or not all(isinstance(item, str) for item in values)
         ):
             raise ValueError("invalid branch filters")
-    match = _intersects
     covers = (
         _covers
         if glob
@@ -108,7 +107,7 @@ def _branches(config: object, target: str, *, glob: bool) -> bool:
         if pattern.startswith("!"):
             if covers(pattern[1:], target):
                 reachable = False
-        elif match(pattern, target):
+        elif _intersects(pattern, target):
             reachable = True
     return reachable and not any(covers(pattern, target) for pattern in ignored or [])
 
@@ -146,10 +145,7 @@ def _strings(value: object):
 
 def _secrets(value: object) -> bool:
     if isinstance(value, dict):
-        if value.get("secrets") == "inherit":
-            return True
-        if any(_secrets(item) for item in value.values()):
-            return True
+        return value.get("secrets") == "inherit" or any(_secrets(item) for item in value.values())
     elif isinstance(value, list):
         return any(_secrets(item) for item in value)
     elif isinstance(value, str):
