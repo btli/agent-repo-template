@@ -1,0 +1,36 @@
+{
+  "request": {
+    "model": "system.ai.openjev-qwen35-4b",
+    "state": "My card was charged twice for the same order and I need a refund.",
+    "questions": {
+      "intent": {
+        "type": "choice",
+        "instructions": "Which intent best matches the message?",
+        "criteria": {
+          "refund": "The customer requests a refund.",
+          "duplicate_charge": "The customer reports being charged more than once.",
+          "other": "Another request."
+        }
+      }
+    }
+  },
+  "response": {
+    "model": "system.ai.openjev-qwen35-4b",
+    "answers": {
+      "intent": {
+        "type": "choice",
+        "choice": "duplicate_charge",
+        "confidence": 0.965,
+        "probabilities": {
+          "refund": 0.023,
+          "duplicate_charge": 0.977,
+          "other": 0.0002
+        }
+      }
+    },
+    "usage": {
+      "input_tokens": 238,
+      "output_tokens": 0
+    }
+  }
+}

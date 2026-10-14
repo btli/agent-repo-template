@@ -1,0 +1,25 @@
+{
+  "request": {
+    "model": "jev-latest",
+    "state": "Help! My payouts have been failing for 3 days.",
+    "questions": {
+      "is_urgent": {
+        "type": "noul",
+        "instructions": "Does this convey urgency?"
+      }
+    }
+  },
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "is_urgent": {
+        "type": "noul",
+        "noul": 0.95
+      }
+    },
+    "usage": {
+      "input_tokens": 296,
+      "output_tokens": 20
+    }
+  }
+}
