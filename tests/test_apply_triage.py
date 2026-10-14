@@ -1,0 +1,507 @@
+import json
+import math
+import secrets
+from dataclasses import replace
+from pathlib import Path
+from urllib.parse import urlparse
+
+import pytest
+from agent_repo.charter import DocRef, parse_charter
+from agent_repo.config import Area, RepoConfig
+from agent_repo.event import load_event
+from agent_repo.github import GitHub
+
+
+class API:
+    def __init__(self, *, target_open=True, labels=(), assignees=(), comments=(), fail=None):
+        self.calls = []
+        self.target_open = target_open
+        self.labels = list(labels)
+        self.assignees = list(assignees)
+        self.comments = list(comments)
+        self.fail = fail
+        self.gh = GitHub("test-token", "your-org/project", transport=self.transport)
+
+    def transport(self, request, timeout):
+        path = urlparse(request.full_url).path.removeprefix("/repos/your-org/project/")
+        body = json.loads(request.data) if request.data else None
+        self.calls.append((request.method, path, body))
+        if self.fail and self.fail in path:
+            return 500, {}, b"{}"
+        if request.method != "GET":
+            return 200, {}, b"{}"
+        if path.endswith("/comments"):
+            value = self.comments
+        elif path.endswith("/permission"):
+            value = {"role_name": "write"}
+        else:
+            value = {
+                "number": int(path.split("/")[-1]) if path.startswith("issues/") else 7,
+                "state": "open" if self.target_open else "closed",
+                "labels": [{"name": label} for label in self.labels],
+                "assignees": [{"login": owner} for owner in self.assignees],
+            }
+        return 200, {}, json.dumps(value).encode()
+
+    @property
+    def writes(self):
+        return [call for call in self.calls if call[0] != "GET"]
+
+
+def context(api=None, *, enabled=False, capped=False, off=False):
+    from agent_repo.apply.actions import ApplyContext
+
+    event = replace(
+        load_event("issues", Path("tests/fixtures/events/issues.opened.json")), number=7
+    )
+    config = RepoConfig(
+        {
+            "thresholds": {"apply_min": 0.8, "close_min": 0.92, "close_lexical_min": 0.45},
+            "close": {"enabled": enabled},
+            "mode": {"triage": "live"},
+        },
+        (Area("api", "API", ("src/**",), ("octocat",), False),),
+        (
+            "type:bug",
+            "area:api",
+            "P0",
+            "P1",
+            "P2",
+            "P3",
+            "needs-info",
+            "needs-maintainer",
+            "agent:closed",
+            "agent:fix",
+            "agent:triage-capped",
+        ),
+    )
+    charter = replace(
+        parse_charter(Path("tests/fixtures/charter/example.md").read_text()),
+        docs_index=(DocRef("Guide", "https://example.org/guide"),),
+    )
+    return ApplyContext(
+        event,
+        config,
+        charter,
+        "run-1",
+        "a" * 40,
+        [secrets.token_urlsafe(32)],
+        secrets.token_hex(20),
+        capped,
+        github=api.gh if api else None,
+        off_authorized=off,
+    )
+
+
+def decision():
+    return {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "tier": 2,
+        "answers": {
+            "type": {"value": "type:bug", "p": 0.9},
+            "area": {"value": "api", "p": 0.9},
+            "priority": {"value": "P2", "p": 0.9},
+            "needs_info": {"value": False, "p": 0.9},
+        },
+        "labels": ["type:bug", "area:api", "P2"],
+        "suggestions": {"priority": None, "labels": []},
+        "needs_info": None,
+        "rca": None,
+        "close": None,
+        "escalate": None,
+        "security": False,
+        "notes": [],
+    }
+
+
+def closing(kind="duplicate"):
+    return {
+        "kind": kind,
+        "target": 99 if kind == "duplicate" else None,
+        "docs_ref": "https://example.org/guide" if kind == "out_of_scope" else None,
+        "p": 0.97,
+        "lexical": 0.8,
+        "tier2_agrees": True,
+    }
+
+
+def plan(data, ctx):
+    from agent_repo.apply.triage import plan_triage
+
+    return plan_triage(data, ctx)
+
+
+def labels(actions):
+    return {
+        label
+        for action in actions
+        if action.kind == "add_labels"
+        for label in action.payload["labels"]
+    }
+
+
+def bodies(actions):
+    return "\n".join(action.payload["body"] for action in actions if action.kind == "comment")
+
+
+def run(data, ctx, api, tmp_path, mode="live"):
+    from agent_repo.apply.actions import execute
+
+    summary = tmp_path / "summary.md"
+    alerts = execute(plan(data, ctx), api.gh, mode, summary)
+    return alerts, summary.read_text()
+
+
+@pytest.mark.parametrize(
+    "answer,label", [("type", "type:bug"), ("area", "area:api"), ("priority", "P2")]
+)
+@pytest.mark.parametrize("probability,allowed", [(0.8, True), (0.79, False)])
+def test_labels_require_answer_threshold(answer, label, probability, allowed):
+    data = decision()
+    data["answers"][answer]["p"] = probability
+    assert (label in labels(plan(data, context()))) is allowed
+
+
+@pytest.mark.parametrize("priority", ["P0", "P1"])
+def test_high_priority_is_suggested(priority):
+    data = decision()
+    data["answers"]["priority"]["value"] = priority
+    data["labels"].append(priority)
+    actions = plan(data, context())
+    assert priority not in labels(actions)
+    assert "needs-maintainer" in labels(actions)
+    assert priority in bodies(actions)
+
+
+@pytest.mark.parametrize("probability,posted", [(0.8, True), (0.79, False)])
+def test_needs_info_threshold(probability, posted):
+    data = decision()
+    data["answers"]["needs_info"] = {"value": True, "p": probability}
+    data["needs_info"] = {"text": "Please provide versions."}
+    assert ("Please provide versions." in bodies(plan(data, context()))) is posted
+
+
+def test_needs_info_uses_charter_checklist():
+    data = decision()
+    data["answers"]["needs_info"] = {"value": True, "p": 0.9}
+    assert "Steps to reproduce" in bodies(plan(data, context()))
+
+
+@pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
+def test_close_with_all_guards(kind, tmp_path):
+    api = API()
+    ctx = context(api, enabled=True)
+    data = decision()
+    data["close"] = closing(kind)
+    run(data, ctx, api, tmp_path)
+    assert api.writes[-1] == (
+        "PATCH",
+        "issues/7",
+        {"state": "closed", "state_reason": "not_planned"},
+    )
+    assert any("agent:closed" in (body or {}).get("labels", []) for _, _, body in api.writes)
+    assert any("reopen" in (body or {}).get("body", "").lower() for _, _, body in api.writes)
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "disabled",
+        "confidence",
+        "lexical",
+        "tier2",
+        "closed_target",
+        "no_api",
+        "self",
+        "docs",
+        "target_pr",
+    ],
+)
+def test_close_rejects_missing_guard(guard, tmp_path):
+    api = API(
+        target_open=guard != "closed_target", fail="issues/99" if guard == "read_error" else None
+    )
+    ctx = context(None if guard == "no_api" else api, enabled=guard != "disabled")
+    data = decision()
+    data["close"] = closing("out_of_scope" if guard == "docs" else "duplicate")
+    if guard == "confidence":
+        data["close"]["p"] = 0.91
+    if guard == "lexical":
+        data["close"]["lexical"] = 0.44
+    if guard == "tier2":
+        data["close"]["tier2_agrees"] = False
+    if guard == "self":
+        data["close"]["target"] = 7
+    if guard == "docs":
+        data["close"]["docs_ref"] = "https://example.org/unlisted"
+    if guard == "target_pr":
+        original = api.transport
+
+        def transport(request, timeout):
+            status, headers, body = original(request, timeout)
+            value = json.loads(body)
+            if request.full_url.endswith("issues/99"):
+                value["pull_request"] = {}
+            return status, headers, json.dumps(value).encode()
+
+        api.gh = GitHub("test-token", "your-org/project", transport=transport)
+        ctx = replace(ctx, github=api.gh)
+    actions = plan(data, ctx)
+    assert not any(action.kind == "close" for action in actions)
+    assert "agent:closed" not in labels(actions)
+    assert "needs-maintainer" in labels(actions)
+    assert "suggest" in bodies(actions).lower()
+
+
+def test_dry_run_has_no_writes_and_lists_actions(tmp_path):
+    api = API()
+    data = decision()
+    data["close"] = closing()
+    _, summary = run(data, context(api, enabled=True), api, tmp_path, "dry-run")
+    assert api.writes == []
+    assert all(kind in summary for kind in ("add_labels", "comment", "close"))
+
+
+def test_live_order_labels_comment_close(tmp_path):
+    api = API()
+    data = decision()
+    data["close"] = closing()
+    run(data, context(api, enabled=True), api, tmp_path)
+    assert [path.rsplit("/", 1)[-1] for _, path, _ in api.writes] == ["labels", "comments", "7"]
+
+
+@pytest.mark.parametrize("capped", [True, False])
+def test_cap_label_is_trusted(capped):
+    data = decision()
+    data["labels"].append("agent:triage-capped")
+    assert ("agent:triage-capped" in labels(plan(data, context(capped=capped)))) is capped
+
+
+@pytest.mark.parametrize("area,assigned", [("api", True), ("unknown", False)])
+def test_maintainer_assigns_area_owners(area, assigned, tmp_path):
+    data = decision()
+    data["answers"]["area"]["value"] = area
+    data["escalate"] = {"to": "maintainer", "reason": "uncertain"}
+    api = API()
+    run(data, context(api), api, tmp_path)
+    assert any(body == {"assignees": ["octocat"]} for _, _, body in api.writes) is assigned
+
+
+@pytest.mark.parametrize("authorized", [True, False])
+def test_off_requires_gate_authorization(authorized, tmp_path):
+    api = API()
+    ctx = context(api, off=authorized)
+    ctx = replace(
+        ctx,
+        event=replace(ctx.event, name="issue_comment", comment_body="/agent off", sender="octocat"),
+    )
+    run(decision(), ctx, api, tmp_path)
+    if authorized:
+        assert len(api.writes) == 1
+        assert api.writes[0][1] == "issues/7/comments"
+        assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
+    else:
+        assert "agent:off" not in str(api.writes)
+
+
+def test_live_comments_have_trusted_marker(tmp_path):
+    api = API()
+    data = decision()
+    data["rca"] = {
+        "hypothesis": "Possible parsing bug",
+        "locations": [{"path": "src/a.py", "line": 3}],
+        "confidence": "low",
+        "confirm_with": "Run repro",
+    }
+    run(data, context(api), api, tmp_path)
+    comments = [body["body"] for _, path, body in api.writes if path.endswith("comments")]
+    assert comments and all("<!-- agent:triage run=run-1 -->" in body for body in comments)
+    assert "src/a.py:3" in comments[0]
+
+
+def test_idempotent_live_state_makes_no_writes(tmp_path):
+    api = API(
+        labels=("type:bug", "area:api", "P2", "needs-maintainer"),
+        assignees=("octocat",),
+        comments=({"body": "<!-- agent:triage run=run-1 -->"},),
+    )
+    data = decision()
+    data["escalate"] = {"to": "maintainer", "reason": "uncertain"}
+    run(data, context(api), api, tmp_path)
+    assert api.writes == []
+
+
+@pytest.mark.parametrize("bad", [None, [], {"extra": "field"}])
+def test_invalid_artifact_only_maintainer(bad, tmp_path):
+    api = API()
+    _, summary = run(bad, context(api), api, tmp_path)
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    assert "reject" in summary.lower()
+
+
+def test_nonfinite_probability_rejected(tmp_path):
+    api = API()
+    data = decision()
+    data["answers"]["priority"]["p"] = math.nan
+    run(data, context(api), api, tmp_path)
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+
+
+@pytest.mark.parametrize("security", [True, False])
+def test_security_routes_to_maintainer(security):
+    data = decision()
+    data["security"] = security
+    assert ("needs-maintainer" in labels(plan(data, context()))) is security
+
+
+def test_read_failure_stops_normal_writes(tmp_path):
+    api = API(fail="issues/7")
+    alerts, summary = run(decision(), context(api), api, tmp_path)
+    assert all(body == {"labels": ["needs-maintainer"]} for _, _, body in api.writes)
+    assert alerts and "fail" in summary.lower()
+
+
+def test_invalid_mode_never_writes(tmp_path):
+    api = API()
+    alerts, _ = run(decision(), context(api), api, tmp_path, "LIVE")
+    assert not api.writes
+    assert alerts
+
+
+def test_cli_reads_default_branch_policy_and_scan_keys(monkeypatch, tmp_path):
+    import base64
+
+    from agent_repo.commands.apply import main
+
+    api = API()
+    key = secrets.token_hex(20)
+    data = decision()
+    data["answers"]["needs_info"] = {"value": True, "p": 0.99}
+    data["needs_info"] = {"text": base64.b64encode(key.encode()).decode()}
+    artifact = tmp_path / "decision.json"
+    artifact.write_text(json.dumps(data))
+    summary = tmp_path / "summary.md"
+    original = api.transport
+
+    def transport(request, timeout):
+        path = urlparse(request.full_url).path
+        if path.endswith("/git/ref/heads/main"):
+            value = {"object": {"sha": "a" * 40}}
+        elif "/contents/.agents/" in path:
+            assert "ref=" + "a" * 40 in request.full_url
+            name = path.rsplit("/", 1)[-1]
+            source = (
+                Path("tests/fixtures/charter/example.md")
+                if name == "charter.md"
+                else Path("tests/fixtures/agents") / name
+            )
+            content = source.read_text()
+            if name == "config.yml":
+                content = content.replace("triage: dry-run", "triage: live")
+            value = {"encoding": "base64", "content": base64.b64encode(content.encode()).decode()}
+        else:
+            return original(request, timeout)
+        return 200, {}, json.dumps(value).encode()
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    monkeypatch.setattr("agent_repo.commands.apply.GitHub", lambda token, repo: api.gh)
+    for name, value in {
+        "GITHUB_EVENT_NAME": "issues",
+        "GITHUB_EVENT_PATH": str(Path("tests/fixtures/events/issues.opened.json").resolve()),
+        "GITHUB_RUN_ID": "run-1",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "GH_TOKEN": "test-token",
+        "AGENT_SCAN_KEYS": "\n" + key + "\n",
+        "AGENT_CANARY": secrets.token_hex(20),
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert main([str(artifact)]) == 0
+    assert not any(path.endswith("comments") for _, path, _ in api.writes)
+    assert any("needs-maintainer" in (body or {}).get("labels", []) for _, _, body in api.writes)
+    assert key not in summary.read_text(), "credential echoed"
+
+
+def test_cli_missing_canary_fails_without_writes(monkeypatch, tmp_path, capsys):
+    from agent_repo.commands.apply import main
+
+    monkeypatch.delenv("AGENT_CANARY", raising=False)
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+    assert main([str(tmp_path / "missing.json")]) == 1
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_label_absent_from_allowlist_is_dropped():
+    ctx = context()
+    ctx = replace(ctx, config=replace(ctx.config, labels=("needs-maintainer",)))
+    assert not labels(plan(decision(), ctx)) & {"type:bug", "area:api", "P2"}
+
+
+def test_labels_not_requested_are_not_added():
+    data = decision()
+    data["labels"] = []
+    assert not labels(plan(data, context())) & {"type:bug", "area:api", "P2"}
+
+
+def test_duplicate_state_rechecked_before_any_write(tmp_path):
+    from agent_repo.apply.actions import execute
+
+    api = API()
+    data = decision()
+    data["close"] = closing()
+    actions = plan(data, context(api, enabled=True))
+    api.target_open = False
+    alerts = execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert all(
+        path.endswith("labels") and body == {"labels": ["needs-maintainer"]}
+        for _, path, body in api.writes
+    )
+    assert alerts
+
+
+def test_execution_error_attempts_only_maintainer_fallback(tmp_path):
+    api = API(fail="issues/7")
+    alerts, _ = run(decision(), context(api), api, tmp_path)
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    assert alerts
+
+
+def test_security_cannot_close_or_apply_normal_labels():
+    api = API()
+    data = decision()
+    data["security"] = True
+    data["close"] = closing()
+    actions = plan(data, context(api, enabled=True))
+    assert labels(actions) == {"needs-maintainer"}
+    assert not any(action.kind == "close" for action in actions)
+    assert "SECURITY.md" in bodies(actions)
+
+
+def test_duplicate_lookup_error_fails_closed(tmp_path):
+    api = API(fail="issues/99")
+    data = decision()
+    data["close"] = closing()
+    alerts, _ = run(data, context(api, enabled=True), api, tmp_path)
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    assert alerts
+
+
+def test_cli_missing_scan_configuration_alerts_summary(monkeypatch, tmp_path):
+    from agent_repo.commands.apply import main
+
+    monkeypatch.delenv("AGENT_SCAN_KEYS", raising=False)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    assert main([str(tmp_path / "missing.json")]) == 1
+    assert "ALERT" in summary.read_text()
+
+
+def test_duplicate_comment_contains_clickable_trusted_link():
+    api = API()
+    ctx = context(api, enabled=True)
+    data = decision()
+    data["close"] = closing()
+    text = bodies(plan(data, ctx))
+    assert "<https://github.com/your-org/project/issues/99>" in text
+    assert text.index("<https://") > text.rindex("```")
