@@ -7,14 +7,15 @@ def _variants(secret: str) -> dict[str, str]:
     data = secret.encode("utf-8")
     standard = base64.b64encode(data).decode("ascii")
     urlsafe = base64.urlsafe_b64encode(data).decode("ascii")
+    hexadecimal = data.hex()
     return {
         "literal": secret,
         "base64": standard,
         "base64_unpadded": standard.rstrip("="),
         "base64_urlsafe": urlsafe,
         "base64_urlsafe_unpadded": urlsafe.rstrip("="),
-        "hex_lower": data.hex(),
-        "hex_upper": data.hex().upper(),
+        "hex_lower": hexadecimal,
+        "hex_upper": hexadecimal.upper(),
         "reversed": secret[::-1],
     }
 

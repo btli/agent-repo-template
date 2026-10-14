@@ -159,8 +159,8 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         text.append(request["text"] if request is not None else "\n".join(ctx.charter.good_report))
         if "needs-info" in allowed:
             selected.append("needs-info")
-    if decision["rca"]:
-        rca = decision["rca"]
+    rca = decision["rca"]
+    if rca:
         locations = "\n".join(
             f"{location['path']}:{location['line']}" for location in rca["locations"]
         )
@@ -204,7 +204,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         body = f"Agent triage\n\n{fenced(content, 10000)}"
         if can_close:
             link = (
-                "/".join(("https://github.com", ctx.event.repo, "issues", str(close["target"])))
+                f"https://github.com/{ctx.event.repo}/issues/{close['target']}"
                 if close["kind"] == "duplicate"
                 else close["docs_ref"]
             )
