@@ -1,0 +1,14 @@
+labels:
+  - type:bug
+  - type:feature
+  - area:core
+  - P0
+  - P1
+  - P2
+  - P3
+  - needs-info
+  - needs-maintainer
+  - agent:closed
+  - agent:fix
+  - agent:skip
+  - agent:triage-capped

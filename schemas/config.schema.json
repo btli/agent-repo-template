@@ -1,0 +1,93 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mode", "system_one", "models", "thresholds", "close", "triage", "limits", "commands", "fix"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "version": {"const": 1},
+    "mode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["triage", "review", "fix"],
+      "properties": {
+        "triage": {"enum": ["dry-run", "live"]},
+        "review": {"enum": ["dry-run", "live"]},
+        "fix": {"enum": ["dry-run", "live"]}
+      }
+    },
+    "system_one": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model"],
+      "properties": {
+        "provider": {"enum": ["jev", "databricks-openjev", "gateway"]},
+        "model": {"type": "string", "minLength": 1}
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["triage", "review", "fix"],
+      "properties": {
+        "triage": {"type": "string", "minLength": 1},
+        "review": {"type": "string", "minLength": 1},
+        "fix": {"type": "string", "minLength": 1}
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apply_min", "close_min", "close_lexical_min"],
+      "properties": {
+        "apply_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "close_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "close_lexical_min": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "close": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {"enabled": {"type": "boolean"}}
+    },
+    "triage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rca_authors"],
+      "properties": {"rca_authors": {"enum": ["all", "known"]}}
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["triage_runs_per_issue", "tier2_per_author_per_day", "tier2_per_day", "edit_debounce_minutes", "review_max_lines", "fix_max_turns", "fix_max_diff_lines"],
+      "properties": {
+        "triage_runs_per_issue": {"type": "integer", "minimum": 1},
+        "tier2_per_author_per_day": {"type": "integer", "minimum": 1},
+        "tier2_per_day": {"type": "integer", "minimum": 1},
+        "edit_debounce_minutes": {"type": "integer", "minimum": 1},
+        "review_max_lines": {"type": "integer", "minimum": 1},
+        "fix_max_turns": {"type": "integer", "minimum": 1},
+        "fix_max_diff_lines": {"type": "integer", "minimum": 1}
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["setup", "test", "lint"],
+      "properties": {
+        "setup": {"type": "string"},
+        "test": {"type": "string"},
+        "lint": {"type": "string"}
+      }
+    },
+    "fix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow_new_deps", "accept_ci_exposure"],
+      "properties": {
+        "allow_new_deps": {"type": "boolean"},
+        "accept_ci_exposure": {"type": "boolean"}
+      }
+    }
+  }
+}

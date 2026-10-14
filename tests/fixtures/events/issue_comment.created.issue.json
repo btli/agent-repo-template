@@ -1,0 +1,14 @@
+{
+  "action": "created",
+  "repository": {"full_name": "your-org/project", "default_branch": "main"},
+  "sender": {"login": "reporter", "type": "User"},
+  "issue": {
+    "number": 12,
+    "title": "Validation fails for empty input",
+    "body": "Steps to reproduce",
+    "user": {"login": "contributor"},
+    "author_association": "CONTRIBUTOR",
+    "labels": []
+  },
+  "comment": {"body": "I can reproduce this", "user": {"login": "reporter"}}
+}

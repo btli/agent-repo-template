@@ -1,0 +1,13 @@
+{
+  "action": "opened",
+  "repository": {"full_name": "your-org/project", "default_branch": "main"},
+  "sender": {"login": "contributor", "type": "User"},
+  "issue": {
+    "number": 12,
+    "title": "Validation fails for empty input",
+    "body": "Steps to reproduce",
+    "user": {"login": "contributor"},
+    "author_association": "CONTRIBUTOR",
+    "labels": [{"name": "type:bug"}]
+  }
+}

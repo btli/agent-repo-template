@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "base_sha", "status", "rca", "tests", "risk", "summary", "attempted", "escalate"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "status": {"enum": ["patch", "no_patch"]},
+    "rca": {"type": "string", "maxLength": 4000},
+    "tests": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "pattern": "^[A-Za-z0-9_./:\\[\\]-]+$"}
+    },
+    "risk": {"enum": ["low", "medium", "high"]},
+    "summary": {"type": "string", "maxLength": 4000},
+    "attempted": {"type": "string", "maxLength": 4000},
+    "escalate": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["to", "reason"],
+      "properties": {
+        "to": {"const": "maintainer"},
+        "reason": {"type": "string", "maxLength": 500}
+      }
+    }
+  }
+}

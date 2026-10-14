@@ -1,0 +1,14 @@
+{
+  "action": "labeled",
+  "repository": {"full_name": "your-org/project", "default_branch": "main"},
+  "sender": {"login": "maintainer", "type": "User"},
+  "label": {"name": "agent:fix"},
+  "issue": {
+    "number": 31,
+    "title": "Fix parser edge case",
+    "body": "Parser mishandles this input",
+    "user": {"login": "contributor"},
+    "author_association": "CONTRIBUTOR",
+    "labels": [{"name": "agent:fix"}]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "action": "opened",
+  "repository": {"full_name": "your-org/project", "default_branch": "main"},
+  "sender": {"login": "contributor", "type": "User"},
+  "pull_request": {
+    "number": 24,
+    "title": "Improve validation messages",
+    "body": "Updates the parser",
+    "draft": false,
+    "user": {"login": "contributor"},
+    "author_association": "CONTRIBUTOR",
+    "labels": [],
+    "head": {"ref": "feature/messages", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "repo": {"full_name": "your-org/project"}},
+    "base": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  }
+}
