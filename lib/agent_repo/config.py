@@ -60,14 +60,11 @@ def load_config(agents_dir: Path) -> RepoConfig:
             raise ConfigError(f"{prefix}: unexpected key {sorted(unknown)[0]}")
         if not isinstance(item.get("name"), str) or not isinstance(item.get("description"), str):
             raise ConfigError(f"{prefix} requires name and description strings")
-        if not isinstance(item.get("paths"), list) or not all(
-            isinstance(value, str) for value in item["paths"]
-        ):
-            raise ConfigError(f"{prefix}.paths must be strings")
-        if not isinstance(item.get("owners"), list) or not all(
-            isinstance(value, str) for value in item["owners"]
-        ):
-            raise ConfigError(f"{prefix}.owners must be strings")
+        for key in ("paths", "owners"):
+            if not isinstance(item.get(key), list) or not all(
+                isinstance(value, str) for value in item[key]
+            ):
+                raise ConfigError(f"{prefix}.{key} must be strings")
         sensitive = item.get("sensitive", False)
         if not isinstance(sensitive, bool):
             raise ConfigError(f"{prefix}.sensitive must be boolean")

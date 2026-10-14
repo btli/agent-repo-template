@@ -48,7 +48,7 @@ def load_event(name: str, path: Path) -> Event:
         pull = item.get("pull_request") if is_pr else None
     else:
         is_pr = name == "pull_request_target"
-        item = pull if is_pr else payload.get("issue") or {}
+        item = pull if is_pr else issue or {}
     user = item.get("user") or {}
     repo_data = payload.get("repository") or {}
     head = item.get("head") or {}

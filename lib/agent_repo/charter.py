@@ -50,19 +50,17 @@ def _items(text: str) -> tuple[str, ...]:
     )
 
 
+def _priorities(text: str) -> dict[str, str]:
+    return dict(re.findall(r"^\s*[-*]?\s*(P[0-3])\s*:\s*(.+?)\s*$", text, re.MULTILINE))
+
+
 def lint_charter(text: str) -> list[str]:
     sections = _sections(text)
     missing = [heading for heading in REQUIRED_HEADINGS if heading not in sections]
     if missing:
         return [f"missing required heading: {heading}" for heading in missing]
-    priority_lines = re.findall(
-        r"^\s*[-*]?\s*(P[0-3])\s*:\s*(.+?)\s*$",
-        sections["Priorities"],
-        re.MULTILINE,
-    )
-    present = {key for key, _ in priority_lines}
-    absent = [f"P{number}" for number in range(4) if f"P{number}" not in present]
-    return [f"missing priority: {priority}" for priority in absent]
+    present = _priorities(sections["Priorities"])
+    return [f"missing priority: P{number}" for number in range(4) if f"P{number}" not in present]
 
 
 def parse_charter(text: str) -> Charter:
@@ -75,12 +73,6 @@ def parse_charter(text: str) -> Charter:
         link = re.search(r"\[docs\]\((https?://[^)]+)\)", item)
         clean_text = re.sub(r"\s*\(\[docs\]\(https?://[^)]+\)\)", "", item).strip()
         out_of_scope.append(ScopeItem(clean_text, link.group(1) if link else None))
-    priorities = {
-        key: value
-        for key, value in re.findall(
-            r"^\s*[-*]?\s*(P[0-3])\s*:\s*(.+?)\s*$", sections["Priorities"], re.MULTILINE
-        )
-    }
     docs = tuple(
         DocRef(title, url)
         for title, url in re.findall(r"\[([^]]+)\]\((https?://[^)]+)\)", sections["Docs index"])
@@ -91,7 +83,7 @@ def parse_charter(text: str) -> Charter:
         sections["Mission"],
         _items(sections["In scope"]),
         tuple(out_of_scope),
-        priorities,
+        _priorities(sections["Priorities"]),
         _items(sections["A good report includes"]),
         sections["Support policy"],
         docs,
