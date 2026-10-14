@@ -3,7 +3,6 @@ import secrets
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
-from urllib.parse import quote
 
 from agent_repo.config import RepoConfig
 from agent_repo.event import Event
@@ -35,7 +34,7 @@ def authorize(gh: GitHub, login: str, maintainers: frozenset[str]) -> bool:
     if login.casefold() in {name.casefold() for name in maintainers}:
         return True
     try:
-        data = gh.request("GET", f"collaborators/{quote(login, safe='')}/permission")
+        data = gh.request("GET", f"collaborators/{login}/permission")
     except GitHubError:
         return False
     return isinstance(data, dict) and data.get("role_name") in ("admin", "maintain", "write")
@@ -208,9 +207,8 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     else:
         return result(False, "unsupported-event")
 
-    if ctx.workflow == "review":
-        if not event.is_pr:
-            return result(False, "unsupported-event")
+    if ctx.workflow == "review" and not event.is_pr:
+        return result(False, "unsupported-event")
     if ctx.workflow == "fix" and event.is_pr and not (_agent_pr(event) and event.draft):
         return result(False, "not-agent-draft")
 
