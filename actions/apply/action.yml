@@ -1,0 +1,35 @@
+name: Apply agent proposal
+description: Validate, scan and apply a triage artifact with trusted default-branch policy.
+inputs:
+  artifact:
+    description: Path to the downloaded decision JSON.
+    required: true
+  token:
+    description: Repository-scoped GitHub App token.
+    required: true
+  scan-keys:
+    description: Newline-separated AGENT_SCAN_KEYS from the agent-apply environment.
+    required: true
+  canary:
+    description: Canary for this proposal run.
+    required: true
+  capped:
+    description: Trusted gate cycle-cap result.
+    default: 'false'
+  off-authorized:
+    description: Trusted gate authorization result for /agent off.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Apply triage
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}/../../lib
+        AGENT_ARTIFACT: ${{ inputs.artifact }}
+        GH_TOKEN: ${{ inputs.token }}
+        AGENT_SCAN_KEYS: ${{ inputs.scan-keys }}
+        AGENT_CANARY: ${{ inputs.canary }}
+        AGENT_CAPPED: ${{ inputs.capped }}
+        AGENT_OFF_AUTHORIZED: ${{ inputs.off-authorized }}
+      run: python3 -m agent_repo_cli apply "$AGENT_ARTIFACT"
