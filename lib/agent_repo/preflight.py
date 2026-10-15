@@ -132,6 +132,8 @@ def _branches(config: object, target: str, *, glob: bool) -> bool:
         raise ValueError("invalid trigger configuration")
     patterns = config.get("branches")
     ignored = config.get("branches-ignore")
+    patterns = [patterns] if isinstance(patterns, str) else patterns
+    ignored = [ignored] if isinstance(ignored, str) else ignored
     if patterns is None and ignored is None:
         return not ("tags" in config or "tags-ignore" in config) if glob else True
     for values in (patterns, ignored):
@@ -197,9 +199,10 @@ def _reachable_refs(events: dict, ctx: PreflightContext) -> set[str | None]:
                 refs.add(ctx.agent_ref_glob)
         elif event == "pull_request":
             if _branches(config, ctx.default_branch, glob=False):
-                refs.add(ctx.agent_ref_glob)
+                # Fork PR authors choose the head branch independently of the agent glob.
+                refs.update({ctx.agent_ref_glob, None})
         elif event in {"pull_request_review", "pull_request_review_comment"}:
-            refs.add(ctx.agent_ref_glob)
+            refs.update({ctx.agent_ref_glob, None})
         elif event == "merge_group":
             refs.add("gh-readonly-queue/**")
         elif event not in independent and event not in TARGET_EVENTS:
@@ -325,7 +328,7 @@ def _target_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
     if not privileged:
         return False
     steps = _steps(job)
-    if not steps:
+    if not steps or "container" in job or "services" in job:
         return True
     for step in steps:
         uses = step.get("uses")
@@ -389,7 +392,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             reachable.add(path)
         # Read-only target jobs can still produce artifacts containing PR code.
         if TARGET_EVENTS.intersection(triggers[path]):
-            refs[path].add(None)
+            refs[path].add(ctx.default_branch)
     downstream = set()
     changed = True
     while changed:
@@ -401,6 +404,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             if not isinstance(config, dict):
                 raise ValueError("invalid workflow_run trigger")
             patterns = config.get("workflows", [])
+            patterns = [patterns] if isinstance(patterns, str) else patterns
             if (
                 not isinstance(patterns, list)
                 or not patterns
@@ -408,7 +412,10 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             ):
                 raise ValueError("invalid workflow_run names")
             if path not in downstream and any(
-                (name.casefold() == pattern.casefold() or fnmatch.fnmatchcase(name, pattern))
+                (
+                    name.casefold() == pattern.casefold()
+                    or fnmatch.fnmatchcase(name.casefold(), pattern.casefold())
+                )
                 and any(ref is None or _branches(config, ref, glob=True) for ref in refs[source])
                 for source in parsed
                 for name in (parsed[source].get("name", source), f".github/workflows/{source}")

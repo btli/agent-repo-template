@@ -1,0 +1,45 @@
+{
+  "source.yml": {
+    "name": "Base Comments",
+    "on": "discussion_comment",
+    "permissions": {},
+    "jobs": {
+      "label": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/labeler@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    }
+  },
+  "down.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Base Comments"
+        ],
+        "types": [
+          "completed"
+        ],
+        "branches": [
+          "agent/**"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo deploy"
+          }
+        ]
+      }
+    }
+  }
+}

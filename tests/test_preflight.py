@@ -369,6 +369,19 @@ SCENARIO_CASES = [
     ("downstream_unknown_job_secret", [("down.yml", "check", "workflow_run")]),
     ("downstream_unknown_step_secret", [("down.yml", "check", "workflow_run")]),
     ("downstream_unknown_automatic_token", []),
+    ("branch_target_pull_request_target_agent_excluded", []),
+    ("branch_target_pull_request_target_main", [("down.yml", "check", "workflow_run")]),
+    ("branch_target_pull_request_target_unfiltered", [("down.yml", "check", "workflow_run")]),
+    ("branch_target_issue_comment_agent_excluded", []),
+    ("branch_target_issue_comment_main", [("down.yml", "check", "workflow_run")]),
+    ("branch_target_issue_comment_unfiltered", [("down.yml", "check", "workflow_run")]),
+    ("branch_target_issues_agent_excluded", []),
+    ("branch_target_discussion_agent_excluded", []),
+    ("branch_target_discussion_comment_agent_excluded", []),
+    ("workflow_name_glob_casefold", [("down.yml", "check", "workflow_run")]),
+    ("scalar_branches", [("ci.yml", "check", "secrets")]),
+    ("scalar_branches_ignore", [("ci.yml", "check", "secrets")]),
+    ("scalar_workflow_names", [("down.yml", "check", "workflow_run")]),
 ]
 
 
@@ -520,6 +533,32 @@ SOURCE_CASES = [
     ("branch_queue_excluded", [], "agent/fix-*"),
     ("branch_unknown_event", [("a-final.yml", "check", "workflow_run")], "agent/fix-*"),
     ("branch_mixed_sources", [("a-final.yml", "check", "workflow_run")], "agent/fix-*"),
+    ("branch_fork_pull_request_main", [("a-final.yml", "check", "workflow_run")], "agent/fix-*"),
+    (
+        "branch_fork_pull_request_ignore_agent",
+        [("a-final.yml", "check", "workflow_run")],
+        "agent/fix-*",
+    ),
+    (
+        "branch_fork_pull_request_review_main",
+        [("a-final.yml", "check", "workflow_run")],
+        "agent/fix-*",
+    ),
+    (
+        "branch_fork_pull_request_review_ignore_agent",
+        [("a-final.yml", "check", "workflow_run")],
+        "agent/fix-*",
+    ),
+    (
+        "branch_fork_pull_request_review_comment_main",
+        [("a-final.yml", "check", "workflow_run")],
+        "agent/fix-*",
+    ),
+    (
+        "branch_fork_pull_request_review_comment_ignore_agent",
+        [("a-final.yml", "check", "workflow_run")],
+        "agent/fix-*",
+    ),
 ]
 
 
@@ -688,6 +727,10 @@ TARGET_CASES = [
     ("target_unknown_job_secret", [("ci.yml", "check", "pull_request_target")], False),
     ("target_unknown_step_secret", [("ci.yml", "check", "pull_request_target")], False),
     ("target_unknown_automatic_token", [], False),
+    ("target_labeler_service_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_labeler_container_credentials", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_labeler_service_write", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_labeler_container_write", [("ci.yml", "check", "pull_request_target")], False),
 ]
 
 

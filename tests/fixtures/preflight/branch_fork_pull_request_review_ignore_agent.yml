@@ -1,0 +1,49 @@
+{
+  "z-source.yml": {
+    "name": "Build",
+    "on": "pull_request_review",
+    "permissions": {},
+    "jobs": {
+      "build": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  },
+  "a-final.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Build"
+        ],
+        "types": [
+          "completed"
+        ],
+        "branches-ignore": [
+          "agent/**"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/download-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "run": "bash out"
+          }
+        ],
+        "env": {
+          "TOKEN": "${{ secrets.DEPLOY }}"
+        }
+      }
+    }
+  }
+}
