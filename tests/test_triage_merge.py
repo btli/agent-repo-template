@@ -42,7 +42,7 @@ def test_keeps_tier1_authority_and_copies_only_corrections(decision):
     assert result["close"]["tier2_agrees"] is False
     assert result["security"] is False and result["notes"] == []
     assert result["rca"]["hypothesis"] == "Likely parser."
-    assert result["tier"] == 2
+    assert result["tier"] == original["tier"] == 1
     assert validate(result, load_schema("decision")) == []
     assert decision == original
 
