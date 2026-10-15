@@ -30,6 +30,8 @@ class RepoConfig:
 
 
 def _read(path: Path) -> object:
+    if not path.is_file():
+        raise ConfigError(f"missing {path.name}")
     try:
         return load_yaml(path)
     except YamlError as exc:

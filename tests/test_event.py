@@ -198,6 +198,43 @@ def test_edited_fields_are_sorted_or_empty(
     assert load_event("issues", path).edited_fields == expected
 
 
+def test_non_edit_event_ignores_nonempty_changes(tmp_path: Path):
+    payload = json.loads((EVENTS / "issues.opened.json").read_text())
+    payload["changes"] = {"body": {"from": "previous body"}}
+    path = tmp_path / "opened.json"
+    path.write_text(json.dumps(payload))
+    assert load_event("issues", path).edited_fields == ()
+
+
+@pytest.mark.parametrize("field", ["title", "body"])
+def test_null_issue_text_fields_normalize_to_empty_string(tmp_path: Path, field: str):
+    payload = json.loads((EVENTS / "issues.opened.json").read_text())
+    payload["issue"][field] = None
+    path = tmp_path / "null-text.json"
+    path.write_text(json.dumps(payload))
+    event = load_event("issues", path)
+    assert getattr(event, field) == ""
+
+
+def test_pull_request_without_payload_uses_empty_item(tmp_path: Path):
+    payload = json.loads((EVENTS / "pull_request_target.opened.json").read_text())
+    payload.pop("pull_request")
+    path = tmp_path / "missing-pr.json"
+    path.write_text(json.dumps(payload))
+    event = load_event("pull_request_target", path)
+    assert event.is_pr
+    assert event.number == 0
+
+
+def test_non_mapping_pull_request_payload_raises_value_error(tmp_path: Path):
+    payload = json.loads((EVENTS / "pull_request_target.opened.json").read_text())
+    payload["pull_request"] = []
+    path = tmp_path / "invalid-pr.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="event item must be an object"):
+        load_event("pull_request_target", path)
+
+
 @pytest.mark.parametrize(
     "sender_type,login,expected",
     [("Bot", "helper", True), ("User", "helper[bot]", True), ("User", "human", False)],

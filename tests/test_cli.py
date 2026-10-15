@@ -8,9 +8,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from agent_repo.cli import main
 
 
-@pytest.mark.parametrize("command", ["unknown_command", "../x", "a.b"])
+@pytest.mark.parametrize("command", ["unknown_command", "../x", "a.b", "__init__"])
 def test_invalid_command_exits_two(command: str):
     assert main([command]) == 2
+
+
+def test_command_module_without_main_exits_two(monkeypatch: pytest.MonkeyPatch):
+    import types
+
+    module = types.ModuleType("agent_repo.commands.no_main")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    assert main(["no_main"]) == 2
 
 
 def test_check_config_accepts_fixture(capsys: pytest.CaptureFixture[str]):

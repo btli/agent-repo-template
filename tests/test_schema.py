@@ -24,6 +24,28 @@ def test_enum_const_type_and_pattern_mismatches_each_give_one_error():
         assert len(validate(instance, schema)) == 1
 
 
+def test_const_and_enum_use_json_type_equality():
+    decision = load_schema("decision")
+    artifact = {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "tier": True,
+        "answers": {},
+        "labels": [],
+        "suggestions": {"priority": None, "labels": []},
+        "needs_info": None,
+        "rca": None,
+        "close": None,
+        "escalate": None,
+        "security": False,
+        "notes": [],
+    }
+    assert "$.tier: enum" in validate(artifact, decision)
+    assert validate({"child": True}, {"const": {"child": 1}})
+    assert validate({"child": True}, {"enum": [{"child": 1}]})
+
+
 def test_bool_is_not_an_integer():
     assert validate(True, {"type": "integer"})
 
@@ -41,6 +63,27 @@ def test_array_string_and_number_boundaries():
     assert validate(1, {"type": "number", "minimum": 2})
     assert validate(2, {"type": "number", "maximum": 2}) == []
     assert validate(3, {"type": "number", "maximum": 2})
+
+
+def test_non_finite_number_is_rejected_in_complete_decision_artifact():
+    artifact = {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "tier": 1,
+        "answers": {"q1": {"value": "yes", "p": float("nan")}},
+        "labels": [],
+        "suggestions": {"priority": None, "labels": []},
+        "needs_info": None,
+        "rca": None,
+        "close": None,
+        "escalate": None,
+        "security": False,
+        "notes": [],
+    }
+    assert "$.answers.q1.p: number" in validate(artifact, load_schema("decision"))
+    for value in (float("nan"), float("inf"), float("-inf")):
+        assert validate(value, {"type": "number"}) == ["$: number"]
 
 
 def test_schemas_use_only_supported_keywords():

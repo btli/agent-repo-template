@@ -54,6 +54,22 @@ def _matches_type(instance: object, expected: str) -> bool:
     return False
 
 
+def _json_equal(left: object, right: object) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left is right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _json_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _json_equal(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return type(left) is type(right) and left == right
+
+
 def validate(instance: object, schema: dict) -> list[str]:
     errors: list[str] = []
 
@@ -65,10 +81,10 @@ def validate(instance: object, schema: dict) -> list[str]:
                 errors.append(f"{path}: type")
                 return
 
-        if "const" in rule and value != rule["const"]:
+        if "const" in rule and not _json_equal(value, rule["const"]):
             errors.append(f"{path}: const")
             return
-        if "enum" in rule and value not in rule["enum"]:
+        if "enum" in rule and not any(_json_equal(value, option) for option in rule["enum"]):
             errors.append(f"{path}: enum")
             return
 
@@ -105,6 +121,9 @@ def validate(instance: object, schema: dict) -> list[str]:
                 errors.append(f"{path}: pattern")
 
         if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if isinstance(value, float) and not math.isfinite(value):
+                errors.append(f"{path}: number")
+                return
             if value < rule.get("minimum", -math.inf):
                 errors.append(f"{path}: minimum")
             if value > rule.get("maximum", math.inf):

@@ -65,6 +65,8 @@ def test_btli_repository_allowlist_is_limited():
 
 
 def test_actions_pinned_to_sha():
+    assert _valid_action_reference("uses: ./actions/check-config")
+    assert not _valid_action_reference("uses: external/action@v1")
     for folder in (ROOT / ".github", ROOT / "actions"):
         if not folder.exists():
             continue
@@ -73,7 +75,14 @@ def test_actions_pinned_to_sha():
                 for line in path.read_text().splitlines():
                     if "uses:" not in line:
                         continue
-                    assert re.search(r"uses:\s+[^@\s]+@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+", line), (
-                        path,
-                        line,
-                    )
+                    assert _valid_action_reference(line), (path, line)
+
+
+def _valid_action_reference(line: str) -> bool:
+    match = re.search(r"uses:\s+(\S+)", line)
+    if match is None:
+        return False
+    reference = match.group(1)
+    if reference.startswith("./"):
+        return "@" not in reference
+    return re.search(r"uses:\s+[^@\s]+@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+", line) is not None

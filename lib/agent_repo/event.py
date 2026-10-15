@@ -44,12 +44,18 @@ def load_event(name: str, path: Path) -> Event:
     issue = payload.get("issue")
     pull = payload.get("pull_request")
     if is_comment:
+        selected_item = issue
         is_pr = isinstance(issue, dict) and "pull_request" in issue
         item = issue or {}
         pull = item.get("pull_request") if is_pr else None
     else:
         is_pr = name == "pull_request_target"
-        item = pull if is_pr else issue or {}
+        selected_item = pull if is_pr else issue
+        item = (pull if is_pr else issue) or {}
+    if selected_item is not None and not isinstance(selected_item, dict):
+        raise ValueError("event item must be an object")
+    if not isinstance(item, dict):
+        raise ValueError("event item must be an object")
     user = item.get("user") or {}
     repo_data = payload.get("repository") or {}
     head = item.get("head") or {}
@@ -81,8 +87,8 @@ def load_event(name: str, path: Path) -> Event:
         base_sha=base.get("sha"),
         head_sha=head.get("sha"),
         default_branch=str(repo_data.get("default_branch", "")),
-        title=str(item.get("title", "")),
-        body=str(item.get("body", "")),
+        title=str(item.get("title") if item.get("title") is not None else ""),
+        body=str(item.get("body") if item.get("body") is not None else ""),
         labels=tuple(label.get("name", "") for label in labels_data),
         draft=bool(item.get("draft", False)),
         edited_fields=edited_fields,

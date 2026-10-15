@@ -37,6 +37,41 @@ def test_apply_min_must_be_numeric_in_range(tmp_path: Path):
         load_config(target)
 
 
+def test_apply_min_rejects_nan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    target = copy_agents(tmp_path)
+    from agent_repo import config
+    from agent_repo.yamljson import load_yaml
+
+    config_data = load_yaml(target / "config.yml")
+    config_data["thresholds"]["apply_min"] = float("nan")
+    original_load_yaml = config.load_yaml
+
+    def load_yaml_with_nan(path: Path) -> object:
+        if path.name == "config.yml":
+            return config_data
+        return original_load_yaml(path)
+
+    monkeypatch.setattr(config, "load_yaml", load_yaml_with_nan)
+    with pytest.raises(ConfigError):
+        config.load_config(target)
+
+
+def test_version_boolean_is_not_integer_one(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "config.yml"
+    path.write_text(path.read_text().replace("version: 1", "version: true"))
+    with pytest.raises(ConfigError, match="version: const"):
+        load_config(target)
+
+
+@pytest.mark.parametrize("filename", ["areas.yml", "labels.yml"])
+def test_missing_auxiliary_config_names_missing_file(tmp_path: Path, filename: str):
+    target = copy_agents(tmp_path)
+    (target / filename).unlink()
+    with pytest.raises(ConfigError, match=f"missing {filename}"):
+        load_config(target)
+
+
 def test_area_sensitive_defaults_to_false(tmp_path: Path):
     target = copy_agents(tmp_path)
     path = target / "areas.yml"
