@@ -117,8 +117,12 @@ def validate(instance: object, schema: dict) -> list[str]:
                 errors.append(f"{path}: minLength")
             if len(value) > rule.get("maxLength", math.inf):
                 errors.append(f"{path}: maxLength")
-            if "pattern" in rule and re.search(rule["pattern"], value) is None:
-                errors.append(f"{path}: pattern")
+            if "pattern" in rule:
+                pattern = rule["pattern"]
+                if pattern.endswith("$") and (len(pattern) - len(pattern.rstrip("\\"))) % 2 == 0:
+                    pattern = pattern[:-1] + r"\Z"
+                if re.search(pattern, value) is None:
+                    errors.append(f"{path}: pattern")
 
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             if isinstance(value, float) and not math.isfinite(value):

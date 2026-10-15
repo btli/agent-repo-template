@@ -21,7 +21,7 @@ ALLOWED_BTLI_REPOSITORIES = {"agent-repo-template", "agent-repo-template-sandbox
 GITHUB_REPOSITORY_PATTERNS = (
     re.compile(
         r"(?<![A-Za-z0-9_.-])(?:www\.)?github\.com[:/]"
-        r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)",
+        r"([A-Za-z0-9_.-]+)(?:/([A-Za-z0-9_.-]+))?",
         re.IGNORECASE,
     ),
     re.compile(
@@ -105,12 +105,15 @@ def _action_owner(reference: object) -> tuple[str, str] | None:
 
 def _has_version_comment(text: str, reference: str) -> bool:
     for line in text.splitlines():
-        if re.search(r"""(?:^|[\s,{])["']?uses["']?\s*:""", line) is None:
+        if line.lstrip().startswith("#"):
             continue
-        index = line.find(reference)
-        if index < 0:
+        match = re.search(
+            r"""(?:^|[\s,{-])["']?uses["']?\s*:\s*["']?([^,'"}\s]+)""",
+            line,
+        )
+        if match is None or match.group(1) != reference:
             continue
-        suffix = line[index + len(reference) :].lstrip()
+        suffix = line[match.end() :].lstrip()
         if suffix[:1] in {"'", '"'}:
             suffix = suffix[1:].lstrip()
         if suffix.startswith("}"):
@@ -126,7 +129,7 @@ def _valid_action_reference(reference: object, text: str) -> bool:
     if reference.startswith("./"):
         return "@" not in reference
     if reference.startswith("docker://"):
-        return True
+        return False
     return re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[^@]+)?@[0-9a-fA-F]{40}",
         reference,
@@ -183,6 +186,11 @@ def test_btli_repository_allowlist_is_limited():
 
 def test_github_owner_scanner_ignores_documentation_host_paths():
     assert _unexpected_github_repositories("https://docs.github.com/en/actions/learn") == []
+
+
+def test_github_owner_scanner_catches_bare_owner_links():
+    owner_link = "https://github.com/" + "acme-corp"
+    assert _unexpected_github_repositories(owner_link) == [("acme-corp", "")]
 
 
 @pytest.mark.parametrize(
@@ -280,6 +288,36 @@ def test_action_sha_gate_validates_yaml_scalar(tmp_path: Path, monkeypatch, key_
     (workflow_dir / "ci.yml").write_text(f"jobs:\n  checks:\n    steps:\n{allowed}\n")
     test_actions_pinned_to_sha()
     (workflow_dir / "ci.yml").write_text(f"jobs:\n  checks:\n    steps:\n{unpinned}\n")
+    with pytest.raises(AssertionError):
+        test_actions_pinned_to_sha()
+
+
+@pytest.mark.parametrize("reference", ["docker://alpine:latest", "docker://alpine"])
+def test_action_sha_gate_rejects_mutable_docker_references(
+    tmp_path: Path, monkeypatch, reference: str
+):
+    root = tmp_path / "workflow"
+    workflow_dir = root / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text(
+        f"jobs:\n  checks:\n    steps:\n      - uses: {reference}\n"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", root)
+    with pytest.raises(AssertionError):
+        test_actions_pinned_to_sha()
+
+
+def test_action_sha_gate_does_not_use_a_separate_comment_for_pin(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workflow"
+    workflow_dir = root / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    pin = "0123456789abcdef0123456789abcdef01234567"
+    (workflow_dir / "ci.yml").write_text(
+        "jobs:\n  checks:\n    steps:\n"
+        f"      - uses: actions/checkout@{pin}\n"
+        f"        # uses: actions/checkout@{pin} # v1.0.0\n"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", root)
     with pytest.raises(AssertionError):
         test_actions_pinned_to_sha()
 

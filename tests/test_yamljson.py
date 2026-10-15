@@ -1,5 +1,8 @@
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
+import agent_repo.yamljson as yamljson
 import pytest
 from agent_repo.yamljson import YamlError, load_yaml
 
@@ -30,3 +33,28 @@ def test_path_starting_with_dash_is_read_as_a_file(tmp_path: Path, monkeypatch: 
     path.write_text("value: safe\n")
     monkeypatch.chdir(tmp_path)
     assert load_yaml(Path("-x.yml")) == {"value": "safe"}
+
+
+def test_missing_yaml_path_is_rejected_as_not_a_file(tmp_path: Path):
+    with pytest.raises(YamlError, match="not a regular file"):
+        load_yaml(tmp_path / "missing.yml")
+
+
+def test_yq_uses_explicit_file_expression_and_closed_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "workflow.yml"
+    path.write_text("value: safe\n")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        stdout = "yq version v4.54.1" if command[-1] == "--version" else '{"value":"safe"}'
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(yamljson.shutil, "which", lambda _: "/usr/bin/yq")
+    monkeypatch.setattr(yamljson.subprocess, "run", run)
+    assert load_yaml(path) == {"value": "safe"}
+    command, kwargs = calls[1]
+    assert command == ["/usr/bin/yq", "-o=json", "eval", ".", str(path.resolve())]
+    assert kwargs["stdin"] == subprocess.DEVNULL

@@ -10,12 +10,19 @@ class YamlError(Exception):
 
 
 def load_yaml(path: Path) -> object:
+    if not path.is_file():
+        raise YamlError(f"not a regular file: {path}")
     binary = shutil.which("yq")
     if binary is None:
         raise YamlError("yq v4 is required to read YAML")
     try:
         version = subprocess.run(
-            [binary, "--version"], capture_output=True, text=True, check=False, timeout=10
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise YamlError("yq v4 is required to read YAML") from exc
@@ -23,10 +30,11 @@ def load_yaml(path: Path) -> object:
         raise YamlError("yq v4 is required to read YAML")
     try:
         result = subprocess.run(
-            [binary, "-o=json", str(path.resolve())],
+            [binary, "-o=json", "eval", ".", str(path.resolve())],
             capture_output=True,
             text=True,
             check=False,
+            stdin=subprocess.DEVNULL,
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

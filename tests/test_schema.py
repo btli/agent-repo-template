@@ -24,6 +24,11 @@ def test_enum_const_type_and_pattern_mismatches_each_give_one_error():
         assert len(validate(instance, schema)) == 1
 
 
+def test_anchored_pattern_rejects_trailing_newline():
+    fix = load_schema("fix")
+    assert validate("a" * 40 + "\n", fix["properties"]["base_sha"])
+
+
 def test_const_and_enum_use_json_type_equality():
     decision = load_schema("decision")
     artifact = {
