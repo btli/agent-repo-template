@@ -47,6 +47,8 @@ class API:
             return 200, {}, b"{}"
         if path.endswith("/comments"):
             value = self.comments
+        elif path == "contents/MAINTAINERS":
+            return 404, {}, b"{}"
         elif path.endswith("/permission"):
             value = {"role_name": "write"}
         else:
@@ -396,6 +398,72 @@ def test_off_requires_gate_authorization(authorized, tmp_path):
         assert "agent:off" not in str(api.writes)
 
 
+@pytest.mark.parametrize(
+    "body,sender,bot,listed,expected",
+    [
+        ("/agent off\nthanks", "octocat", False, False, True),
+        ("\n /agent\toff \nthanks", "octocat", False, False, True),
+        ("/agent off", "OctoCat", False, True, True),
+        ("thanks\n/agent off", "octocat", False, False, False),
+        ("/agent off", "automation[BOT]", False, True, False),
+        ("/agent off", "octocat", True, True, False),
+        ("/agent off", "outsider", False, False, False),
+    ],
+    ids=[
+        "trailing-text",
+        "first-nonblank",
+        "maintainer",
+        "not-first",
+        "bot-login",
+        "bot-type",
+        "outsider",
+    ],
+)
+def test_off_rechecks_first_line_and_trusted_maintainers(
+    body, sender, bot, listed, expected, tmp_path
+):
+    import base64
+
+    api = API()
+    original = api.transport
+    refs = []
+
+    def transport(request, timeout):
+        path = urlparse(request.full_url).path
+        if path.endswith("/contents/MAINTAINERS"):
+            refs.append(urlparse(request.full_url).query)
+            content = (
+                f"# Trusted operators\n {sender.swapcase()} # on call\n"
+                if listed
+                else "someone-else\n"
+            )
+            value = {"encoding": "base64", "content": base64.b64encode(content.encode()).decode()}
+            return 200, {}, json.dumps(value).encode()
+        if path.endswith("/permission") and (listed or sender == "outsider"):
+            return 404, {}, b"{}"
+        return original(request, timeout)
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    ctx = context(api, off=True)
+    ctx = replace(
+        ctx,
+        event=replace(
+            ctx.event, name="issue_comment", comment_body=body, sender=sender, sender_is_bot=bot
+        ),
+    )
+    run(decision(), ctx, api, tmp_path)
+    if expected:
+        assert len(api.writes) == 1 and api.writes[0][1] == "issues/7/comments"
+        assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
+        if listed:
+            assert refs == ["ref=" + ctx.base_sha]
+    else:
+        assert not api.comments
+        assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    if refs:
+        assert all(ref == "ref=" + ctx.base_sha for ref in refs)
+
+
 def test_live_comments_have_trusted_marker(tmp_path):
     api = API()
     data = decision()
@@ -461,7 +529,22 @@ def test_invalid_mode_never_writes(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "scenario", ["scan-key", "token-literal", "token-base64", "moved-head", "mismatched-sha"]
+    "scenario",
+    [
+        "scan-key",
+        "token-literal",
+        "token-base64",
+        "moved-head",
+        "mismatched-sha",
+        "deep-json",
+        "memory-json",
+        "event-pull_request",
+        "event-pull_request_target",
+        "event-workflow_run",
+        "event-push",
+        "event-pull_request_review",
+        "event-comment-pr",
+    ],
 )
 def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tmp_path):
     import base64
@@ -479,22 +562,42 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
         "token-base64": base64.b64encode(token.encode()).decode(),
         "moved-head": "Please supply versions.",
         "mismatched-sha": "Please supply versions.",
-    }[scenario]
+    }.get(scenario, "Please supply versions.")
     data["needs_info"] = {"text": text}
     if scenario == "mismatched-sha":
         data["base_sha"] = "b" * 40
-    head_sha = "b" * 40 if scenario in {"moved-head", "mismatched-sha"} else "a" * 40
     artifact = tmp_path / "decision.json"
-    artifact.write_text(json.dumps(data))
+    artifact.write_text(
+        "[" * 200_000 + "]" * 200_000 if scenario == "deep-json" else json.dumps(data)
+    )
+    if scenario == "memory-json":
+        original_loads = json.loads
+        artifact_text = artifact.read_text()
+
+        def loads(text, *args, **kwargs):
+            if text == artifact_text:
+                raise MemoryError
+            return original_loads(text, *args, **kwargs)
+
+        monkeypatch.setattr("agent_repo.commands.apply.json.loads", loads)
+    event_name = "issues"
+    event_path = Path("tests/fixtures/events/issues.opened.json").resolve()
+    if scenario.startswith("event-"):
+        event_name = scenario.removeprefix("event-")
+        payload = json.loads(event_path.read_text())
+        payload["pull_request"] = payload["issue"].copy()
+        if event_name == "comment-pr":
+            event_name = "issue_comment"
+            payload["issue"]["pull_request"] = {}
+        event_path = tmp_path / "event.json"
+        event_path.write_text(json.dumps(payload))
     summary = tmp_path / "summary.md"
     original = api.transport
     policy_refs = []
 
     def transport(request, timeout):
         path = urlparse(request.full_url).path
-        if path.endswith("/git/ref/heads/main"):
-            value = {"object": {"sha": head_sha}}
-        elif "/contents/.agents/" in path:
+        if "/contents/.agents/" in path:
             policy_refs.append(urlparse(request.full_url).query)
             name = path.rsplit("/", 1)[-1]
             source = (
@@ -513,8 +616,8 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
     api.gh = GitHub(token, "your-org/project", transport=transport)
     monkeypatch.setattr("agent_repo.commands.apply.GitHub", lambda token, repo: api.gh)
     for name, value in {
-        "GITHUB_EVENT_NAME": "issues",
-        "GITHUB_EVENT_PATH": str(Path("tests/fixtures/events/issues.opened.json").resolve()),
+        "GITHUB_EVENT_NAME": event_name,
+        "GITHUB_EVENT_PATH": str(event_path),
         "GITHUB_RUN_ID": "run-1",
         "GITHUB_SHA": "a" * 40,
         "GITHUB_STEP_SUMMARY": str(summary),
@@ -524,6 +627,10 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
         "AGENT_CANARY": secrets.token_hex(20),
     }.items():
         monkeypatch.setenv(name, value)
+    if scenario.startswith("event-"):
+        assert main([str(artifact)]) == 1
+        assert not api.calls, "unsupported event reached the GitHub API"
+        return
     assert main([str(artifact)]) == 0
     if scenario == "moved-head":
         assert len(api.comments) == 1, "workflow-pinned artifact was rejected after a push"
@@ -538,13 +645,21 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
             for method, _, body in api.writes
         )
         assert api.writes, "maintainer fallback was omitted"
-        expected_alert = "identity mismatch" if scenario == "mismatched-sha" else "Outbound scan"
+        expected_alert = (
+            "invalid schema"
+            if scenario in {"deep-json", "memory-json"}
+            else "identity mismatch"
+            if scenario == "mismatched-sha"
+            else "Outbound scan"
+        )
         assert expected_alert in summary.read_text()
     assert policy_refs and all(query == "ref=" + "a" * 40 for query in policy_refs)
     assert key not in summary.read_text(), "credential echoed"
     assert token not in summary.read_text(), "installation token echoed"
     if scenario == "moved-head":
         return
+    if scenario == "memory-json":
+        monkeypatch.setattr("agent_repo.commands.apply.json.loads", original_loads)
     data["base_sha"] = "a" * 40
     data["needs_info"]["text"] = "Please supply versions."
     artifact.write_text(json.dumps(data))

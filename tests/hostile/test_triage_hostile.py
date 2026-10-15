@@ -143,17 +143,47 @@ def test_json_escaping_cannot_hide_scan_key(tmp_path):
     assert key not in summary, "credential echoed"
 
 
-@pytest.mark.parametrize("source", ["labels", "suggestions"])
-def test_high_priority_proposal_requires_maintainer_even_with_conflicting_answer(source):
+@pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
+@pytest.mark.parametrize(
+    "source,priority",
+    [
+        (source, value)
+        for source in ("labels", "suggested-labels", "answer")
+        for value in ("p0", "P1 ", "priority:P0", "P4")
+    ]
+    + [("suggested-priority", "P0"), ("suggested-priority", "P1")]
+    + [("answer", "urgent"), ("answer", None)],
+)
+def test_high_priority_proposal_requires_maintainer_even_with_conflicting_answer(
+    source, priority, kind, tmp_path
+):
+    from agent_repo.apply.actions import check_identity
+
+    api = API()
+    ctx = context(api, enabled=True)
     data = decision()
     if source == "labels":
-        data["labels"].append("P0")
+        data["labels"].append(priority)
+    elif source == "suggested-labels":
+        data["suggestions"]["labels"].append(priority)
+    elif source == "suggested-priority":
+        data["suggestions"]["priority"] = priority
     else:
-        data["suggestions"]["priority"] = "P0"
-    actions = plan(data, context())
-    assert "P0" not in labels(actions)
-    assert "P0" in bodies(actions)
-    assert "needs-maintainer" in labels(actions)
+        data["answers"]["priority"]["value"] = priority
+    data["close"] = closing(kind)
+    assert not check_identity(data, ctx, "decision"), "test artifact must be valid"
+    actions = plan(data, ctx)
+    assert labels(actions) == {"needs-maintainer"}
+    assert not any(action.kind == "close" for action in actions)
+    text = bodies(actions)
+    normalized = priority.strip().casefold().removeprefix("priority:") if priority else ""
+    if normalized in {"p0", "p1"}:
+        assert f"Suggested priority: {normalized.upper()}." in text
+    assert "Closing:" not in text and "Suggested closure" not in text
+    run(data, ctx, api, tmp_path)
+    assert api.issue_state == "open"
+    assert api.labels == ["needs-maintainer"]
+    assert not any(method == "PATCH" for method, _, _ in api.writes)
 
 
 @pytest.mark.parametrize(
