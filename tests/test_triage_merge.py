@@ -204,8 +204,10 @@ def test_missing_taxonomy_escalates(decision):
 @pytest.fixture
 def action(monkeypatch, tmp_path, decision):
     import importlib.util
+    import os
     import subprocess
 
+    monkeypatch.setattr(os, "environ", {"PATH": os.environ["PATH"], "HOME": str(tmp_path)})
     root = tmp_path / "repo"
     root.mkdir()
     runner_temp = tmp_path / "runner"
@@ -449,10 +451,39 @@ def test_invalid_taxonomy_fails_closed(action, context):
     assert json.loads(action["output"].read_text())["escalate"]["to"] == "maintainer"
 
 
-def test_ambiguous_short_credential_fails_closed(action, monkeypatch):
-    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
-    assert action["module"].main() == 1
-    assert not action["output"].exists()
+@pytest.mark.parametrize(
+    "name",
+    ["TOKENIZERS_PARALLELISM", "SSH_AUTH_SOCK", "KEYBOARD_LAYOUT", "SECRETARY", "PASSWORDLESS"],
+)
+def test_noncredential_names_do_not_trigger_scan(action, monkeypatch, name):
+    monkeypatch.setenv(name, "false")
+    assert action["module"].main() == 0
+    assert json.loads(action["output"].read_text())["escalate"] is None
+
+
+def test_action_fixture_excludes_ambient_credentials(monkeypatch, request):
+    import os
+
+    monkeypatch.setenv("AMBIENT_TOKEN", "false")
+    action = request.getfixturevalue("action")
+    assert "AMBIENT_TOKEN" not in os.environ
+    assert action["module"].main() == 0
+
+
+def test_runner_metadata_does_not_escalate(action, monkeypatch):
+    import os
+
+    for name, value in {
+        "PATH": os.environ["PATH"],
+        "SSH_AUTH_SOCK": "false",
+        "SOME_RUNNER_AUTH": "1",
+        "CACHE_KEY": "v1",
+        "FOO_TOKEN": "x",
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert action["module"].main() == 0
+    assert action["calls"]
+    assert json.loads(action["output"].read_text())["escalate"] is None
 
 
 @pytest.mark.parametrize(
@@ -606,8 +637,25 @@ def test_additional_credentials_are_redacted_and_scanned(
     "name,value",
     [("GH_PAT", "x"), ("DATABASE_URL", urlunsplit(("postgres", "a:x@db", "", "", "")))],
 )
-def test_ambiguous_discovered_credentials_fail_closed(action, monkeypatch, name, value):
+def test_incidental_short_credentials_do_not_escalate(action, monkeypatch, name, value):
     monkeypatch.setenv(name, value)
+    assert action["module"].main() == 0
+    assert action["calls"]
+    assert json.loads(action["output"].read_text())["escalate"] is None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ROLE_KEY",
+        "LLM_API_KEY",
+        "GITHUB_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    ],
+)
+def test_explicit_short_credentials_still_fail_closed(action, monkeypatch, name):
+    monkeypatch.setenv(name, "x")
     assert action["module"].main() == 1
     assert not action["calls"]
     assert not action["output"].exists()
