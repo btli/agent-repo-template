@@ -52,6 +52,29 @@ def test_wrapper_rejects_existing_outside_root(tools):
     assert "protected-sentinel" not in str(error.value)
 
 
+@pytest.mark.parametrize("name", ["read_repo_file", "grep_repo"])
+@pytest.mark.parametrize("failure", ["binding", "refused", "unexpected"])
+def test_tool_errors_are_fixed_text(tools, monkeypatch, name, failure):
+    import inspect
+
+    from agent_repo.repo_tools import ToolError
+
+    tool = tools[name]
+    arguments = {"path": "missing"} if name == "read_repo_file" else {"pattern": "."}
+    if failure == "binding":
+        arguments["untrusted" * 10000] = True
+    else:
+
+        def fail(_):
+            error = ToolError if failure == "refused" else RuntimeError
+            raise error("untrusted" * 10000)
+
+        monkeypatch.setitem(inspect.unwrap(tool).__globals__, "repository_reader", fail)
+    with pytest.raises(ToolError, match="^repository tool failed$") as error:
+        tool(**arguments)
+    assert error.value.__suppress_context__
+
+
 def tool_process(name, *args, protocol=False):
     code = """import importlib.util,json,os,sys,types
 stub=types.ModuleType('omnigent_client.tools');stub.tool=lambda fn:fn
