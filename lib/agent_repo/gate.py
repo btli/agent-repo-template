@@ -248,10 +248,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     if command is not None and command.name == "agent-off":
         return result(True, "agent-off")
 
-    repository = _mapping(gh.request("GET", f"/repos/{event.repo}"))
-    if repository["full_name"].casefold() != event.repo.casefold():
-        raise ValueError("invalid repository")
-    repository_id = repository["id"]
+    repository_id = _mapping(gh.request("GET", f"/repos/{event.repo}"))["id"]
     limits = ctx.config.raw["limits"]
     if ctx.workflow == "triage":
         prior = 0
@@ -273,7 +270,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
             source = _mapping(gh.request("GET", f"actions/runs/{run['id']}"))
             if source["path"] != workflow_path:
                 continue
-            # Expired markers prove execution; the lifetime cap holds while GitHub lists them.
+            # Expired markers prove execution; the cap holds only for the marker retention window.
             prior += 1
             started = _timestamp(artifact["created_at"])
             latest = max(latest, started) if latest else started
