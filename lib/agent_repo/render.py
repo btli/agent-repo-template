@@ -2,7 +2,12 @@ import re
 
 
 def neutralize(text: str, max_len: int) -> str:
-    text = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.DOTALL)
+    while True:
+        stripped = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.DOTALL)
+        if stripped == text:
+            break
+        text = stripped
+    text = text.replace("<!--", "&lt;!--").replace("-->", "--&gt;")
     return text.replace("@", "@\u200b")[: max(0, max_len)]
 
 

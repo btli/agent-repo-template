@@ -38,3 +38,11 @@ def test_cap_is_applied(limit):
 
     assert len(neutralize("@octocat" * 50, limit)) <= max(0, limit)
     assert len("\n".join(fenced("x" * 100, limit).splitlines()[1:-1])) <= max(0, limit)
+
+
+def test_unmatched_comment_closer_is_neutralized():
+    from agent_repo.render import neutralize
+
+    result = neutralize("report --> pending", 100)
+    assert "-->" not in result
+    assert "report" in result and "pending" in result

@@ -1,3 +1,4 @@
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,7 +56,21 @@ def check_identity(artifact: dict, ctx: ApplyContext, schema: str) -> list[str]:
 
 def _summary(path: Path, actions: list[Action], mode: str, alerts: list[str]) -> None:
     lines = [f"Apply ({'live' if mode == 'live' else 'dry-run'})"]
-    lines.extend(f"- Planned: {action.kind}" for action in actions)
+    for action in actions:
+        payload = action.payload
+        details = {"target": payload["number"]}
+        if action.kind in {"add_labels", "remove_labels"}:
+            details["labels"] = payload["labels"]
+        elif action.kind == "assign":
+            details["assignees"] = payload["assignees"]
+        elif action.kind == "comment":
+            details["body_chars"] = len(payload["body"])
+        elif action.kind == "close":
+            duplicate_target = payload.get("duplicate_target")
+            details["kind"] = "duplicate" if duplicate_target is not None else "out_of_scope"
+            if duplicate_target is not None:
+                details["duplicate_target"] = duplicate_target
+        lines.append(f"- Planned: {action.kind} {json.dumps(details, sort_keys=True)}")
     lines.extend(f"- ALERT: {alert}" for alert in alerts)
     with path.open("a", encoding="utf-8") as stream:
         stream.write("\n".join(lines) + "\n")
