@@ -2,6 +2,44 @@ import fnmatch
 import re
 from dataclasses import dataclass
 
+# https://docs.github.com/actions/reference/runners/github-hosted-runners
+# https://docs.github.com/actions/reference/runners/larger-runners
+HOSTED_RUNNERS = frozenset(
+    {
+        "ubuntu-latest",
+        "ubuntu-22.04",
+        "ubuntu-24.04",
+        "ubuntu-26.04",
+        "ubuntu-22.04-arm",
+        "ubuntu-24.04-arm",
+        "ubuntu-26.04-arm",
+        "ubuntu-slim",
+        "windows-latest",
+        "windows-2022",
+        "windows-2025",
+        "windows-2025-vs2026",
+        "windows-11-arm",
+        "windows-11-vs2026-arm",
+        "macos-latest",
+        "macos-14",
+        "macos-15",
+        "macos-26",
+        "macos-15-intel",
+        "macos-26-intel",
+        "macos-latest-large",
+        "macos-14-large",
+        "macos-15-large",
+        "macos-26-large",
+        "macos-latest-xlarge",
+        "macos-14-xlarge",
+        "macos-15-xlarge",
+        "macos-26-xlarge",
+        "xcode-27",
+        "xcode-27-xlarge",
+    }
+)
+TARGET_EVENTS = frozenset({"pull_request_target", "issue_comment"})
+
 
 @dataclass(frozen=True)
 class Exposure:
@@ -130,12 +168,27 @@ def _reachable(events: dict, ctx: PreflightContext) -> bool:
         "schedule",
         "workflow_dispatch",
         "issues",
-        "issue_comment",
         "release",
         "delete",
         "workflow_call",
         "workflow_run",
+        "repository_dispatch",
+        "label",
+        "milestone",
+        "discussion",
+        "discussion_comment",
+        "gollum",
+        "page_build",
+        "watch",
+        "fork",
+        "public",
+        "registry_package",
+        "project",
+        "project_card",
+        "project_column",
+        "branch_protection_rule",
     }
+    # Merge/check/status/deployment events can follow agent work and remain reachable.
     reachable = False
     for event, config in events.items():
         if event == "push":
@@ -144,7 +197,7 @@ def _reachable(events: dict, ctx: PreflightContext) -> bool:
         elif event in {"pull_request", "pull_request_review", "pull_request_review_comment"}:
             if _branches(config, ctx.default_branch, glob=False):
                 reachable = True
-        elif event not in independent:
+        elif event not in independent and event not in TARGET_EVENTS:
             reachable = True
     return reachable
 
@@ -229,10 +282,7 @@ def _hosted(runner: object) -> bool:
         if len(runner) != 1:
             return False
         runner = runner[0]
-    return (
-        isinstance(runner, str)
-        and re.fullmatch(r"(?:ubuntu|windows|macos)-[A-Za-z0-9][A-Za-z0-9.-]*", runner) is not None
-    )
+    return isinstance(runner, str) and runner in HOSTED_RUNNERS
 
 
 def _context(value: str) -> str:
@@ -240,59 +290,102 @@ def _context(value: str) -> str:
     return re.sub(r"\s*\.\s*", ".", value).lower()
 
 
-def _target_unsafe(steps: list, ctx: PreflightContext) -> bool:
-    for step in steps:
-        for value in _strings(step):
-            if re.search(
-                r"github\.head_ref\b|github\.event\.pull_request\.(?:head\w*|merge_commit_sha\b)"
-                r"|\b(?:refs/)?pull/|\bgh\s+pr\s+checkout\b",
-                _context(value),
-            ):
-                return True
+def _checkout_input_safe(value: object, key: str, ctx: PreflightContext) -> bool:
+    if value is None or value == "":
+        return True
+    if not isinstance(value, str):
+        return False
+    if key == "ref" and value in {ctx.default_branch, f"refs/heads/{ctx.default_branch}"}:
+        return True
+    expression = re.fullmatch(r"\s*\$\{\{(.*?)\}\}\s*", value, re.DOTALL)
+    if expression is None:
+        return False
+    safe_contexts = {
+        "ref": {
+            "github.sha",
+            "github.ref",
+            "github.ref_name",
+            "github.base_ref",
+            "github.event.pull_request.base.ref",
+            "github.event.pull_request.base.sha",
+            "github.event.repository.default_branch",
+        },
+        "repository": {
+            "github.repository",
+            "github.event.repository.full_name",
+            "github.event.pull_request.base.repo.full_name",
+        },
+    }
+    return _context(expression[1]).strip() in safe_contexts[key]
+
+
+def _target_unsafe(job: dict, workflow: dict, ctx: PreflightContext) -> bool:
+    for value in _strings([job, workflow.get("env"), workflow.get("defaults")]):
+        if re.search(
+            r"github\.head_ref\b|github\.event\.pull_request\.(?:head\w*|merge_commit_sha\b)"
+            r"|context\.payload\.pull_request\.head\w*"
+            r"|tojson\s*\(\s*github\.event\.pull_request\s*\)"
+            r"|/(?:tarball|zipball)(?:/|\b)|\b(?:refs/)?pull/|\bgh\s+pr\s+checkout\b",
+            _context(value),
+        ):
+            return True
+    for step in _steps(job):
         if any(
             re.search(r"github\.event\.pull_request\.(?:title|body)\b", _context(value))
             for value in _strings(step.get("run"))
         ):
             return True
         if str(step.get("uses", "")).lower().startswith("actions/checkout@"):
-            inputs = step.get("with", {})
+            inputs = step.get("with")
+            if inputs is None:
+                inputs = {}
             if not isinstance(inputs, dict):
                 return True
-            safe_refs = {
-                ctx.default_branch,
-                f"refs/heads/{ctx.default_branch}",
-                "${{ github.sha }}",
-                "${{ github.ref }}",
-                "${{ github.ref_name }}",
-                "${{ github.base_ref }}",
-                "${{ github.event.pull_request.base.ref }}",
-                "${{ github.event.pull_request.base.sha }}",
-                "${{ github.event.repository.default_branch }}",
-            }
-            safe_repos = {
-                "${{ github.repository }}",
-                "${{ github.event.repository.full_name }}",
-                "${{ github.event.pull_request.base.repo.full_name }}",
-            }
-            for key, allowed in (("ref", safe_refs), ("repository", safe_repos)):
-                if key in inputs and (
-                    not isinstance(inputs[key], str) or inputs[key] not in allowed
-                ):
+            for key in ("ref", "repository"):
+                if not _checkout_input_safe(inputs.get(key), key, ctx):
                     return True
     return False
 
 
 def _downstream_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
-    if writes or _secrets(job) or _secrets(workflow.get("env")):
+    steps = _steps(job)
+    executable = [
+        workflow.get("env"),
+        workflow.get("defaults"),
+        job.get("env"),
+        job.get("defaults"),
+        job.get("with"),
+        {"secrets": job.get("secrets")},
+        [
+            {
+                key: step[key]
+                for key in ("uses", "run", "with", "env", "shell", "working-directory")
+                if key in step
+            }
+            for step in steps
+        ],
+    ]
+    if writes or _secrets(executable):
         return True
-    return any(
-        re.search(
-            r"github\.event\.workflow_run\.head_\w+|\bgh\s+run\s+download\b"
-            r"|/artifacts\b|actions/artifacts\b|download",
-            _context(value),
-        )
-        for value in _strings([job, workflow.get("env")])
-    )
+    if any(
+        re.search(r"github\.event\.workflow_run\.head_\w+", _context(value))
+        for value in _strings(executable)
+    ):
+        return True
+    for step in steps:
+        uses = step.get("uses", "")
+        if isinstance(uses, str) and "download" in uses.split("@")[0].lower():
+            return True
+        run = step.get("run", "")
+        if not isinstance(run, str):
+            return True
+        if re.search(r"\bgh\s+run\s+download\b", run):
+            return True
+        if re.search(r"\b(?:gh\s+api|curl|wget)\b", run) and re.search(
+            r"actions/(?:runs/[^/\s]+/)?artifacts\b", run
+        ):
+            return True
+    return False
 
 
 def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposure]:
@@ -341,19 +434,22 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 or not all(isinstance(pattern, str) for pattern in patterns)
             ):
                 raise ValueError("invalid workflow_run names")
+            if not _branches(config, "agent/**", glob=True):
+                continue
             if path not in downstream and any(
                 fnmatch.fnmatchcase(name, pattern) for name in names for pattern in patterns
             ):
                 downstream.add(path)
                 changed = True
+    targets = {path for path in parsed if TARGET_EVENTS.intersection(triggers[path])}
     pending = [
-        (path, None, path in downstream, "pull_request_target" in triggers[path])
-        for path in sorted(reachable | downstream)
+        (path, None, path in downstream, path in targets, path in reachable, (path,))
+        for path in sorted(reachable | downstream | targets)
     ]
     seen = set()
     while pending:
-        path, ceiling, is_downstream, is_target = pending.pop()
-        state = (path, ceiling, is_downstream, is_target)
+        path, ceiling, is_downstream, is_target, is_reachable, active = pending.pop()
+        state = (path, ceiling, is_downstream, is_target, is_reachable)
         if state in seen:
             continue
         seen.add(state)
@@ -362,23 +458,24 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             if not _enabled(job):
                 continue
             rules = set()
-            steps = _steps(job)
+            _steps(job)
             writes = _effective(job, workflow, ceiling, ctx)
             if is_downstream:
                 if _downstream_unsafe(job, workflow, writes):
                     rules.add("workflow_run")
-            else:
+            elif is_reachable:
                 if writes - {"id-token"}:
                     rules.add("permissions")
                 if "id-token" in writes:
                     rules.add("id-token")
-            if is_target and _target_unsafe(steps, ctx):
+            if is_target and _target_unsafe(job, workflow, ctx):
                 rules.add("pull_request_target")
             environment = job.get("environment")
             if isinstance(environment, dict):
                 environment = environment.get("name")
             if (
-                not is_downstream
+                is_reachable
+                and not is_downstream
                 and environment not in ctx.safe_environments
                 and (_secrets(job) or _secrets(workflow.get("env")))
             ):
@@ -393,9 +490,13 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 callee = match[1] if match else None
                 if callee not in parsed or "workflow_call" not in triggers[callee]:
                     rules.add("reusable_workflow")
+                elif callee in active:
+                    rules.add("reusable_workflow")
                 else:
-                    pending.append((callee, writes, is_downstream, is_target))
-            elif not _hosted(job.get("runs-on")):
+                    pending.append(
+                        (callee, writes, is_downstream, is_target, is_reachable, (*active, callee))
+                    )
+            elif (is_reachable or is_downstream) and not _hosted(job.get("runs-on")):
                 rules.add("runner")
             for rule in rules:
                 findings.add((path, name, rule))

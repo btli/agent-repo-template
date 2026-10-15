@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "macos-15-intel",
+        "steps": [
+          {
+            "run": "true"
+          }
+        ]
+      }
+    }
+  }
+}

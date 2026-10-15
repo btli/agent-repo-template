@@ -1,0 +1,18 @@
+{
+  "ci.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": [
+          "windows-builder"
+        ],
+        "steps": [
+          {
+            "run": "true"
+          }
+        ]
+      }
+    }
+  }
+}

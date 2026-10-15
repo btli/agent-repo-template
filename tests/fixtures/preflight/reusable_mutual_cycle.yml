@@ -1,0 +1,23 @@
+{
+  "a.yml": {
+    "on": [
+      "push",
+      "workflow_call"
+    ],
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/b.yml"
+      }
+    }
+  },
+  "b.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/a.yml"
+      }
+    }
+  }
+}

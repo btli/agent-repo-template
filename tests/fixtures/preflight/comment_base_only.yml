@@ -1,0 +1,21 @@
+{
+  "ci.yml": {
+    "on": "issue_comment",
+    "permissions": {
+      "contents": "write"
+    },
+    "env": {
+      "TOKEN": "${{ secrets.NPM_TOKEN }}"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "true"
+          }
+        ]
+      }
+    }
+  }
+}

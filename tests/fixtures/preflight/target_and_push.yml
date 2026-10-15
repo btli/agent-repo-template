@@ -1,0 +1,21 @@
+{
+  "ci.yml": {
+    "on": [
+      "pull_request_target",
+      "push"
+    ],
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "true"
+          }
+        ]
+      }
+    }
+  }
+}

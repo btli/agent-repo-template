@@ -225,7 +225,7 @@ def test_action_runs_command(tmp_path, monkeypatch):
     assert output.read_text() == "pass=false\n"
 
 
-REVIEW_CASES = [
+SCENARIO_CASES = [
     ("custom_runner", [("ci.yml", "check", "runner")]),
     ("custom_list", [("ci.yml", "check", "runner")]),
     ("mixed_runner", [("ci.yml", "check", "runner")]),
@@ -275,7 +275,10 @@ REVIEW_CASES = [
     ("reuse_remote", [("caller.yml", "call", "reusable_workflow")]),
     ("reuse_missing", [("caller.yml", "call", "reusable_workflow")]),
     ("reuse_nested", [("last.yml", "check", "runner")]),
-    ("reuse_cycle", [("callee.yml", "check", "runner")]),
+    (
+        "reuse_cycle",
+        [("callee.yml", "check", "runner"), ("callee.yml", "call", "reusable_workflow")],
+    ),
     (
         "reuse_inherit",
         [("callee.yml", "check", "permissions"), ("caller.yml", "call", "permissions")],
@@ -306,12 +309,111 @@ REVIEW_CASES = [
 ]
 
 
+SCENARIO_CASES += [
+    ("private_ubuntu_gpu", [("ci.yml", "check", "runner")]),
+    ("private_ubuntu_gpu_list", [("ci.yml", "check", "runner")]),
+    ("private_ubuntu_internal", [("ci.yml", "check", "runner")]),
+    ("private_ubuntu_internal_list", [("ci.yml", "check", "runner")]),
+    ("private_windows_builder", [("ci.yml", "check", "runner")]),
+    ("private_windows_builder_list", [("ci.yml", "check", "runner")]),
+    ("private_macos_internal", [("ci.yml", "check", "runner")]),
+    ("private_macos_internal_list", [("ci.yml", "check", "runner")]),
+    ("published_ubuntu_latest", []),
+    ("published_ubuntu_22_04", []),
+    ("published_ubuntu_24_04", []),
+    ("published_ubuntu_26_04", []),
+    ("published_ubuntu_22_04_arm", []),
+    ("published_ubuntu_24_04_arm", []),
+    ("published_ubuntu_26_04_arm", []),
+    ("published_ubuntu_slim", []),
+    ("published_windows_latest", []),
+    ("published_windows_2022", []),
+    ("published_windows_2025", []),
+    ("published_windows_2025_vs2026", []),
+    ("published_windows_11_arm", []),
+    ("published_windows_11_vs2026_arm", []),
+    ("published_macos_latest", []),
+    ("published_macos_14", []),
+    ("published_macos_15", []),
+    ("published_macos_26", []),
+    ("published_macos_15_intel", []),
+    ("published_macos_26_intel", []),
+    ("published_macos_latest_large", []),
+    ("published_macos_14_large", []),
+    ("published_macos_15_large", []),
+    ("published_macos_26_large", []),
+    ("published_macos_latest_xlarge", []),
+    ("published_macos_14_xlarge", []),
+    ("published_macos_15_xlarge", []),
+    ("published_macos_26_xlarge", []),
+    ("published_xcode_27", []),
+    ("published_xcode_27_xlarge", []),
+    ("target_job_env", [("ci.yml", "check", "pull_request_target")]),
+    ("target_workflow_env", [("ci.yml", "check", "pull_request_target")]),
+    ("target_job_defaults", [("ci.yml", "check", "pull_request_target")]),
+    ("target_workflow_defaults", [("ci.yml", "check", "pull_request_target")]),
+    ("target_github_script", [("ci.yml", "check", "pull_request_target")]),
+    ("target_json_payload", [("ci.yml", "check", "pull_request_target")]),
+    ("target_tarball", [("ci.yml", "check", "pull_request_target")]),
+    ("target_zipball", [("ci.yml", "check", "pull_request_target")]),
+    ("comment_head_checkout", [("ci.yml", "check", "pull_request_target")]),
+    ("base_labeler_read", []),
+    ("base_labeler_write", []),
+    ("checkout_null_with", []),
+    ("checkout_empty_ref", []),
+    ("checkout_null_ref", []),
+    ("checkout_empty_repository", []),
+    ("checkout_null_repository", []),
+    ("checkout_bracket_base", []),
+    ("checkout_whitespace_base", []),
+    ("checkout_bracket_repository", []),
+    ("artifact_plain", []),
+    ("artifact_display_name", []),
+    ("artifact_echo_downloads", []),
+    ("artifact_display_head", []),
+    ("artifact_main", []),
+    ("artifact_ignore_agent", []),
+    ("artifact_agent", [("down.yml", "check", "workflow_run")]),
+    ("artifact_ignore_main", [("down.yml", "check", "workflow_run")]),
+    ("reusable_mutual_cycle", [("b.yml", "call", "reusable_workflow")]),
+    ("reusable_self_cycle", [("a.yml", "call", "reusable_workflow")]),
+    ("reusable_diamond", []),
+    ("independent_repository_dispatch", []),
+    ("independent_label", []),
+    ("independent_milestone", []),
+    ("independent_discussion", []),
+    ("independent_discussion_comment", []),
+    ("independent_gollum", []),
+    ("independent_page_build", []),
+    ("independent_watch", []),
+    ("independent_fork", []),
+    ("independent_public", []),
+    ("independent_registry_package", []),
+    ("independent_project", []),
+    ("independent_project_card", []),
+    ("independent_project_column", []),
+    ("independent_branch_protection_rule", []),
+    ("completion_merge_group", [("ci.yml", "check", "secrets")]),
+    ("completion_check_suite", [("ci.yml", "check", "secrets")]),
+    ("completion_check_run", [("ci.yml", "check", "secrets")]),
+    ("completion_status", [("ci.yml", "check", "secrets")]),
+    ("completion_deployment_status", [("ci.yml", "check", "secrets")]),
+    ("disabled_apply", []),
+]
+
+
+SCENARIO_CASES += [
+    ("comment_base_only", []),
+    ("target_and_push", [("ci.yml", "check", "permissions")]),
+]
+
+
 @pytest.mark.parametrize(
-    ("fixture", "expected"), REVIEW_CASES, ids=[case[0] for case in REVIEW_CASES]
+    ("fixture", "expected"), SCENARIO_CASES, ids=[case[0] for case in SCENARIO_CASES]
 )
-def test_review_exposures(fixture, expected):
+def test_workflow_exposures(fixture, expected):
     module = implementation()
-    workflows = load_yaml(FIXTURES / f"r1_{fixture}.yml")
+    workflows = load_yaml(FIXTURES / f"{fixture}.yml")
     result = module.analyze(
         workflows, module.PreflightContext("main", safe_environments=frozenset({"release"}))
     )
@@ -330,26 +432,26 @@ def test_review_exposures(fixture, expected):
         "bad_name",
     ],
 )
-def test_review_invalid_workflows(fixture):
+def test_invalid_workflow_values(fixture):
     module = implementation()
     with pytest.raises(ValueError):
-        module.analyze(load_yaml(FIXTURES / f"r1_{fixture}.yml"), module.PreflightContext("main"))
+        module.analyze(load_yaml(FIXTURES / f"{fixture}.yml"), module.PreflightContext("main"))
 
 
 @pytest.mark.parametrize(
     "case", ["missing_local", "extra_local", "unexpected_error", "output_symlink", "output_rewrite"]
 )
-def test_review_command(case, tmp_path, monkeypatch, capsys):
+def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
     command = importlib.import_module("agent_repo.commands.preflight")
     workflows = tmp_path / "workflows"
     workflows.mkdir()
-    shutil.copy(FIXTURES / f"r1_command_{case}.yml", workflows / "ci.yml")
+    shutil.copy(FIXTURES / f"command_{case}.yml", workflows / "ci.yml")
     transport = api_transport(workflows)
     monkeypatch.setattr(GitHub, "_urlopen", staticmethod(transport))
     if case == "missing_local":
         (workflows / "ci.yml").unlink()
     if case == "extra_local":
-        shutil.copy(FIXTURES / f"r1_command_{case}.yml", workflows / "extra.yml")
+        shutil.copy(FIXTURES / f"command_{case}.yml", workflows / "extra.yml")
     if case == "unexpected_error":
 
         def fail_yaml(path):
