@@ -38,7 +38,9 @@ HOSTED_RUNNERS = frozenset(
         "xcode-27-xlarge",
     }
 )
-TARGET_EVENTS = frozenset({"pull_request_target", "issue_comment"})
+TARGET_EVENTS = frozenset(
+    {"pull_request_target", "issue_comment", "issues", "discussion", "discussion_comment"}
+)
 # Deliberately minimal: only these pinned metadata actions may use target-event credentials.
 TARGET_ACTIONS = frozenset({"actions/labeler", "actions/first-interaction", "actions/stale"})
 
@@ -169,7 +171,6 @@ def _reachable_refs(events: dict, ctx: PreflightContext) -> set[str | None]:
     independent = {
         "schedule",
         "workflow_dispatch",
-        "issues",
         "release",
         "delete",
         "workflow_call",
@@ -177,8 +178,6 @@ def _reachable_refs(events: dict, ctx: PreflightContext) -> set[str | None]:
         "repository_dispatch",
         "label",
         "milestone",
-        "discussion",
-        "discussion_comment",
         "gollum",
         "page_build",
         "watch",
@@ -196,9 +195,11 @@ def _reachable_refs(events: dict, ctx: PreflightContext) -> set[str | None]:
         if event == "push":
             if _branches(config, ctx.agent_ref_glob, glob=True):
                 refs.add(ctx.agent_ref_glob)
-        elif event in {"pull_request", "pull_request_review", "pull_request_review_comment"}:
+        elif event == "pull_request":
             if _branches(config, ctx.default_branch, glob=False):
                 refs.add(ctx.agent_ref_glob)
+        elif event in {"pull_request_review", "pull_request_review_comment"}:
+            refs.add(ctx.agent_ref_glob)
         elif event == "merge_group":
             refs.add("gh-readonly-queue/**")
         elif event not in independent and event not in TARGET_EVENTS:
@@ -320,9 +321,7 @@ def _executable(job: dict, workflow: dict) -> list:
 
 def _target_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
     # Target events run on the base branch, outside agent-branch environment exclusions.
-    privileged = (
-        writes or job.get("environment") is not None or _secrets(_executable(job, workflow))
-    )
+    privileged = writes or _secrets(job) or _secrets(workflow.get("env"))
     if not privileged:
         return False
     steps = _steps(job)
@@ -339,7 +338,7 @@ def _target_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
 def _downstream_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
     steps = _steps(job)
     executable = _executable(job, workflow)
-    if writes or _secrets(executable):
+    if writes or _secrets(job) or _secrets(workflow.get("env")):
         return True
     if any(
         re.search(r"github\.event\.workflow_run\.head_\w+", _context(value))
@@ -409,7 +408,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             ):
                 raise ValueError("invalid workflow_run names")
             if path not in downstream and any(
-                fnmatch.fnmatchcase(name, pattern)
+                (name.casefold() == pattern.casefold() or fnmatch.fnmatchcase(name, pattern))
                 and any(ref is None or _branches(config, ref, glob=True) for ref in refs[source])
                 for source in parsed
                 for name in (parsed[source].get("name", source), f".github/workflows/{source}")
@@ -473,7 +472,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                     pending.append(
                         (callee, writes, is_downstream, is_target, is_reachable, (*active, callee))
                     )
-            elif (is_reachable or is_downstream) and not _hosted(job.get("runs-on")):
+            elif (is_reachable or is_downstream or is_target) and not _hosted(job.get("runs-on")):
                 rules.add("runner")
             for rule in rules:
                 findings.add((path, name, rule))
