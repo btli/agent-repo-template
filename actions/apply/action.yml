@@ -36,4 +36,4 @@ runs:
         AGENT_CANARY: ${{ inputs.canary }}
         AGENT_CAPPED: ${{ inputs.capped }}
         AGENT_OFF_AUTHORIZED: ${{ inputs.off-authorized }}
-      run: python3 -m agent_repo_cli apply "$AGENT_ARTIFACT"
+      run: python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" apply "$AGENT_ARTIFACT"

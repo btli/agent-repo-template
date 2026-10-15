@@ -1,6 +1,10 @@
 import json
 import math
+import os
+import re
 import secrets
+import shlex
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
@@ -483,6 +487,71 @@ def test_cli_missing_canary_fails_without_writes(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
     assert main([str(tmp_path / "missing.json")]) == 1
     assert "Traceback" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "modules",
+    [("json.py",), ("agent_repo_cli.py",), ("json.py", "agent_repo_cli.py")],
+    ids=["stdlib", "entrypoint", "both"],
+)
+def test_apply_action_ignores_workspace_python_modules(modules, tmp_path):
+    from agent_repo.yamljson import load_yaml
+
+    action_path = Path(__file__).resolve().parents[1] / "actions/apply"
+    step = load_yaml(action_path / "action.yml")["runs"]["steps"][0]
+    sentinel = tmp_path / "shadow-imported"
+    for module in modules:
+        (tmp_path / module).write_text(
+            'from pathlib import Path\nPath("shadow-imported").touch()\nraise SystemExit(0)\n'
+        )
+    artifact = tmp_path / "decision.json"
+    artifact.write_text(json.dumps(decision()))
+    summary = tmp_path / "summary.md"
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": step["env"]["PYTHONPATH"].replace(
+                "${{ github.action_path }}", str(action_path)
+            ),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "GITHUB_ACTION_PATH": str(action_path),
+            "AGENT_ARTIFACT": str(artifact),
+            "GITHUB_STEP_SUMMARY": str(summary),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert not sentinel.exists(), "workspace Python module executed"
+    # Missing trusted configuration reaches apply's fail-closed path without any API call.
+    assert result.returncode == 1
+    assert result.stderr.strip() == "Apply failed: trusted inputs unavailable."
+    assert "Apply failed: trusted inputs unavailable." in summary.read_text()
+
+
+def test_composite_actions_do_not_use_python_module_or_command_mode():
+    from agent_repo.yamljson import load_yaml
+
+    actions = Path(__file__).resolve().parents[1] / "actions"
+    for path in sorted(actions.rglob("action.y*ml")):
+        runs = load_yaml(path)["runs"]
+        if runs["using"] != "composite":
+            continue
+        for step in runs["steps"]:
+            for line in step.get("run", "").splitlines():
+                words = shlex.split(line, comments=True)
+                for index, word in enumerate(words):
+                    if not re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(word).name):
+                        continue
+                    for option in words[index + 1 :]:
+                        if not option.startswith("-"):
+                            break
+                        assert not re.match(r"^-[^-]*[mc]", option), (
+                            f"{path.relative_to(actions)}: Python must run a trusted script"
+                        )
 
 
 def test_label_absent_from_allowlist_is_dropped():
