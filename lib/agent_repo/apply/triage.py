@@ -1,6 +1,9 @@
+import base64
+import re
 from urllib.parse import quote
 
 from agent_repo.apply.actions import Action, ApplyContext, check_identity
+from agent_repo.github import GitHubError
 from agent_repo.markers import marker
 from agent_repo.render import fenced
 from agent_repo.scan import find_leaks
@@ -29,22 +32,45 @@ def _maintainer(ctx: ApplyContext, area: str | None, alerts: list[str]) -> list[
 def _off(ctx: ApplyContext) -> list[Action] | None:
     if not ctx.off_authorized:
         return None
+    line = next(
+        (line.strip() for line in (ctx.event.comment_body or "").splitlines() if line.strip()),
+        "",
+    )
     if (
         ctx.event.name != "issue_comment"
-        or (ctx.event.comment_body or "").strip() != "/agent off"
+        or re.fullmatch(r"/agent[ \t]+off", line) is None
+        or ctx.event.sender_is_bot
+        or ctx.event.sender.casefold().endswith("[bot]")
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}", ctx.event.sender) is None
         or ctx.github is None
     ):
         return _maintainer(ctx, None, ["Off command rejected: authorization required."])
     try:
-        permission = ctx.github.request(
-            "GET", f"collaborators/{quote(ctx.event.sender, safe='')}/permission"
-        )
-        if not isinstance(permission, dict) or permission.get("role_name") not in {
-            "admin",
-            "maintain",
-            "write",
-        }:
-            return _maintainer(ctx, None, ["Off command rejected: authorization required."])
+        maintainers = set()
+        try:
+            value = ctx.github.request("GET", "contents/MAINTAINERS", params={"ref": ctx.base_sha})
+        except GitHubError as exc:
+            if exc.status != 404:
+                raise
+        else:
+            if value["encoding"] != "base64":
+                raise ValueError("invalid maintainers encoding")
+            content = base64.b64decode("".join(value["content"].split()), validate=True).decode()
+            maintainers = {
+                login.casefold()
+                for line in content.splitlines()
+                if (login := line.split("#", 1)[0].strip())
+            }
+        if ctx.event.sender.casefold() not in maintainers:
+            permission = ctx.github.request(
+                "GET", f"collaborators/{quote(ctx.event.sender, safe='')}/permission"
+            )
+            if not isinstance(permission, dict) or permission.get("role_name") not in {
+                "admin",
+                "maintain",
+                "write",
+            }:
+                return _maintainer(ctx, None, ["Off command rejected: authorization required."])
     except Exception:
         return _maintainer(ctx, None, ["Off command rejected: authorization check failed."])
     return [
@@ -95,6 +121,12 @@ def _strings(value: object):
             yield from _strings(child)
 
 
+def _priority(value: object) -> str:
+    return (
+        value.strip().casefold().removeprefix("priority:").strip() if isinstance(value, str) else ""
+    )
+
+
 def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     off = _off(ctx)
     if off is not None:
@@ -128,16 +160,35 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     selected: list[str] = []
     text: list[str] = []
     needs_maintainer = bool(decision["escalate"] or ctx.capped)
-    proposed_priorities = [
-        *decision["labels"],
-        *decision["suggestions"]["labels"],
-        decision["suggestions"]["priority"],
-        answers.get("priority", {}).get("value"),
-    ]
-    for priority in ("P0", "P1"):
-        if priority in proposed_priorities:
-            text.append(f"Suggested priority: {priority}. A maintainer should confirm.")
-            needs_maintainer = True
+    proposed_priorities = {
+        _priority(value)
+        for value in [
+            *decision["labels"],
+            *decision["suggestions"]["labels"],
+        ]
+        if value.strip().casefold().startswith("priority:")
+        or re.match(r"p\d", value.strip(), re.IGNORECASE)
+    }
+    proposed_priorities.add(_priority(answers.get("priority", {}).get("value")))
+    if decision["suggestions"]["priority"] is not None:
+        proposed_priorities.add(decision["suggestions"]["priority"].casefold())
+    if proposed_priorities - {"p2", "p3"}:
+        actions = _maintainer(ctx, area, [])
+        for priority in ("P0", "P1"):
+            if priority.casefold() in proposed_priorities:
+                text.append(f"Suggested priority: {priority}. A maintainer should confirm.")
+        if text:
+            content = "\n\n".join(text)
+            body = f"Agent triage\n\n{fenced(content, 10000)}\n\n{marker('triage', ctx.run_id)}"
+            if find_leaks(body, ctx.secrets, ctx.canary):
+                return _maintainer(ctx, area, ["Outbound scan alert: rendered action dropped."])
+            actions.append(
+                Action(
+                    "comment",
+                    {"number": ctx.event.number, "body": body, "bot_login": ctx.bot_login},
+                )
+            )
+        return actions
     for key in ("type", "area", "priority", "needs_info"):
         answer = answers.get(key)
         if answer is None or answer["p"] < apply_min:

@@ -48,7 +48,8 @@ def main(argv: list[str]) -> int:
             raise ValueError("scan configuration required")
         event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
         if (
-            event.is_pr
+            event.name not in {"issues", "issue_comment"}
+            or event.is_pr
             or event.number < 1
             or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", event.repo) is None
         ):
@@ -76,7 +77,7 @@ def main(argv: list[str]) -> int:
             if artifact.stat().st_size > 1_000_000:
                 raise ValueError("artifact too large")
             decision = json.loads(artifact.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError, MemoryError):
             decision = None
         alerts = execute(plan_triage(decision, ctx), gh, mode, summary)
         return 1 if any(alert.startswith("Apply failed") for alert in alerts) else 0
