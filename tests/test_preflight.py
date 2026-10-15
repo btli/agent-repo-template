@@ -542,3 +542,124 @@ def test_action_forwards_verified_settings(tmp_path, monkeypatch):
         "--safe-environment",
         "staging",
     ]
+
+
+SOURCE_CASES = [
+    ("content_api_head", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_api_head_base", [], "agent/fix-*"),
+    ("content_event_file", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_event_file_base", [], "agent/fix-*"),
+    ("content_script_api_exec", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_script_api_exec_base", [], "agent/fix-*"),
+    ("content_whole_event_json", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_whole_event_json_base", [], "agent/fix-*"),
+    ("content_git_fetch", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_checkout", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_switch", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_reset", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_clone", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_worktree", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_pull", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_merge", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_global_option", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_clone_base", [], "agent/fix-*"),
+    ("content_git_clone_unknown_ref", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_clone_mixed", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_git_clone_bad_source", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_pr_diff", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_pr_checkout", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_repo_clone", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_event_file_braces", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_api_tar_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_api_tar_base", [], "agent/fix-*"),
+    ("archive_api_tar_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_api_zip_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_api_zip_base", [], "agent/fix-*"),
+    ("archive_api_zip_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_browser_tar_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_browser_tar_base", [], "agent/fix-*"),
+    ("archive_browser_tar_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_browser_zip_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_browser_zip_base", [], "agent/fix-*"),
+    ("archive_browser_zip_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_codeload_tar_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_codeload_tar_base", [], "agent/fix-*"),
+    ("archive_codeload_tar_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_codeload_zip_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_codeload_zip_base", [], "agent/fix-*"),
+    ("archive_codeload_zip_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_gh_api_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_gh_api_base", [], "agent/fix-*"),
+    ("archive_gh_api_default", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_script_download", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_target_reusable", [("callee.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_target_reusable_base", [], "agent/fix-*"),
+    ("content_target_labeler", [], "agent/fix-*"),
+    ("content_target_notification", [], "agent/fix-*"),
+    ("content_target_display", [], "agent/fix-*"),
+    ("content_target_display_control", [], "agent/fix-*"),
+    ("content_target_job_display", [], "agent/fix-*"),
+    ("content_comment_reusable", [("callee.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_comment_reusable_base", [], "agent/fix-*"),
+    ("content_comment_labeler", [], "agent/fix-*"),
+    ("content_comment_notification", [], "agent/fix-*"),
+    ("content_comment_display", [], "agent/fix-*"),
+    ("content_comment_display_control", [], "agent/fix-*"),
+    ("content_comment_job_display", [], "agent/fix-*"),
+    ("branch_custom_agent", [("a-final.yml", "check", "workflow_run")], "bots/fix-*"),
+    ("branch_custom_excluded", [], "bots/fix-*"),
+    ("branch_ignore_exact_agent", [], "agent/fix-*"),
+    ("branch_agent_included", [("a-final.yml", "check", "workflow_run")], "agent/fix-*"),
+    ("branch_second_hop_main", [("a-final.yml", "check", "workflow_run")], "agent/fix-*"),
+    ("branch_second_hop_agent", [], "agent/fix-*"),
+    ("branch_second_hop_ignore_main", [], "agent/fix-*"),
+    ("branch_queue", [("a-final.yml", "check", "workflow_run")], "agent/fix-*"),
+    ("branch_queue_excluded", [], "agent/fix-*"),
+    ("branch_unknown_event", [("a-final.yml", "check", "workflow_run")], "agent/fix-*"),
+    ("branch_mixed_sources", [("a-final.yml", "check", "workflow_run")], "agent/fix-*"),
+]
+
+
+SOURCE_CASES += [
+    ("archive_unknown_transport", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_mixed_downloads", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_mixed_arguments", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_readonly_git", [], "agent/fix-*"),
+]
+
+
+SOURCE_CASES += [
+    ("content_quoted_git", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("archive_quoted_curl", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_shell_wrapper", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_command_text", [], "agent/fix-*"),
+]
+
+
+SOURCE_CASES += [
+    ("content_conditional_git", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_env_git", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_gh_global_option", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+    ("content_env_readonly", [], "agent/fix-*"),
+    ("content_conditional_readonly", [], "agent/fix-*"),
+]
+
+
+SOURCE_CASES += [
+    ("archive_notification_head", [], "agent/fix-*"),
+    ("archive_printed_head", [], "agent/fix-*"),
+    ("archive_script_notification", [], "agent/fix-*"),
+    ("archive_action_head", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
+]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected", "agent_ref_glob"), SOURCE_CASES, ids=[case[0] for case in SOURCE_CASES]
+)
+def test_source_provenance(fixture, expected, agent_ref_glob):
+    module = implementation()
+    workflows = load_yaml(FIXTURES / f"{fixture}.yml")
+    result = module.analyze(workflows, module.PreflightContext("main", agent_ref_glob))
+    assert [(item.workflow, item.job, item.rule) for item in result] == [
+        tuple(item) for item in expected
+    ]

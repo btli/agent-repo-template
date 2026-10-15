@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": "issue_comment",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "gh issue comment 42 --body \"See https://github.com/your-org/project/pull/42\""
+          }
+        ]
+      }
+    }
+  }
+}

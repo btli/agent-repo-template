@@ -1,9 +1,11 @@
 import fnmatch
 import re
+import shlex
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
-# https://docs.github.com/actions/reference/runners/github-hosted-runners
-# https://docs.github.com/actions/reference/runners/larger-runners
+# Verified 2026-10-15: https://docs.github.com/actions/reference/runners/github-hosted-runners
+# Verified 2026-10-15: https://docs.github.com/actions/reference/runners/larger-runners
 HOSTED_RUNNERS = frozenset(
     {
         "ubuntu-latest",
@@ -163,7 +165,7 @@ def _events(workflow: dict) -> dict:
     raise ValueError("invalid workflow triggers")
 
 
-def _reachable(events: dict, ctx: PreflightContext) -> bool:
+def _reachable_refs(events: dict, ctx: PreflightContext) -> set[str | None]:
     independent = {
         "schedule",
         "workflow_dispatch",
@@ -189,17 +191,19 @@ def _reachable(events: dict, ctx: PreflightContext) -> bool:
         "branch_protection_rule",
     }
     # Merge/check/status/deployment events can follow agent work and remain reachable.
-    reachable = False
+    refs = set()
     for event, config in events.items():
         if event == "push":
             if _branches(config, ctx.agent_ref_glob, glob=True):
-                reachable = True
+                refs.add(ctx.agent_ref_glob)
         elif event in {"pull_request", "pull_request_review", "pull_request_review_comment"}:
             if _branches(config, ctx.default_branch, glob=False):
-                reachable = True
+                refs.add(ctx.agent_ref_glob)
+        elif event == "merge_group":
+            refs.add("gh-readonly-queue/**")
         elif event not in independent and event not in TARGET_EVENTS:
-            reachable = True
-    return reachable
+            refs.add(None)
+    return refs
 
 
 def _strings(value: object):
@@ -319,13 +323,180 @@ def _checkout_input_safe(value: object, key: str, ctx: PreflightContext) -> bool
     return _context(expression[1]).strip() in safe_contexts[key]
 
 
+def _executable(job: dict, workflow: dict) -> list:
+    return [
+        workflow.get("env"),
+        workflow.get("defaults"),
+        job.get("env"),
+        job.get("defaults"),
+        job.get("with"),
+        {"secrets": job.get("secrets")},
+        [
+            {
+                key: step[key]
+                for key in ("uses", "run", "with", "env", "shell", "working-directory")
+                if key in step
+            }
+            for step in _steps(job)
+        ],
+    ]
+
+
+def _archive_sources(value: str) -> list[str]:
+    sources = re.findall(r"https?://[^\s'\"`<>]+|(?<![\w/])/?repos/[^\s'\"`<>]+", value)
+    return [
+        source.rstrip(");,")
+        for source in sources
+        if "codeload.github.com/" in source
+        or re.search(r"github\.com/[^/]+/[^/]+/archive/", source)
+        or re.search(r"(?:^/?|api\.github\.com/)repos/.+/(?:tarball|zipball)(?:/|$)", source)
+    ]
+
+
+def _trusted_archive(source: str, ctx: PreflightContext) -> bool:
+    if source.startswith(("repos/", "/repos/")):
+        source = "https://api.github.com/" + source.lstrip("/")
+    url = urlsplit(source)
+    if url.query or url.fragment or url.scheme != "https":
+        return False
+    repository = r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+    ref = rf"(?:refs/heads/)?{re.escape(ctx.default_branch)}"
+    paths = {
+        "api.github.com": rf"/repos{repository}/(?:tarball|zipball)/{ref}",
+        "github.com": rf"{repository}/archive/{ref}\.(?:tar\.gz|zip)",
+        "codeload.github.com": rf"{repository}/(?:tar\.gz|zip)/{ref}",
+    }
+    pattern = paths.get(url.netloc)
+    return pattern is not None and re.fullmatch(pattern, url.path) is not None
+
+
+def _trusted_clone(args: list[str], ctx: PreflightContext) -> bool:
+    if not args or args.pop(0) != "clone":
+        return False
+    branch, positional = None, []
+    while args:
+        arg = args.pop(0)
+        if arg in {"--branch", "-b", "--depth"}:
+            if not args:
+                return False
+            value = args.pop(0)
+            if arg == "--depth":
+                if not value.isdigit():
+                    return False
+            else:
+                branch = value
+        elif arg.startswith("--branch="):
+            branch = arg.removeprefix("--branch=")
+        elif arg == "--single-branch":
+            continue
+        elif arg.startswith("-"):
+            return False
+        else:
+            positional.append(arg)
+    return (
+        branch in {ctx.default_branch, f"refs/heads/{ctx.default_branch}"}
+        and 1 <= len(positional) <= 2
+        and re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", positional[0])
+        is not None
+        and all(not re.search(r"[$`{}]", value) for value in positional)
+    )
+
+
+def _shell_source_unsafe(run: str, ctx: PreflightContext) -> bool:
+    lexer = shlex.shlex(run, posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return True
+    commands, words = [], []
+    for token in [*tokens, ";"]:
+        if set(token) <= set(";&|()\n"):
+            if words:
+                commands.append(words)
+            words = []
+        else:
+            words.append(token)
+    for words in commands:
+        wrappers = {"env", "command", "exec", "sudo", "if", "then", "elif", "else", "do", "!", "{"}
+        while words and ("=" in words[0] or words[0] in wrappers):
+            words.pop(0)
+        if not words:
+            continue
+        executable, args = words[0].rsplit("/", 1)[-1].lower(), words[1:]
+        if executable.startswith("-") or re.search(r"[$`]", executable):
+            return True
+        if executable in {"eval", "source", "."}:
+            return True
+        if executable in {"bash", "sh", "zsh"} and "-c" in args:
+            index = args.index("-c") + 1
+            if index >= len(args) or _shell_source_unsafe(args[index], ctx):
+                return True
+        if executable in {"git", "git.exe"}:
+            # Shell ref resolution is opaque except for a literal default-branch clone.
+            if not args or args[0] not in {
+                "status",
+                "log",
+                "diff",
+                "show",
+                "rev-parse",
+                "ls-files",
+            }:
+                if not _trusted_clone(args, ctx):
+                    return True
+        if executable == "gh":
+            while args and args[0].startswith("-"):
+                option = args.pop(0)
+                if option not in {"--repo", "-R", "--hostname"} or not args:
+                    return True
+                args.pop(0)
+            if args[:2] in (["pr", "checkout"], ["pr", "diff"], ["repo", "clone"]):
+                return True
+            if args[:1] == ["api"] and any(
+                "/pulls" in arg or re.search(r"[$`{}]", arg) for arg in args[1:]
+            ):
+                return True
+            if args[:1] == ["api"] and any(
+                not _trusted_archive(source, ctx)
+                for arg in args[1:]
+                for source in _archive_sources(arg)
+            ):
+                return True
+        elif executable not in {"curl", "wget", "echo", "printf"} and any(
+            not _trusted_archive(source, ctx) for arg in args for source in _archive_sources(arg)
+        ):
+            return True
+        if executable not in {"curl", "wget"}:
+            continue
+        sources = []
+        while args:
+            arg = args.pop(0)
+            if arg in {"-o", "-O", "--output", "--output-document"}:
+                if not args or re.search(r"[$`{}]", args.pop(0)):
+                    return True
+            elif re.fullmatch(r"-[fsSLq]+", arg) or arg in {
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--location",
+            }:
+                continue
+            elif _trusted_archive(arg, ctx):
+                sources.append(arg)
+            else:
+                return True
+        if not sources:
+            return True
+    return False
+
+
 def _target_unsafe(job: dict, workflow: dict, ctx: PreflightContext) -> bool:
-    for value in _strings([job, workflow.get("env"), workflow.get("defaults")]):
+    for value in _strings(_executable(job, workflow)):
         if re.search(
             r"github\.head_ref\b|github\.event\.pull_request\.(?:head\w*|merge_commit_sha\b)"
             r"|context\.payload\.pull_request\.head\w*"
-            r"|tojson\s*\(\s*github\.event\.pull_request\s*\)"
-            r"|/(?:tarball|zipball)(?:/|\b)|\b(?:refs/)?pull/|\bgh\s+pr\s+checkout\b",
+            r"|tojson\s*\(\s*github\.event\b|\$\{?github_event_path\b",
             _context(value),
         ):
             return True
@@ -333,6 +504,26 @@ def _target_unsafe(job: dict, workflow: dict, ctx: PreflightContext) -> bool:
         if any(
             re.search(r"github\.event\.pull_request\.(?:title|body)\b", _context(value))
             for value in _strings(step.get("run"))
+        ):
+            return True
+        run = step.get("run", "")
+        if not isinstance(run, str) or _shell_source_unsafe(run, ctx):
+            return True
+        if str(step.get("uses", "")).lower().startswith("actions/github-script@"):
+            script = (step.get("with") or {}).get("script", "")
+            if not isinstance(script, str) or re.search(
+                r"\bpulls\s*[.\[]|\bexec(?:sync|file)?\b|download(?:tarball|zipball)archive",
+                _context(script),
+            ):
+                return True
+            if re.search(r"\b(?:fetch|request|download)\s*\(", script):
+                sources = _archive_sources(script)
+                if not sources or any(not _trusted_archive(source, ctx) for source in sources):
+                    return True
+        elif "uses" in step and any(
+            not _trusted_archive(source, ctx)
+            for value in _strings(step.get("with"))
+            for source in _archive_sources(value)
         ):
             return True
         if str(step.get("uses", "")).lower().startswith("actions/checkout@"):
@@ -349,22 +540,7 @@ def _target_unsafe(job: dict, workflow: dict, ctx: PreflightContext) -> bool:
 
 def _downstream_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
     steps = _steps(job)
-    executable = [
-        workflow.get("env"),
-        workflow.get("defaults"),
-        job.get("env"),
-        job.get("defaults"),
-        job.get("with"),
-        {"secrets": job.get("secrets")},
-        [
-            {
-                key: step[key]
-                for key in ("uses", "run", "with", "env", "shell", "working-directory")
-                if key in step
-            }
-            for step in steps
-        ],
-    ]
+    executable = _executable(job, workflow)
     if writes or _secrets(executable):
         return True
     if any(
@@ -390,6 +566,7 @@ def _downstream_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> boo
 
 def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposure]:
     parsed, triggers, reachable = {}, {}, set()
+    refs = {}
     findings = set()
     for path, workflow in sorted(workflows.items()):
         if not isinstance(workflow, dict) or not isinstance(workflow.get("jobs"), dict):
@@ -410,17 +587,13 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                     environment = environment.get("name")
                 if environment == "agent-apply" and _enabled(job):
                     findings.add((path, name, "agent-apply"))
-        if _reachable(triggers[path], ctx):
+        refs[path] = _reachable_refs(triggers[path], ctx)
+        if refs[path]:
             reachable.add(path)
     downstream = set()
     changed = True
     while changed:
         changed = False
-        names = {
-            name
-            for path in reachable | downstream
-            for name in (parsed[path].get("name", path), f".github/workflows/{path}")
-        }
         for path, events in triggers.items():
             if "workflow_run" not in events:
                 continue
@@ -434,12 +607,15 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 or not all(isinstance(pattern, str) for pattern in patterns)
             ):
                 raise ValueError("invalid workflow_run names")
-            if not _branches(config, "agent/**", glob=True):
-                continue
             if path not in downstream and any(
-                fnmatch.fnmatchcase(name, pattern) for name in names for pattern in patterns
+                fnmatch.fnmatchcase(name, pattern)
+                and any(ref is None or _branches(config, ref, glob=True) for ref in refs[source])
+                for source in parsed
+                for name in (parsed[source].get("name", source), f".github/workflows/{source}")
+                for pattern in patterns
             ):
                 downstream.add(path)
+                refs[path].add(ctx.default_branch)
                 changed = True
     targets = {path for path in parsed if TARGET_EVENTS.intersection(triggers[path])}
     pending = [

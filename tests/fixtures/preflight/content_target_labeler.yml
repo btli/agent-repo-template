@@ -1,0 +1,19 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/labeler@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "configuration-path": ".github/pull/labeler.yml"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

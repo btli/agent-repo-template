@@ -1,0 +1,25 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/callee.yml"
+      }
+    }
+  },
+  "callee.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+          }
+        ]
+      }
+    }
+  }
+}
