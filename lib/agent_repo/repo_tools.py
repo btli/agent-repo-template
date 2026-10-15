@@ -169,6 +169,8 @@ class RepoReader:
                 window.extend(data)
                 lines += data.endswith(b"\n")
             size = os.fstat(stream.fileno()).st_size
+            if remaining == 0 and lines < max_lines and stream.tell() < size:
+                raise ToolError("per-call byte budget exceeded")
             truncated = stream.tell() < size and (
                 size > self.per_call_bytes or len(window) == self.per_call_bytes
             )

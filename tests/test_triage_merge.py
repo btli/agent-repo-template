@@ -2,9 +2,12 @@ import copy
 import importlib
 import json
 from pathlib import Path
+from urllib.parse import urlunsplit
 
 import pytest
 from agent_repo.schema import load_schema, validate
+
+DATABASE_URL = urlunsplit(("postgresql", "alice:s3cr3t@db", "", "", ""))
 
 
 @pytest.fixture
@@ -74,6 +77,21 @@ def test_runtime_error_is_sanitized(decision):
     assert result["escalate"]["to"] == "maintainer"
     assert "credential-value" not in json.dumps(result)
     assert result["answers"] == decision["answers"]
+
+
+@pytest.mark.parametrize("failure", ["runtime", "invalid", "taxonomy"])
+def test_failed_tier2_clears_inherited_close_agreement(decision, failure):
+    decision["close"]["tier2_agrees"] = True
+    original = copy.deepcopy(decision)
+    tier2 = copy.deepcopy(decision)
+    if failure == "invalid":
+        tier2["run_id"] = "other"
+    if failure == "taxonomy":
+        tier2["labels"] = ["type:invented"]
+    result = merge(decision, tier2, "failed" if failure == "runtime" else None)
+    assert result["close"]["tier2_agrees"] is False
+    assert result["escalate"]["to"] == "maintainer"
+    assert decision == original
 
 
 def test_matching_close_vote_and_info_request(decision):
@@ -231,6 +249,7 @@ def action(monkeypatch, tmp_path, decision):
         "output": output,
         "decision": decision,
         "module": module,
+        "real_runner": getattr(module, "run_bounded", None),
     }
     real_run = subprocess.run
 
@@ -268,6 +287,17 @@ def action(monkeypatch, tmp_path, decision):
                 "confidence": "low",
                 "confirm_with": "check",
             }
+        if "leak" in state:
+            leak = state["leak"](canary)
+            if state["source"] == "raw":
+                prefix = leak + "\n"
+            else:
+                data["rca"] = {
+                    "hypothesis": leak,
+                    "locations": [],
+                    "confidence": "low",
+                    "confirm_with": "check",
+                }
         if mode == "run_id":
             data["run_id"] = "other"
         if mode == "base_sha":
@@ -302,12 +332,14 @@ def action(monkeypatch, tmp_path, decision):
                 state["credential"],
                 "".join(chr(92) + f"u{ord(c):04x}" for c in state["credential"]),
             )
+        if state.get("source") == "decoded":
+            encoded = encoded.replace(leak, "".join(chr(92) + f"u{ord(c):04x}" for c in leak))
         stdout = (prefix + "```json\n" + encoded + "\n```\n").encode()
         # Every adverse mode has otherwise schema-valid JSON.
         assert validate(data, load_schema("decision")) == []
         return subprocess.CompletedProcess(command, 7 if mode == "nonzero" else 0, stdout, b"")
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "run_bounded", fake_run, raising=False)
     return state
 
 
@@ -471,3 +503,155 @@ def test_context_taxonomy_uses_shared_loader_and_unknown(action, tmp_path):
 
     with pytest.raises(ConfigError):
         action["module"].context_taxonomy(context, tmp_path)
+
+
+@pytest.mark.parametrize("source", ["raw", "decoded", "tier1"])
+@pytest.mark.parametrize("subject", ["key", "canary"])
+@pytest.mark.parametrize(
+    "encoding",
+    [
+        "base64",
+        "base64_unpadded",
+        "urlsafe",
+        "urlsafe_unpadded",
+        "hex",
+        "HEX",
+        "percent",
+        "reverse",
+    ],
+)
+def test_derived_credentials_and_canary_cannot_escape(
+    action, monkeypatch, capsys, source, subject, encoding
+):
+    import base64
+    import os
+    from urllib.parse import quote
+
+    credential = "ab?ÿ" if subject == "key" else "canary?/ÿ"
+    if subject == "key":
+        monkeypatch.setenv("ROLE_KEY", credential)
+    else:
+        token_hex = action["module"].secrets.token_hex
+        monkeypatch.setattr(
+            action["module"].secrets, "token_hex", lambda n: credential if n == 24 else token_hex(n)
+        )
+    raw = credential.encode()
+    forms = {
+        "base64": base64.b64encode(raw).decode(),
+        "base64_unpadded": base64.b64encode(raw).decode().rstrip("="),
+        "urlsafe": base64.urlsafe_b64encode(raw).decode(),
+        "urlsafe_unpadded": base64.urlsafe_b64encode(raw).decode().rstrip("="),
+        "hex": raw.hex(),
+        "HEX": raw.hex().upper(),
+        "percent": quote(credential, safe=""),
+        "reverse": credential[::-1],
+    }
+    leak = forms[encoding]
+    if source == "tier1":
+        decision = copy.deepcopy(action["decision"])
+        decision["notes"] = [leak]
+        Path(os.environ["DECISION_FILE"]).write_text(json.dumps(decision))
+    else:
+        action.update(source=source, leak=lambda _: leak)
+    assert action["module"].main() == 1
+    assert action["calls"]
+    text = action["output"].read_text() if action["output"].exists() else ""
+    if text:
+        assert json.loads(text)["escalate"]["to"] == "maintainer"
+    captured = capsys.readouterr()
+    assert leak not in text + captured.out + captured.err
+
+
+@pytest.mark.parametrize("source", ["raw", "decoded", "tier1"])
+@pytest.mark.parametrize(
+    "name,value,leak",
+    [
+        ("GH_PAT", "pat-sentinel", "pat-sentinel"),
+        ("NPM_AUTH", "auth-sentinel", "auth-sentinel"),
+        ("SERVICE_CREDENTIALS", "credentials-sentinel", "credentials-sentinel"),
+        ("PASSWD", "passwd-sentinel", "passwd-sentinel"),
+        ("DB_PASSWD", "db-passwd-sentinel", "db-passwd-sentinel"),
+        ("SERVICE_PASS", "pass-sentinel", "pass-sentinel"),
+        ("SERVICE_PRIVATE", "private-sentinel", "private-sentinel"),
+        ("SERVICE_DSN", "dsn-sentinel", "dsn-sentinel"),
+        ("DATABASE_URL", DATABASE_URL, DATABASE_URL),
+        ("DATABASE_URL", DATABASE_URL, "s3cr3t"),
+        ("DATABASE_URL", urlunsplit(("postgresql", "alice:s3%63r3t@db", "", "", "")), "s3cr3t"),
+    ],
+)
+def test_additional_credentials_are_redacted_and_scanned(
+    action, monkeypatch, capsys, source, name, value, leak
+):
+    import os
+
+    monkeypatch.setenv(name, value)
+    Path(os.environ["ISSUE_FILE"]).write_text(leak)
+    if source == "tier1":
+        decision = copy.deepcopy(action["decision"])
+        decision["notes"] = [leak]
+        Path(os.environ["DECISION_FILE"]).write_text(json.dumps(decision))
+    else:
+        action.update(source=source, leak=lambda _: leak)
+    assert action["module"].main() == 1
+    assert action["calls"]
+    assert leak not in action["calls"][0][0][-1]
+    text = action["output"].read_text() if action["output"].exists() else ""
+    if text:
+        assert json.loads(text)["escalate"]["to"] == "maintainer"
+    captured = capsys.readouterr()
+    assert leak not in text + captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [("GH_PAT", "x"), ("DATABASE_URL", urlunsplit(("postgres", "a:x@db", "", "", "")))],
+)
+def test_ambiguous_discovered_credentials_fail_closed(action, monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    assert action["module"].main() == 1
+    assert not action["calls"]
+    assert not action["output"].exists()
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr", "timeout"])
+def test_runaway_output_is_bounded_and_child_killed(action, monkeypatch, capsys, stream):
+    import os
+    import subprocess
+    import sys
+    import time
+
+    module = action["module"]
+    runner = action["real_runner"]
+    monkeypatch.setattr(
+        module,
+        "run_bounded",
+        lambda command, *, env, timeout: runner(
+            command, env=env, timeout=0.2 if stream == "timeout" else 10
+        ),
+    )
+    real_popen = subprocess.Popen
+    children = []
+
+    def flood(*args, **kwargs):
+        if Path(args[0][0]).name == "yq":
+            return real_popen(*args, **kwargs)
+        fd = 1 if stream == "stdout" else 2
+        code = f"import os,time; os.write({fd}, b'x' * (4 * 1024 * 1024)); time.sleep(10)"
+        if stream == "timeout":
+            code = "import time; time.sleep(10)"
+        child = real_popen([sys.executable, "-c", code], **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(module.subprocess, "Popen", flood)
+    start = time.monotonic()
+    assert module.main() == 1
+    assert time.monotonic() - start < 5
+    assert len(children) == 1 and children[0].returncode is not None
+    with pytest.raises(ProcessLookupError):
+        os.killpg(children[0].pid, 0)
+    data = json.loads(action["output"].read_text())
+    assert data["escalate"]["to"] == "maintainer"
+    assert data["rca"] is None
+    captured = capsys.readouterr()
+    assert "x" * 100 not in captured.out + captured.err

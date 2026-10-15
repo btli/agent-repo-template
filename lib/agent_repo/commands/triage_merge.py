@@ -36,6 +36,8 @@ def merge(
     if validate(decision, schema):
         raise ValueError("invalid Tier-1 decision")
     result = copy.deepcopy(decision)
+    if result["close"] is not None:
+        result["close"]["tier2_agrees"] = False
     if (
         error is not None
         or tier2 is None

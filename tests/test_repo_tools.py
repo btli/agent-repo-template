@@ -51,8 +51,11 @@ def test_line_selection_and_utf8(tmp_path):
 
 def test_read_per_call_cap(tmp_path):
     (tmp_path / "file").write_text("x" * 9)
-    result = reader(tmp_path, per_call_bytes=8).read_file("file")
-    assert result.startswith("x" * 8) and "truncated" in result
+    module = importlib.import_module("agent_repo.repo_tools")
+    obj = reader(tmp_path, per_call_bytes=8)
+    with pytest.raises(module.ToolError, match="per-call byte budget exceeded"):
+        obj.read_file("file")
+    assert obj._used == 8
 
 
 def test_read_window_in_large_file(tmp_path):
@@ -68,8 +71,9 @@ def test_read_window_in_large_file(tmp_path):
 def test_skipped_bytes_reduce_read_window(tmp_path):
     (tmp_path / "file").write_text("prefix\n" + "x" * 8)
     obj = reader(tmp_path, per_call_bytes=8)
-    result = obj.read_file("file", start_line=2)
-    assert result.startswith("x\n[truncated")
+    module = importlib.import_module("agent_repo.repo_tools")
+    with pytest.raises(module.ToolError, match="per-call byte budget exceeded"):
+        obj.read_file("file", start_line=2)
     assert obj._used == 8
 
 
