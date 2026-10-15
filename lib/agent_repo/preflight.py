@@ -304,6 +304,8 @@ def _executable(job: dict, workflow: dict) -> list:
         job.get("env"),
         job.get("defaults"),
         job.get("with"),
+        job.get("container"),
+        job.get("services"),
         {"secrets": job.get("secrets")},
         [
             {
@@ -319,9 +321,7 @@ def _executable(job: dict, workflow: dict) -> list:
 def _target_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
     # Target events run on the base branch, outside agent-branch environment exclusions.
     privileged = (
-        writes
-        or job.get("environment") is not None
-        or _secrets(_executable(job, workflow), include_token=True)
+        writes or job.get("environment") is not None or _secrets(_executable(job, workflow))
     )
     if not privileged:
         return False
@@ -388,6 +388,9 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
         refs[path] = _reachable_refs(triggers[path], ctx)
         if refs[path]:
             reachable.add(path)
+        # Read-only target jobs can still produce artifacts containing PR code.
+        if TARGET_EVENTS.intersection(triggers[path]):
+            refs[path].add(None)
     downstream = set()
     changed = True
     while changed:

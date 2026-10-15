@@ -350,6 +350,13 @@ SCENARIO_CASES = [
         "target_and_push",
         [("ci.yml", "check", "permissions"), ("ci.yml", "check", "pull_request_target")],
     ),
+    (
+        "target_pull_request_target_downstream_privileged",
+        [("consumer.yml", "consume", "workflow_run")],
+    ),
+    ("target_pull_request_target_downstream_readonly", []),
+    ("target_issue_comment_downstream_privileged", [("consumer.yml", "consume", "workflow_run")]),
+    ("target_issue_comment_downstream_readonly", []),
 ]
 
 
@@ -568,8 +575,8 @@ TARGET_CASES = [
     ("target_write_run", [("ci.yml", "check", "pull_request_target")], False),
     ("target_oidc_run", [("ci.yml", "check", "pull_request_target")], False),
     ("target_workflow_secret", [("ci.yml", "check", "pull_request_target")], False),
-    ("target_token_secret", [("ci.yml", "check", "pull_request_target")], False),
-    ("target_bracket_token_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_token_secret", [], False),
+    ("target_bracket_token_secret", [], False),
     ("target_dynamic_secret", [("ci.yml", "check", "pull_request_target")], False),
     ("target_with_secret", [("ci.yml", "check", "pull_request_target")], False),
     ("target_run_secret", [("ci.yml", "check", "pull_request_target")], False),
@@ -595,6 +602,70 @@ TARGET_CASES = [
     ("target_reusable_issue_comment_ceiling", [], False),
     ("target_reusable_caller_secret", [("caller.yml", "call", "pull_request_target")], False),
     ("target_reusable_caller_write", [("caller.yml", "call", "pull_request_target")], False),
+    (
+        "target_pull_request_target_container_env",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    (
+        "target_pull_request_target_container_credentials",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_pull_request_target_service_env", [("ci.yml", "check", "pull_request_target")], False),
+    (
+        "target_pull_request_target_service_credentials",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_pull_request_target_container_public", [], False),
+    (
+        "target_pull_request_target_secret_token_write",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    (
+        "target_pull_request_target_bracket_token_write",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_pull_request_target_context_token_readonly", [], False),
+    (
+        "target_pull_request_target_context_token_write",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_issue_comment_container_env", [("ci.yml", "check", "pull_request_target")], False),
+    (
+        "target_issue_comment_container_credentials",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_issue_comment_service_env", [("ci.yml", "check", "pull_request_target")], False),
+    (
+        "target_issue_comment_service_credentials",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_issue_comment_container_public", [], False),
+    ("target_issue_comment_secret_token_readonly", [], False),
+    (
+        "target_issue_comment_secret_token_write",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_issue_comment_bracket_token_readonly", [], False),
+    (
+        "target_issue_comment_bracket_token_write",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_issue_comment_context_token_readonly", [], False),
+    (
+        "target_issue_comment_context_token_write",
+        [("ci.yml", "check", "pull_request_target")],
+        False,
+    ),
 ]
 
 
