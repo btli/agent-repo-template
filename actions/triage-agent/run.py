@@ -1,17 +1,60 @@
+import base64
 import json
 import os
 import re
 import secrets
+import selectors
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
 from agent_repo.commands.triage_merge import label_corrections, merge, taxonomy
 from agent_repo.config import ConfigError
 from agent_repo.policies import agent_environment
 from agent_repo.prompting import extract_json, render_prompt
 from agent_repo.schema import load_schema, validate
+
+
+def run_bounded(command: list[str], *, env: dict[str, str], timeout: float):
+    limit = 1024 * 1024
+    deadline = time.monotonic() + timeout
+    with subprocess.Popen(
+        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+    ) as process:
+        try:
+            stdout, stderr = bytearray(), bytearray()
+            used = 0
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, stdout)
+                selector.register(process.stderr, selectors.EVENT_READ, stderr)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    for key, _ in selector.select(remaining):
+                        data = os.read(key.fd, min(65536, limit - used + 1))
+                        if not data:
+                            selector.unregister(key.fd)
+                            continue
+                        used += len(data)
+                        if used > limit:
+                            raise ValueError("runner output byte cap exceeded")
+                        key.data.extend(data)
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+            return subprocess.CompletedProcess(
+                command, process.returncode, bytes(stdout), bytes(stderr)
+            )
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise
 
 
 def context_taxonomy(context: dict[str, str], directory: Path) -> set[str]:
@@ -33,16 +76,45 @@ def main() -> int:
         if value
         and (
             name in {key_env, "LLM_API_KEY"}
-            or any(part in name.upper() for part in ["TOKEN", "KEY", "SECRET", "PASSWORD"])
+            or re.search(
+                r"TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|AUTH|PASS|PRIVATE|DSN|(?:^|_)PAT(?:_|$)",
+                name,
+                re.IGNORECASE,
+            )
         )
     }
-    sensitive = private | {canary, "LLM_API_KEY"}
+    ambiguous = False
+    for value in os.environ.values():
+        try:
+            url = urlsplit(value)
+        except ValueError:
+            ambiguous |= "@" in value
+            continue
+        if url.username is not None:
+            private.add(value)
+            if url.password is not None:
+                private.update({url.password, unquote(url.password)})
+    sensitive = set()
+    for value in private | {canary, "LLM_API_KEY"}:
+        raw = value.encode()
+        sensitive.update(
+            {
+                value,
+                base64.b64encode(raw).decode(),
+                base64.b64encode(raw).decode().rstrip("="),
+                base64.urlsafe_b64encode(raw).decode(),
+                base64.urlsafe_b64encode(raw).decode().rstrip("="),
+                raw.hex(),
+                raw.hex().upper(),
+                quote(value, safe=""),
+                value[::-1],
+            }
+        )
+    sensitive |= {json.dumps(value, ensure_ascii=False)[1:-1] for value in sensitive}
+    ambiguous |= any(len(value) < 4 for value in sensitive)
 
     def unsafe(text: str) -> bool:
-        return any(
-            value in text or json.dumps(value, ensure_ascii=False)[1:-1] in text
-            for value in sensitive
-        )
+        return ambiguous or any(value in text for value in sensitive)
 
     def discard_output() -> None:
         try:
@@ -83,7 +155,7 @@ def main() -> int:
                 schema=json.dumps(schema),
             )
             for name, text in blocks.items():
-                for value in private:
+                for value in sorted(private, key=len, reverse=True):
                     text = text.replace(value, "[redacted credential]")
                 blocks[name] = text
             template = (agent / "prompt.md").read_text() + "\nPrivate canary: {{canary}}\n"
@@ -107,8 +179,7 @@ def main() -> int:
             child_env = agent_environment(
                 dict(os.environ, LLM_API_KEY=key, AGENT_REPO_BUDGET_FILE=str(budget))
             )
-            # Scan buffered output before persisting any model-authored content.
-            run = subprocess.run(
+            run = run_bounded(
                 [
                     "timeout",
                     "-k",
@@ -122,7 +193,6 @@ def main() -> int:
                     "-p",
                     prompt,
                 ],
-                capture_output=True,
                 env=child_env,
                 timeout=930,
             )
