@@ -10,10 +10,18 @@ from agent_repo.scan import find_leaks
 
 
 def _maintainer(ctx: ApplyContext, area: str | None, alerts: list[str]) -> list[Action]:
+    labels = ["needs-maintainer"]
+    if ctx.capped and "agent:triage-capped" in ctx.config.labels:
+        labels.append("agent:triage-capped")
     actions = [
         Action(
             "add_labels",
-            {"number": ctx.event.number, "labels": ["needs-maintainer"], "alerts": alerts},
+            {
+                "number": ctx.event.number,
+                "labels": labels,
+                "alerts": alerts,
+                "bot_login": ctx.bot_login,
+            },
         )
     ]
     owners = [
@@ -21,6 +29,7 @@ def _maintainer(ctx: ApplyContext, area: str | None, alerts: list[str]) -> list[
         for candidate in ctx.config.areas
         if candidate.name == area
         for owner in candidate.owners
+        if "/" not in owner
     ]
     if owners:
         actions.append(
@@ -40,7 +49,6 @@ def _off(ctx: ApplyContext) -> list[Action] | None:
         ctx.event.name != "issue_comment"
         or re.fullmatch(r"/agent[ \t]+off", line) is None
         or ctx.event.sender_is_bot
-        or ctx.event.sender.casefold().endswith("[bot]")
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}", ctx.event.sender) is None
         or ctx.github is None
     ):
@@ -169,7 +177,8 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         if value.strip().casefold().startswith("priority:")
         or re.match(r"p\d", value.strip(), re.IGNORECASE)
     }
-    proposed_priorities.add(_priority(answers.get("priority", {}).get("value")))
+    if value := _priority(answers.get("priority", {}).get("value")):
+        proposed_priorities.add(value)
     if decision["suggestions"]["priority"] is not None:
         proposed_priorities.add(decision["suggestions"]["priority"].casefold())
     if proposed_priorities - {"p2", "p3"}:
@@ -191,7 +200,11 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         return actions
     for key in ("type", "area", "priority", "needs_info"):
         answer = answers.get(key)
-        if answer is None or answer["p"] < apply_min:
+        if (
+            answer is None
+            or answer["p"] < apply_min
+            or (key == "priority" and not _priority(answer["value"]))
+        ):
             needs_maintainer = True
     for key, prefix in (("type", "type:"), ("area", "area:"), ("priority", "")):
         answer = answers.get(key, {})
@@ -231,7 +244,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     try:
         can_close = close is not None and "agent:closed" in allowed and _can_close(close, ctx)
     except Exception:
-        return _maintainer(ctx, None, ["Apply failed: duplicate lookup unavailable."])
+        return _maintainer(ctx, area, ["Apply failed: duplicate lookup unavailable."])
     if close is not None:
         if can_close:
             reference = (
@@ -247,13 +260,16 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         else:
             text.append("Suggested closure requires maintainer confirmation.")
             needs_maintainer = True
-    if ctx.capped and "agent:triage-capped" in allowed:
-        selected.append("agent:triage-capped")
     actions: list[Action] = []
     if selected:
         actions.append(
             Action(
-                "add_labels", {"number": ctx.event.number, "labels": list(dict.fromkeys(selected))}
+                "add_labels",
+                {
+                    "number": ctx.event.number,
+                    "labels": list(dict.fromkeys(selected)),
+                    "bot_login": ctx.bot_login,
+                },
             )
         )
     if needs_maintainer:
