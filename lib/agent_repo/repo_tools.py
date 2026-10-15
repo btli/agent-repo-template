@@ -6,6 +6,7 @@ import re
 import stat
 import threading
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 
 from agent_repo.policies import agent_environment
@@ -13,6 +14,17 @@ from agent_repo.policies import agent_environment
 
 class ToolError(Exception):
     """A repository read was refused or exceeded its budget."""
+
+
+def fixed_tool_errors(function):
+    @wraps(function)
+    def invoke(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except Exception:
+            raise ToolError("repository tool failed") from None
+
+    return invoke
 
 
 def response_bytes(result) -> int:
@@ -25,7 +37,7 @@ class RepoReader:
     def __init__(
         self,
         root: Path,
-        per_call_bytes: int = 16384,
+        per_call_bytes: int = 65536,
         per_run_bytes: int = 524288,
         *,
         budget_file: Path | None = None,
@@ -33,7 +45,7 @@ class RepoReader:
         self.root = root.resolve(strict=True)
         if not self.root.is_dir() or per_call_bytes < 1 or per_run_bytes < 1:
             raise ToolError("invalid repository or byte budget")
-        self.per_call_bytes = min(per_call_bytes, 16384)
+        self.per_call_bytes = min(per_call_bytes, 65536)
         self.per_run_bytes = per_run_bytes
         self._used = 0
         self._lock = threading.Lock()
@@ -118,6 +130,8 @@ class RepoReader:
 
     def _chunk(self, stream, size: int, *, line: bool = False) -> bytes:
         if self._used >= self.per_run_bytes:
+            if stream.tell() == os.fstat(stream.fileno()).st_size:
+                return b""
             raise ToolError("per-run byte budget exceeded")
         size = min(size, self.per_run_bytes - self._used + 1)
         data = stream.readline(size) if line else stream.read(size)

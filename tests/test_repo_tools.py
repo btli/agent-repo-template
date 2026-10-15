@@ -112,9 +112,56 @@ def test_grep_returns_partial_with_marker(tmp_path):
 
 
 def test_default_glob_searches_template_with_large_lockfiles():
-    result = reader(Path.cwd()).grep("name:")
-    assert any(path == ".github/workflows/ci.yml" and "name:" in line for path, _, line in result)
+    result = reader(Path.cwd()).grep("def merge")
+    assert any(
+        path == "lib/agent_repo/commands/triage_merge.py" and "def merge" in line
+        for path, _, line in result
+    )
     assert any("skipped" in line for _, _, line in result)
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"per_call_bytes": 1000000}])
+def test_scan_cap_is_65536_separate_from_response_cap(tmp_path, kwargs):
+    (tmp_path / "a").write_text("x" * 20000 + "needle\n")
+    obj = reader(tmp_path, **kwargs)
+    assert obj.per_call_bytes == 65536
+    assert obj.grep("needle")[0][2].endswith("needle")
+
+
+@pytest.mark.parametrize("prefix", ["", "prefix\n"])
+@pytest.mark.parametrize("last_line", ["abc", "abc\n"])
+def test_exact_remaining_budget_allows_eof(tmp_path, prefix, last_line):
+    content = prefix + last_line
+    path = tmp_path / "a"
+    path.write_text(content)
+    obj = reader(tmp_path, per_run_bytes=len(content))
+    assert obj.read_file("a", start_line=2 if prefix else 1) == last_line
+    assert obj._used == len(content)
+    path.write_text(content + "x")
+    module = importlib.import_module("agent_repo.repo_tools")
+    with pytest.raises(module.ToolError, match="per-run byte budget exceeded"):
+        obj.read_file("a")
+    assert obj._used == len(content)
+
+
+def test_empty_file_after_exact_budget_grep(tmp_path):
+    (tmp_path / "a").write_text("abc\n")
+    (tmp_path / "b").touch()
+    obj = reader(tmp_path, per_run_bytes=4)
+    assert obj.grep("abc") == [("a", 1, "abc")]
+    assert obj._used == 4
+
+
+def test_grep_unicode_is_bounded_after_serialization(tmp_path):
+    module = importlib.import_module("agent_repo.repo_tools")
+    lines = ["é" * 500] * 20
+    (tmp_path / "a").write_text("\n".join(lines) + "\n")
+    unbounded = [("a", number, line) for number, line in enumerate(lines, 1)]
+    assert module.response_bytes(unbounded) > 32768
+    result = reader(tmp_path).grep("é")
+    assert ("a", 1, lines[0]) in result
+    assert any("truncated" in line for _, _, line in result)
+    assert module.response_bytes(result) <= 32768
 
 
 def test_grep_serialized_output_stays_within_call_cap(tmp_path):

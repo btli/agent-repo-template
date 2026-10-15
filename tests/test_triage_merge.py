@@ -222,6 +222,10 @@ def action(monkeypatch, tmp_path, decision):
         prefix = ""
         if mode == "key":
             prefix = "credential-value\n"
+        if mode == "short_key":
+            import os
+
+            prefix = os.environ["GATEWAY_CREDENTIAL"] + "\n"
         if mode == "canary":
             prefix = canary + "\n"
         if mode == "other_key":
@@ -323,6 +327,18 @@ def test_final_artifact_scans_preserved_canary(action, monkeypatch):
 def test_agent_child_has_only_allowed_environment(action):
     action["mode"] = "environment"
     assert action["module"].main() == 0
+
+
+def test_explicit_short_key_with_nonmatching_name_is_scanned(action, monkeypatch, capsys):
+    monkeypatch.setenv("API_KEY_ENV", "GATEWAY_CREDENTIAL")
+    monkeypatch.setenv("GATEWAY_CREDENTIAL", "short-test")
+    action["mode"] = "short_key"
+    assert action["module"].main() == 1
+    assert action["calls"]
+    data = action["output"].read_text()
+    assert json.loads(data)["escalate"]["to"] == "maintainer"
+    captured = capsys.readouterr()
+    assert "short-test" not in data + captured.out + captured.err
 
 
 def test_timeout_has_kill_grace_and_no_key_in_argv(action):

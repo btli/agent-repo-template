@@ -84,6 +84,10 @@ def test_setup_config_has_env_reference_and_no_key(tmp_path, kind, url, base):
     family = config["providers"]["ci-gateway"]["anthropic"]
     assert family["base_url"] == base
     assert family["api_key_ref"] == "env:LLM_API_KEY"
+    from agent_repo.policies import agent_environment
+
+    key_name = family["api_key_ref"].removeprefix("env:")
+    assert agent_environment({key_name: "synthetic-value"})[key_name] == "synthetic-value"
     assert config["providers"]["ci-gateway"]["kind"] == "gateway"
     assert "credential-value" not in path.read_text() + result.stdout + result.stderr
     before = path.stat().st_mtime_ns

@@ -1,10 +1,11 @@
 import os
 
-from agent_repo.repo_tools import repository_reader
+from agent_repo.repo_tools import fixed_tool_errors, repository_reader
 from omnigent_client.tools import tool
 
 
 @tool
+@fixed_tool_errors
 def grep_repo(
     pattern: str, glob: str = "**/*", max_results: int = 200
 ) -> list[tuple[str, int, str]]:
