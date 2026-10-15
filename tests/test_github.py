@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.request import Request
 
 import pytest
-from agent_repo.github import GitHub, GitHubError
+from agent_repo.github import GitHub, GitHubError, _SafeRedirectHandler
 
 TOKEN = "secret-test-token"
 
@@ -99,28 +99,63 @@ def test_next_link_parses_independent_parameters_and_relation_tokens(link: str):
     assert GitHub._next_link({"Link": link}) == "https://api.github.com/page/2"
 
 
+@pytest.mark.parametrize(
+    ("link", "expected"),
+    [
+        (
+            '<https://api.github.com/page/2?labels=a,b>; rel="next"',
+            "https://api.github.com/page/2?labels=a,b",
+        ),
+        ('<https://api.github.com/page/2>; REL="NEXT"', "https://api.github.com/page/2"),
+        ('<https://api.github.com/page/2>; rel=""', None),
+        ('<https://api.github.com/page/2>; title="x; rel=next fake"; rel="last"', None),
+    ],
+)
+def test_next_link_handles_commas_case_and_quoted_parameters(link: str, expected: str | None):
+    assert GitHub._next_link({"Link": link}) == expected
+
+
+def test_paginate_follows_next_url_with_comma_using_url_dependent_responses():
+    seen: list[str] = []
+    responses = {
+        "https://api.github.com/start": (
+            {"Link": '<https://api.github.com/page/2?labels=a,b>; rel="next"'},
+            [1],
+        ),
+        "https://api.github.com/page/2?labels=a,b": ({}, [2]),
+    }
+
+    def transport(request: Request, timeout: float):
+        seen.append(request.full_url)
+        headers, payload = responses[request.full_url]
+        return 200, headers, json.dumps(payload).encode()
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    assert api.paginate("/start") == [1, 2]
+    assert seen == list(responses)
+
+
 def test_http_error_excludes_token():
     def transport(request: Request, timeout: float):
         return (
             404,
             {
-                "X-GitHub-Request-Id": "request-123",
-                "Retry-After": "30",
-                "X-RateLimit-Remaining": "0",
+                "X-GitHub-Request-Id": f"request-{TOKEN}",
+                "Retry-After": f"{TOKEN}-30",
+                "X-RateLimit-Remaining": f"{TOKEN}-0",
             },
-            b'{"message":"Not Found"}',
+            json.dumps({"message": f"{TOKEN} Not Found"}).encode(),
         )
 
     api = GitHub(TOKEN, "your-org/project", transport=transport)
     with pytest.raises(GitHubError) as caught:
         api.request("GET", "/missing")
     assert caught.value.status == 404
-    assert caught.value.message == "Not Found"
-    assert caught.value.request_id == "request-123"
-    assert caught.value.retry_after == "30"
-    assert caught.value.ratelimit_remaining == "0"
-    credential_absent = _credential_is_absent(str(caught.value))
-    assert credential_absent, "credential leaked in error text"
+    assert _credential_is_absent(caught.value.message)
+    assert _credential_is_absent(caught.value.request_id or "")
+    assert _credential_is_absent(caught.value.retry_after or "")
+    assert _credential_is_absent(caught.value.ratelimit_remaining or "")
+    assert _credential_is_absent(str(caught.value))
 
 
 def test_github_error_message_is_capped_and_token_free():
@@ -131,8 +166,8 @@ def test_github_error_message_is_capped_and_token_free():
     with pytest.raises(GitHubError) as caught:
         api.request("GET", "/missing")
     assert len(caught.value.message) <= 200
-    credential_absent = _credential_is_absent(str(caught.value))
-    assert credential_absent, "credential leaked in error text"
+    assert _credential_is_absent(caught.value.message)
+    assert _credential_is_absent(str(caught.value))
 
 
 @pytest.mark.parametrize(
@@ -196,6 +231,54 @@ def test_cross_origin_request_and_link_urls_are_rejected_before_transport(path: 
         else:
             api.request("GET", path)
     assert calls == ([] if not link else ["https://api.github.com/start"])
+
+
+def _refusal_is_sanitized(call) -> bool:
+    try:
+        call()
+    except Exception as error:
+        import traceback
+
+        return (
+            isinstance(error, GitHubError)
+            and _credential_is_absent(str(error))
+            and _credential_is_absent(repr(error))
+            and _credential_is_absent("".join(traceback.format_exception(error)))
+            and error.__cause__ is None
+        )
+    return False
+
+
+def test_invalid_constructor_api_url_is_sanitized():
+    assert _refusal_is_sanitized(
+        lambda: GitHub(TOKEN, "your-org/project", api_url=f"https://api.github.com:{TOKEN}")
+    )
+
+
+def test_refused_request_url_with_userinfo_is_sanitized():
+    calls: list[str] = []
+
+    def transport(request: Request, timeout: float):
+        calls.append(request.full_url)
+        return 200, {}, b"{}"
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    path = f"https://{TOKEN}@api.github.com\uff0fevil/path"
+    refused = _refusal_is_sanitized(lambda: api.request("GET", path))
+    assert refused
+    assert not calls
+
+
+def test_invalid_redirect_url_is_sanitized():
+    api = GitHub(TOKEN, "your-org/project")
+    handler = next(
+        handler for handler in api._opener.handlers if isinstance(handler, _SafeRedirectHandler)
+    )
+    request = Request("https://api.github.com/start", headers={"Authorization": f"Bearer {TOKEN}"})
+    target = f"https://{TOKEN}@[::1/secret"
+    assert _refusal_is_sanitized(
+        lambda: handler.redirect_request(request, None, 302, "Found", {}, target)
+    )
 
 
 def test_redirect_to_another_origin_never_receives_token():

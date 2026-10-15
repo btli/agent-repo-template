@@ -3,6 +3,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _obj(value: object) -> dict:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    raise ValueError("event object must be an object")
+
+
 @dataclass(frozen=True)
 class Event:
     name: str
@@ -36,32 +44,32 @@ def load_event(name: str, path: Path) -> Event:
         raise ValueError(f"invalid event payload: {path}") from exc
     if not isinstance(payload, dict):
         raise ValueError("event payload must be an object")
-    sender_data = payload.get("sender") or {}
+    sender_data = _obj(payload.get("sender"))
     sender = str(sender_data.get("login", ""))
     sender_type = sender_data.get("type", "")
-    comment = payload.get("comment") or {}
+    comment = _obj(payload.get("comment"))
     is_comment = name == "issue_comment"
     issue = payload.get("issue")
     pull = payload.get("pull_request")
     if is_comment:
-        selected_item = issue
-        is_pr = isinstance(issue, dict) and "pull_request" in issue
-        item = issue or {}
-        pull = item.get("pull_request") if is_pr else None
+        item = _obj(issue)
+        is_pr = "pull_request" in item
+        pull = _obj(item.get("pull_request")) if is_pr else {}
     else:
         is_pr = name == "pull_request_target"
         selected_item = pull if is_pr else issue
-        item = (pull if is_pr else issue) or {}
-    if selected_item is not None and not isinstance(selected_item, dict):
-        raise ValueError("event item must be an object")
-    if not isinstance(item, dict):
-        raise ValueError("event item must be an object")
-    user = item.get("user") or {}
-    repo_data = payload.get("repository") or {}
-    head = item.get("head") or {}
-    head_repo = head.get("repo") or {}
-    base = item.get("base") or {}
-    label_data = payload.get("label") or {}
+        if name in {"issues", "pull_request_target"} and selected_item is None:
+            raise ValueError("event item is required")
+        item = _obj(selected_item)
+    number = item.get("number")
+    if type(number) is not int:
+        raise ValueError("event number must be an integer")
+    user = _obj(item.get("user"))
+    repo_data = _obj(payload.get("repository"))
+    head = _obj(item.get("head"))
+    head_repo = _obj(head.get("repo"))
+    base = _obj(item.get("base"))
+    label_data = _obj(payload.get("label"))
     labels_data = item.get("labels") or []
     changes = payload.get("changes")
     edited_fields = (
@@ -73,14 +81,14 @@ def load_event(name: str, path: Path) -> Event:
         name=name,
         action=str(payload.get("action", "")),
         repo=str(repo_data.get("full_name", "")),
-        number=int(item.get("number", 0)),
+        number=number,
         is_pr=is_pr,
         sender=sender,
         sender_is_bot=sender_type == "Bot" or sender.endswith("[bot]"),
         author=str(user.get("login", "")),
         author_association=str(item.get("author_association", "")),
         comment_body=comment.get("body") if is_comment else None,
-        comment_author=(comment.get("user") or {}).get("login") if is_comment else None,
+        comment_author=_obj(comment.get("user")).get("login") if is_comment else None,
         label=label_data.get("name"),
         head_ref=head.get("ref"),
         head_repo=head_repo.get("full_name"),
@@ -89,7 +97,7 @@ def load_event(name: str, path: Path) -> Event:
         default_branch=str(repo_data.get("default_branch", "")),
         title=str(item.get("title") if item.get("title") is not None else ""),
         body=str(item.get("body") if item.get("body") is not None else ""),
-        labels=tuple(label.get("name", "") for label in labels_data),
+        labels=tuple(_obj(label).get("name", "") for label in labels_data),
         draft=bool(item.get("draft", False)),
         edited_fields=edited_fields,
     )

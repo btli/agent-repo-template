@@ -47,9 +47,10 @@ def _url_origin(url: str) -> tuple[str, str, int]:
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def __init__(self, api_origin: tuple[str, str, int]):
+    def __init__(self, api_origin: tuple[str, str, int], token: str = ""):
         super().__init__()
         self._api_origin = api_origin
+        self._token = token
 
     def redirect_request(
         self,
@@ -60,16 +61,17 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         headers: Any,
         new_url: str,
     ) -> urllib.request.Request | None:
-        redirected = super().redirect_request(request, response, code, message, headers, new_url)
-        if redirected is None:
-            return None
-        source_origin = _url_origin(request.full_url)
-        target_origin = _url_origin(new_url)
-        if (
-            source_origin != target_origin
-            or target_origin != self._api_origin
-            or (source_origin[0] == "https" and target_origin[0] == "http")
-        ):
+        try:
+            redirected = super().redirect_request(
+                request, response, code, message, headers, new_url
+            )
+            if redirected is None:
+                return None
+            source_origin = _url_origin(request.full_url)
+            target_origin = _url_origin(new_url)
+        except Exception:
+            raise GitHubError(0, "invalid redirect URL", token=self._token) from None
+        if source_origin != target_origin or target_origin != self._api_origin:
             for header_set in (redirected.headers, redirected.unredirected_hdrs):
                 for key in list(header_set):
                     if key.lower() == "authorization":
@@ -87,9 +89,12 @@ class GitHub:
     ):
         self._token = token
         self._repo = repo
-        self._api_url = api_url.rstrip("/")
-        self._api_origin = _url_origin(self._api_url)
-        self._opener = urllib.request.build_opener(_SafeRedirectHandler(self._api_origin))
+        try:
+            self._api_url = api_url.rstrip("/")
+            self._api_origin = _url_origin(self._api_url)
+        except Exception:
+            raise GitHubError(0, "invalid API URL", token=token) from None
+        self._opener = urllib.request.build_opener(_SafeRedirectHandler(self._api_origin, token))
         self._transport = transport or self._urlopen
 
     def _urlopen(
@@ -110,38 +115,39 @@ class GitHub:
         body: object | None = None,
         accept: str | None = None,
     ) -> tuple[object | str, dict[str, str]]:
-        parsed_path = urllib.parse.urlsplit(path)
-        if parsed_path.scheme or parsed_path.netloc:
-            url = path
-        elif path.startswith("/"):
-            url = f"{self._api_url}{path}"
-        else:
-            url = f"{self._api_url}/repos/{self._repo}/{path}"
         try:
+            parsed_path = urllib.parse.urlsplit(path)
+            if parsed_path.scheme or parsed_path.netloc:
+                url = path
+            elif path.startswith("/"):
+                url = f"{self._api_url}{path}"
+            else:
+                url = f"{self._api_url}/repos/{self._repo}/{path}"
+            if params:
+                query = urllib.parse.urlencode(params, doseq=True)
+                url = f"{url}{'&' if '?' in url else '?'}{query}"
             request_origin = _url_origin(url)
-        except ValueError:
-            raise GitHubError(
-                0, "refused request to an invalid origin", token=self._token
-            ) from None
+        except Exception:
+            raise GitHubError(0, "invalid API URL", token=self._token) from None
         if request_origin != self._api_origin:
             raise GitHubError(
                 0,
                 "refused request to a different origin",
                 token=self._token,
             )
-        if params:
-            query = urllib.parse.urlencode(params, doseq=True)
-            url = f"{url}{'&' if '?' in url else '?'}{query}"
         headers = {
+            "Authorization": f"Bearer {self._token}",
             "Accept": accept or "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        headers["Authorization"] = f"Bearer {self._token}"
         data = None
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        except Exception:
+            raise GitHubError(0, "invalid API URL", token=self._token) from None
         try:
             status, response_headers, response_body = self._transport(request, 30.0)
         except Exception as exc:
@@ -191,19 +197,50 @@ class GitHub:
         return value
 
     @staticmethod
+    def _split_link_values(value: str, separator: str) -> list[str]:
+        parts: list[str] = []
+        start = 0
+        in_angle = False
+        in_quote = False
+        escaped = False
+        for index, character in enumerate(value):
+            if in_angle:
+                if character == ">":
+                    in_angle = False
+                continue
+            if escaped:
+                escaped = False
+            elif in_quote and character == "\\":
+                escaped = True
+            elif character == '"':
+                in_quote = not in_quote
+            elif not in_quote and character == "<":
+                in_angle = True
+            elif not in_quote and character == separator:
+                parts.append(value[start:index])
+                start = index + 1
+        parts.append(value[start:])
+        return parts
+
+    @staticmethod
     def _next_link(headers: dict[str, str]) -> str | None:
         link = next((value for key, value in headers.items() if key.lower() == "link"), "")
-        for part in link.split(","):
-            match = re.match(r"\s*<([^>]+)>(.*)", part)
+        for part in GitHub._split_link_values(link, ","):
+            match = re.match(r"\s*<([^>]*)>(.*)", part)
             if match is None:
                 continue
-            relation = re.search(
-                r"(?:^|;)\s*rel\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^;\s]+))",
-                match.group(2),
-                re.IGNORECASE,
-            )
-            if relation and "next" in next(group for group in relation.groups() if group).split():
-                return match.group(1)
+            parameters = GitHub._split_link_values(match.group(2), ";")
+            for parameter in parameters:
+                name, separator, value = parameter.strip().partition("=")
+                if not separator or name.strip().lower() != "rel":
+                    continue
+                relation = value.strip()
+                if len(relation) >= 2 and relation[0] == relation[-1] == '"':
+                    relation = relation[1:-1]
+                elif len(relation) >= 2 and relation[0] == relation[-1] == "'":
+                    relation = relation[1:-1]
+                if any(token.lower() == "next" for token in relation.split()):
+                    return match.group(1)
         return None
 
     def paginate(self, path: str, params: dict | None = None, key: str | None = None) -> list:

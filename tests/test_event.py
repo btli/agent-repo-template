@@ -216,14 +216,22 @@ def test_null_issue_text_fields_normalize_to_empty_string(tmp_path: Path, field:
     assert getattr(event, field) == ""
 
 
-def test_pull_request_without_payload_uses_empty_item(tmp_path: Path):
+def test_pull_request_without_payload_raises_value_error(tmp_path: Path):
     payload = json.loads((EVENTS / "pull_request_target.opened.json").read_text())
     payload.pop("pull_request")
     path = tmp_path / "missing-pr.json"
     path.write_text(json.dumps(payload))
-    event = load_event("pull_request_target", path)
-    assert event.is_pr
-    assert event.number == 0
+    with pytest.raises(ValueError, match="event item is required"):
+        load_event("pull_request_target", path)
+
+
+def test_issue_without_payload_raises_value_error(tmp_path: Path):
+    payload = json.loads((EVENTS / "issues.opened.json").read_text())
+    payload.pop("issue")
+    path = tmp_path / "missing-issue.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="event item is required"):
+        load_event("issues", path)
 
 
 def test_non_mapping_pull_request_payload_raises_value_error(tmp_path: Path):
@@ -231,8 +239,48 @@ def test_non_mapping_pull_request_payload_raises_value_error(tmp_path: Path):
     payload["pull_request"] = []
     path = tmp_path / "invalid-pr.json"
     path.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="event item must be an object"):
+    with pytest.raises(ValueError, match="event object must be an object"):
         load_event("pull_request_target", path)
+
+
+@pytest.mark.parametrize(
+    ("filename", "object_path"),
+    [
+        ("issues.opened.json", ("sender",)),
+        ("issue_comment.created.issue.json", ("comment",)),
+        ("issue_comment.created.issue.json", ("comment", "user")),
+        ("issues.opened.json", ("issue", "user")),
+        ("issues.opened.json", ("repository",)),
+        ("pull_request_target.opened.json", ("pull_request", "head")),
+        ("pull_request_target.opened.json", ("pull_request", "head", "repo")),
+        ("pull_request_target.opened.json", ("pull_request", "base")),
+        ("issues.labeled.json", ("label",)),
+        ("issues.opened.json", ("issue", "labels")),
+    ],
+)
+def test_invalid_nested_event_objects_raise_value_error(
+    tmp_path: Path, filename: str, object_path: tuple[str, ...]
+):
+    payload = json.loads((EVENTS / filename).read_text())
+    target = payload
+    for key in object_path[:-1]:
+        target = target[key]
+    target[object_path[-1]] = "not an object"
+    path = tmp_path / "invalid-object.json"
+    path.write_text(json.dumps(payload))
+    event_name = "issue_comment" if filename.startswith("issue_comment") else filename.split(".")[0]
+    with pytest.raises(ValueError, match="event object must be an object"):
+        load_event(event_name, path)
+
+
+@pytest.mark.parametrize("number", [None, "12", True, 12.0])
+def test_non_integer_event_number_raises_value_error(tmp_path: Path, number: object):
+    payload = json.loads((EVENTS / "issues.opened.json").read_text())
+    payload["issue"]["number"] = number
+    path = tmp_path / "invalid-number.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="event number must be an integer"):
+        load_event("issues", path)
 
 
 @pytest.mark.parametrize(
