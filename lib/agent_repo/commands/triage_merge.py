@@ -6,7 +6,22 @@ from pathlib import Path
 from agent_repo.schema import load_schema, validate
 
 
-def merge(decision: dict, tier2: dict | None, error: str | None) -> dict:
+def label_corrections(tier2: dict, allowed_labels: set[str] | None) -> list[str] | None:
+    corrections = list(
+        dict.fromkeys(label for label in tier2["labels"] if label.startswith(("type:", "area:")))
+    )
+    if (
+        allowed_labels is None
+        or any(label not in allowed_labels for label in corrections)
+        or sum(label.startswith("type:") for label in corrections) > 1
+    ):
+        return None
+    return corrections
+
+
+def merge(
+    decision: dict, tier2: dict | None, error: str | None, *, allowed_labels: set[str] | None = None
+) -> dict:
     schema = load_schema("decision")
     if validate(decision, schema):
         raise ValueError("invalid Tier-1 decision")
@@ -22,14 +37,19 @@ def merge(decision: dict, tier2: dict | None, error: str | None) -> dict:
             "reason": "Tier-2 triage failed or returned invalid output.",
         }
         return result
+    corrections = label_corrections(tier2, allowed_labels)
+    if corrections is None:
+        result["escalate"] = {
+            "to": "maintainer",
+            "reason": "Tier-2 label corrections violate the repository taxonomy.",
+        }
+        return result
     for key in ["rca", "needs_info", "escalate"]:
         result[key] = copy.deepcopy(tier2[key])
     result["labels"] = [
         label for label in decision["labels"] if not label.startswith(("type:", "area:"))
     ]
-    result["labels"].extend(
-        label for label in tier2["labels"] if label.startswith(("type:", "area:"))
-    )
+    result["labels"] = list(dict.fromkeys(result["labels"] + corrections))
     if result["close"] is not None:
         vote = tier2["close"]
         result["close"]["tier2_agrees"] = bool(

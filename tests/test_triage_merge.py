@@ -12,8 +12,9 @@ def decision():
     return json.loads(Path("tests/fixtures/triage/tier1.json").read_text())
 
 
-def merge(*args):
-    return importlib.import_module("agent_repo.commands.triage_merge").merge(*args)
+def merge(*args, **kwargs):
+    kwargs.setdefault("allowed_labels", {"type:bug", "type:question", "area:core", "area:ui"})
+    return importlib.import_module("agent_repo.commands.triage_merge").merge(*args, **kwargs)
 
 
 def test_keeps_tier1_authority_and_copies_only_corrections(decision):
@@ -85,79 +86,6 @@ def test_matching_close_vote_and_info_request(decision):
     assert validate(result, load_schema("decision")) == []
 
 
-@pytest.mark.parametrize(
-    "mode", ["success", "nonzero", "prose", "invalid", "key", "canary", "escapedkey"]
-)
-def test_action_fails_closed_on_runner_output(tmp_path, mode):
-    import os
-    import subprocess
-    import sys
-
-    decision = json.loads(Path("tests/fixtures/triage/tier1.json").read_text())
-    issue = tmp_path / "issue.txt"
-    issue.write_text("The parser fails on an empty body.")
-    context = tmp_path / "context.json"
-    context.write_text(
-        json.dumps(
-            {
-                key: "reference"
-                for key in ["charter", "areas", "labels", "contributing", "docs_index"]
-            }
-        )
-    )
-    output = tmp_path / "decision.json"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    executable = bin_dir / "timeout"
-    executable.write_text(
-        f"#!{sys.executable}\n"
-        + """import json,os,re,sys
-prompt=sys.argv[-1]
-mode=os.environ['FAKE_MODE']
-expected=['900','omnigent','run',os.environ['TRIAGE_AGENT'],'--no-session','--no-log']
-assert sys.argv[1:7] == expected
-assert os.environ['LLM_API_KEY'] == 'credential-value'
-if mode=='nonzero': sys.exit(7)
-if mode=='prose': print('no JSON');sys.exit(0)
-if mode=='key': print(os.environ['LLM_API_KEY']);sys.exit(0)
-if mode=='canary': print(re.search(r'Private canary: (\\S+)',prompt)[1]);sys.exit(0)
-d=json.load(open(os.environ['DECISION_FILE']))
-if mode=='invalid': d['labels']='wrong'
-if mode=='escapedkey':
- d['rca']={'hypothesis':'credential-value','locations':[],
-           'confidence':'low','confirm_with':'check'}
- escaped=''.join(chr(92)+'u%04x'%ord(c) for c in 'credential-value')
- text=json.dumps(d).replace('credential-value',escaped)
- print('```json\\n'+text+'\\n```');sys.exit(0)
-print('```json\\n'+json.dumps(d)+'\\n```')
-"""
-    )
-    compile(executable.read_text(), str(executable), "exec")
-    executable.chmod(0o755)
-    env = dict(
-        os.environ,
-        PATH=str(bin_dir) + os.pathsep + os.environ["PATH"],
-        PYTHONPATH=str(Path("lib").resolve()),
-        TRIAGE_AGENT=str(Path("agents/triage").resolve()),
-        DECISION_FILE=str(Path("tests/fixtures/triage/tier1.json").resolve()),
-        ISSUE_FILE=str(issue),
-        CONTEXT_FILE=str(context),
-        OUTPUT_FILE=str(output),
-        API_KEY_ENV="ROLE_KEY",
-        ROLE_KEY="credential-value",
-        FAKE_MODE=mode,
-    )
-    result = subprocess.run(
-        [sys.executable, "actions/triage-agent/run.py"], env=env, capture_output=True, text=True
-    )
-    assert result.returncode == (0 if mode == "success" else 1)
-    merged = json.loads(output.read_text())
-    assert merged["answers"] == decision["answers"]
-    assert validate(merged, load_schema("decision")) == []
-    assert bool(merged["escalate"]) == (mode != "success")
-    assert "credential-value" not in result.stdout + result.stderr + output.read_text()
-
-
 def test_merge_cli_is_idempotent(tmp_path, decision):
     command = importlib.import_module("agent_repo.commands.triage_merge")
     source = Path("tests/fixtures/triage/tier1.json")
@@ -168,3 +96,234 @@ def test_merge_cli_is_idempotent(tmp_path, decision):
     assert command.main(args) == 0
     assert output.stat().st_mtime_ns == before
     assert json.loads(output.read_text())["answers"] == decision["answers"]
+
+
+@pytest.mark.parametrize(
+    "labels", [["type:invented"], ["area:invented"], ["type:bug", "type:question"]]
+)
+def test_unknown_or_multiple_types_escalate(decision, labels):
+    tier2 = copy.deepcopy(decision)
+    tier2["labels"] = labels
+    result = merge(decision, tier2, None)
+    assert result["escalate"]["to"] == "maintainer"
+    assert result["labels"] == decision["labels"]
+
+
+def test_label_corrections_are_deduplicated(decision):
+    tier2 = copy.deepcopy(decision)
+    tier2["labels"] = ["type:question", "type:question", "area:ui", "area:ui"]
+    assert merge(decision, tier2, None)["labels"] == [
+        "priority:P2",
+        "keep",
+        "type:question",
+        "area:ui",
+    ]
+
+
+def test_missing_taxonomy_escalates(decision):
+    assert merge(decision, decision, None, allowed_labels=None)["escalate"]["to"] == "maintainer"
+
+
+@pytest.fixture
+def action(monkeypatch, tmp_path, decision):
+    import importlib.util
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    for key, value in {
+        "DECISION_FILE": json.dumps(decision),
+        "CONTEXT_FILE": json.dumps(
+            {
+                "charter": "report",
+                "contributing": "tests",
+                "docs_index": "README.md",
+                "labels": json.dumps({"labels": ["type:bug", "type:question", "area:core"]}),
+                "areas": json.dumps({"areas": [{"name": "core"}]}),
+            }
+        ),
+        "ISSUE_FILE": "Parser bug",
+    }.items():
+        path = runner_temp / key
+        path.write_text(value)
+        monkeypatch.setenv(key, str(path))
+    output = runner_temp / "result.json"
+    for key, value in {
+        "GITHUB_WORKSPACE": str(root),
+        "RUNNER_TEMP": str(runner_temp),
+        "TRIAGE_AGENT": str(Path("agents/triage").resolve()),
+        "OUTPUT_FILE": str(output),
+        "API_KEY_ENV": "ROLE_KEY",
+        "ROLE_KEY": "credential-value",
+        "SENTINEL_JOB_SECRET": "unrelated-job-secret",
+        "GITHUB_TOKEN": "github-sentinel",
+        "ACTIONS_RUNTIME_TOKEN": "actions-sentinel",
+    }.items():
+        monkeypatch.setenv(key, value)
+    spec = importlib.util.spec_from_file_location("triage_action", "actions/triage-agent/run.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    state = {
+        "mode": "success",
+        "calls": [],
+        "output": output,
+        "decision": decision,
+        "module": module,
+    }
+    real_run = subprocess.run
+
+    def fake_run(command, **kwargs):
+        if Path(command[0]).name == "yq":
+            return real_run(command, **kwargs)
+        if command[0] == "grep":
+            state["calls"].append((command, kwargs))
+            return subprocess.CompletedProcess(
+                command, int(b"credential-value" not in kwargs["input"]), b"", b""
+            )
+        state["calls"].append((command, kwargs))
+        prompt = command[-1]
+        import re
+
+        canary = re.search(r"Private canary: (\S+)", prompt)[1]
+        data = copy.deepcopy(decision)
+        data["notes"] = []
+        mode = state["mode"]
+        prefix = ""
+        if mode == "key":
+            prefix = "credential-value\n"
+        if mode == "canary":
+            prefix = canary + "\n"
+        if mode == "other_key":
+            prefix = "unrelated-job-secret\n"
+        if mode == "run_id":
+            data["run_id"] = "other"
+        if mode == "base_sha":
+            data["base_sha"] = "b" * 40
+        if mode == "taxonomy":
+            data["labels"] = ["type:invented"]
+        if mode == "escapedkey":
+            data["rca"] = {
+                "hypothesis": "credential-value",
+                "locations": [],
+                "confidence": "low",
+                "confirm_with": "check",
+            }
+        if mode == "environment":
+            script = (
+                "import os; "
+                "assert all(k not in os.environ for k in "
+                "['SENTINEL_JOB_SECRET','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ROLE_KEY']); "
+                "assert os.environ['LLM_API_KEY']=='credential-value'"
+            )
+            import sys
+
+            child = real_run([sys.executable, "-c", script], env=kwargs["env"], capture_output=True)
+            assert child.returncode == 0, "job secret inherited by child"
+        encoded = json.dumps(data)
+        if mode == "escapedkey":
+            encoded = encoded.replace(
+                "credential-value", "".join(chr(92) + f"u{ord(c):04x}" for c in "credential-value")
+            )
+        stdout = (prefix + "```json\n" + encoded + "\n```\n").encode()
+        # Every adverse mode has otherwise schema-valid JSON.
+        assert validate(data, load_schema("decision")) == []
+        return subprocess.CompletedProcess(command, 7 if mode == "nonzero" else 0, stdout, b"")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    return state
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "success",
+        "key",
+        "canary",
+        "nonzero",
+        "run_id",
+        "base_sha",
+        "escapedkey",
+        "other_key",
+        "taxonomy",
+    ],
+)
+def test_action_targeted_failures_with_valid_json(action, mode, capsys):
+    action["mode"] = mode
+    rc = action["module"].main()
+    assert rc == (0 if mode == "success" else 1)
+    data = json.loads(action["output"].read_text())
+    assert bool(data["escalate"]) == (mode != "success")
+    assert data["answers"] == action["decision"]["answers"]
+    assert validate(data, load_schema("decision")) == []
+    captured = capsys.readouterr()
+    assert "credential-value" not in captured.out + captured.err + action["output"].read_text()
+
+
+@pytest.mark.parametrize("credential", ["credential-value", "unrelated-job-secret"])
+@pytest.mark.parametrize("failure", [False, True])
+def test_final_artifact_scans_preserved_tier1_credential(
+    action, monkeypatch, failure, capsys, credential
+):
+    import os
+
+    decision = copy.deepcopy(action["decision"])
+    decision["notes"] = [credential]
+    Path(os.environ["DECISION_FILE"]).write_text(json.dumps(decision))
+    action["output"].write_text("stale artifact")
+    action["mode"] = "nonzero" if failure else "success"
+    assert action["module"].main() == 1
+    assert action["calls"]
+    assert not action["output"].exists()
+    captured = capsys.readouterr()
+    assert "credential-value" not in captured.out + captured.err
+
+
+def test_final_artifact_scans_preserved_canary(action, monkeypatch):
+    import os
+
+    monkeypatch.setattr(action["module"].secrets, "token_hex", lambda _: "private-canary")
+    decision = copy.deepcopy(action["decision"])
+    decision["notes"] = ["private-canary"]
+    Path(os.environ["DECISION_FILE"]).write_text(json.dumps(decision))
+    assert action["module"].main() == 1
+    assert not action["output"].exists()
+
+
+def test_agent_child_has_only_allowed_environment(action):
+    action["mode"] = "environment"
+    assert action["module"].main() == 0
+
+
+def test_timeout_has_kill_grace_and_no_key_in_argv(action):
+    assert action["module"].main() == 0
+    command = action["calls"][0][0]
+    assert command[:4] == ["timeout", "-k", "15", "900"]
+    assert all(
+        "credential-value" not in argument for command, _ in action["calls"] for argument in command
+    )
+
+
+def test_oversize_prompt_escalates_without_spawning(action):
+    import os
+
+    Path(os.environ["ISSUE_FILE"]).write_text("x" * 140000)
+    assert action["module"].main() == 1
+    assert not action["calls"]
+    assert json.loads(action["output"].read_text())["escalate"]["to"] == "maintainer"
+
+
+@pytest.mark.parametrize(
+    "context", [{"labels": "labels: [42]"}, {"areas": "areas: broken"}, {"labels": "labels: ["}]
+)
+def test_invalid_taxonomy_fails_closed(action, context):
+    import os
+
+    path = Path(os.environ["CONTEXT_FILE"])
+    data = json.loads(path.read_text())
+    data.update(context)
+    path.write_text(json.dumps(data))
+    assert action["module"].main() == 1
+    assert not action["calls"]
+    assert json.loads(action["output"].read_text())["escalate"]["to"] == "maintainer"

@@ -122,3 +122,51 @@ def test_setup_invalid_input_is_sanitized(tmp_path):
 def test_nonfinite_json_is_rejected():
     with pytest.raises(ValueError):
         module().extract_json('```json\n{"value":NaN}\n```')
+
+
+@pytest.mark.parametrize(
+    "model,accepted",
+    [
+        ("claude-sonnet-4-6", True),
+        ("databricks-claude-sonnet-4-5", True),
+        ("system.ai.claude-sonnet-4-6", True),
+        ("anthropic/claude-sonnet-4-6", True),
+        ("gpt-5", False),
+        ("anthropic/gpt-5", False),
+        ("notclaude-sonnet", False),
+        ("claude-sonnet;echo", False),
+        ("claude-foo$(echo)", False),
+        ("claude-foo\n", False),
+        ("claude-" + "x" * 130, False),
+    ],
+)
+def test_gateway_model_families(tmp_path, model, accepted):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "actions/setup/configure.py"],
+        env=dict(
+            os.environ,
+            HOME=str(tmp_path),
+            GATEWAY_KIND="databricks",
+            GATEWAY_URL="https://gateway.example",
+            MODEL=model,
+            API_KEY_ENV="LLM_API_KEY",
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == (0 if accepted else 1)
+    path = tmp_path / ".omnigent/config.yaml"
+    if accepted:
+        assert (
+            json.loads(path.read_text())["providers"]["ci-gateway"]["anthropic"]["models"][
+                "default"
+            ]
+            == model
+        )
+    else:
+        assert not path.exists()
