@@ -258,11 +258,6 @@ def action(monkeypatch, tmp_path, decision):
     def fake_run(command, **kwargs):
         if Path(command[0]).name == "yq":
             return real_run(command, **kwargs)
-        if command[0] == "grep":
-            state["calls"].append((command, kwargs))
-            return subprocess.CompletedProcess(
-                command, int(b"credential-value" not in kwargs["input"]), b"", b""
-            )
         state["calls"].append((command, kwargs))
         prompt = command[-1]
         import re
@@ -487,6 +482,43 @@ def test_runner_metadata_does_not_escalate(action, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "name,value",
+    [
+        ("OTHER_TOKEN", "false"),
+        ("SKIP_AUTH", "false"),
+        ("REPO_PRIVATE", "false"),
+        ("OIDC_AUTH", "true"),
+        ("CACHE_KEY", "null"),
+        ("OTHER_KEY", "none"),
+        ("SERVICE_AUTH", "12.5"),
+        ("FEATURE_AUTH", "TrUe"),
+    ],
+)
+def test_incidental_flags_do_not_escalate(action, monkeypatch, name, value):
+    import os
+
+    monkeypatch.setenv(name, value)
+    decision = copy.deepcopy(action["decision"])
+    decision["notes"] = [value]
+    Path(os.environ["DECISION_FILE"]).write_text(json.dumps(decision))
+    assert action["module"].main() == 0
+    assert action["calls"]
+    result = json.loads(action["output"].read_text())
+    assert result["escalate"] is None
+    assert result["notes"] == [value]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["ROLE_KEY", "GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"],
+)
+def test_explicit_flag_values_remain_protected(action, monkeypatch, name):
+    monkeypatch.setenv(name, "false")
+    assert action["module"].main() == 1
+    assert not action["output"].exists()
+
+
+@pytest.mark.parametrize(
     "name,credential",
     [
         ("GITHUB_TOKEN", "github-sentinel"),
@@ -543,6 +575,8 @@ def test_context_taxonomy_uses_shared_loader_and_unknown(action, tmp_path):
     [
         "base64",
         "base64_unpadded",
+        "base64_bearer",
+        "base64_bearer_x",
         "urlsafe",
         "urlsafe_unpadded",
         "hex",
@@ -570,6 +604,8 @@ def test_derived_credentials_and_canary_cannot_escape(
     forms = {
         "base64": base64.b64encode(raw).decode(),
         "base64_unpadded": base64.b64encode(raw).decode().rstrip("="),
+        "base64_bearer": base64.b64encode(b"Bearer " + raw).decode(),
+        "base64_bearer_x": base64.b64encode(b"Bearer x" + raw).decode(),
         "urlsafe": base64.urlsafe_b64encode(raw).decode(),
         "urlsafe_unpadded": base64.urlsafe_b64encode(raw).decode().rstrip("="),
         "hex": raw.hex(),
@@ -605,6 +641,21 @@ def test_derived_credentials_and_canary_cannot_escape(
         ("SERVICE_PASS", "pass-sentinel", "pass-sentinel"),
         ("SERVICE_PRIVATE", "private-sentinel", "private-sentinel"),
         ("SERVICE_DSN", "dsn-sentinel", "dsn-sentinel"),
+        (
+            "DATABASE_URL",
+            urlunsplit(("https", "ghp_verySecretToken@example.test", "/repo", "", "")),
+            "ghp_verySecretToken",
+        ),
+        (
+            "DATABASE_URL",
+            urlunsplit(("https", "ghp_very%53ecretToken@example.test", "/repo", "", "")),
+            "ghp_very%53ecretToken",
+        ),
+        (
+            "DATABASE_URL",
+            urlunsplit(("https", "ghp_very%53ecretToken@example.test", "/repo", "", "")),
+            "ghp_verySecretToken",
+        ),
         ("DATABASE_URL", DATABASE_URL, DATABASE_URL),
         ("DATABASE_URL", DATABASE_URL, "s3cr3t"),
         ("DATABASE_URL", urlunsplit(("postgresql", "alice:s3%63r3t@db", "", "", "")), "s3cr3t"),

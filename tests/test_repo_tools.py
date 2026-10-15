@@ -62,6 +62,9 @@ def test_read_window_in_large_file(tmp_path):
     (tmp_path / "file").write_text("prefix\n" * 10000 + "wanted\nlast\n")
     module = importlib.import_module("agent_repo.repo_tools")
     obj = reader(tmp_path)
+    window = obj.read_file("file", max_lines=400)
+    assert "rest of this file is unreachable in this run; escalate if needed" in window
+    assert "request a later start_line" not in window
     before = obj._used
     with pytest.raises(module.ToolError, match="per-call byte budget exceeded"):
         obj.read_file("file", start_line=10001, max_lines=1)
