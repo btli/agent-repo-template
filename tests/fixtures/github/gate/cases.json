@@ -552,7 +552,16 @@
       {
         "id": 1,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T11:55:00Z"
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       }
     ]
   },
@@ -600,7 +609,16 @@
       {
         "id": 1,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T11:50:00Z"
+        "created_at": "2026-10-14T11:50:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       }
     ]
   },
@@ -643,17 +661,44 @@
       {
         "id": 1,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z"
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       },
       {
         "id": 2,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z"
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       },
       {
         "id": 3,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z"
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       }
     ]
   },
@@ -696,12 +741,30 @@
       {
         "id": 1,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z"
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       },
       {
         "id": 2,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z"
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       }
     ]
   },
@@ -744,17 +807,44 @@
       {
         "id": 1,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z"
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       },
       {
         "id": 2,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z"
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       },
       {
         "id": 99,
         "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T11:55:00Z"
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       }
     ]
   },
@@ -797,22 +887,58 @@
       {
         "id": 0,
         "display_title": "agent-triage #120",
-        "created_at": "2026-10-14T11:55:00Z"
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       },
       {
         "id": 1,
         "display_title": "agent-triage #12 extra",
-        "created_at": "2026-10-14T11:55:00Z"
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       },
       {
         "id": 2,
         "display_title": "other",
-        "created_at": "2026-10-14T11:55:00Z"
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       },
       {
         "id": 4,
         "display_title": "agent-triage #12x",
-        "created_at": "2026-10-14T11:55:00Z"
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_id": 77,
+        "event": "issues",
+        "path": ".github/workflows/agent-triage.yml",
+        "repository": {
+          "id": 7
+        },
+        "head_repository": {
+          "id": 7
+        }
       }
     ]
   },
@@ -853,10 +979,20 @@
     },
     "artifacts": [
       {
-        "name": "tier2-20261014-contributor"
+        "name": "tier2-20261014-contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014-contributor"
+        "name": "tier2-20261014-contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       }
     ]
   },
@@ -897,79 +1033,204 @@
     },
     "artifacts": [
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       }
     ]
   },
@@ -1010,79 +1271,204 @@
     },
     "artifacts": [
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014"
+        "name": "tier2-20261014",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261014-contributor"
+        "name": "tier2-20261014-contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       }
     ]
   },
@@ -1123,85 +1509,220 @@
     },
     "artifacts": [
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013"
+        "name": "tier2-20261013",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013-contributor"
+        "name": "tier2-20261013-contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       },
       {
-        "name": "tier2-20261013-contributor"
+        "name": "tier2-20261013-contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
       }
     ]
   },
@@ -1925,8 +2446,8 @@
         "default_branch": "main"
       },
       "sender": {
-        "login": "contributor",
-        "type": "User"
+        "login": "helper[bot]",
+        "type": "Bot"
       },
       "pull_request": {
         "number": 24,
