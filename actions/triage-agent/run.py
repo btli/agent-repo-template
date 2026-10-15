@@ -33,10 +33,7 @@ def main() -> int:
         if value
         and (
             name in {key_env, "LLM_API_KEY"}
-            or (
-                len(value) >= 16
-                and any(part in name.upper() for part in ["TOKEN", "KEY", "SECRET", "PASSWORD"])
-            )
+            or any(part in name.upper() for part in ["TOKEN", "KEY", "SECRET", "PASSWORD"])
         )
     }
     sensitive = private | {canary, "LLM_API_KEY"}

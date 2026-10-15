@@ -86,6 +86,37 @@ def test_matching_close_vote_and_info_request(decision):
     assert validate(result, load_schema("decision")) == []
 
 
+@pytest.mark.parametrize("mode", ["null", "replacement", "runtime", "taxonomy"])
+def test_tier1_escalation_is_preserved(decision, mode):
+    decision["escalate"] = {"to": "maintainer", "reason": "Tier-1 needs a maintainer."}
+    original = copy.deepcopy(decision)
+    tier2 = copy.deepcopy(decision)
+    tier2["escalate"] = (
+        {"to": "maintainer", "reason": "A different reason."} if mode == "replacement" else None
+    )
+    if mode == "taxonomy":
+        tier2["labels"] = ["type:invented"]
+    result = merge(decision, tier2, "failed" if mode == "runtime" else None)
+    assert result["escalate"] == original["escalate"]
+    assert decision == original
+
+
+@pytest.mark.parametrize(
+    "labels,expected",
+    [
+        ([], ["type:bug", "area:core", "priority:P2", "keep"]),
+        (["type:question"], ["area:core", "priority:P2", "keep", "type:question"]),
+        (["area:ui"], ["type:bug", "priority:P2", "keep", "area:ui"]),
+    ],
+)
+def test_omitted_label_groups_are_preserved(decision, labels, expected):
+    tier2 = copy.deepcopy(decision)
+    tier2["labels"] = labels
+    result = merge(decision, tier2, None)
+    assert result["labels"] == expected
+    assert result["escalate"] is None
+
+
 def test_merge_cli_is_idempotent(tmp_path, decision):
     import os
     import subprocess
@@ -229,7 +260,14 @@ def action(monkeypatch, tmp_path, decision):
         if mode == "canary":
             prefix = canary + "\n"
         if mode == "other_key":
-            prefix = "unrelated-job-secret\n"
+            prefix = state.get("credential", "unrelated-job-secret") + "\n"
+        if mode == "other_escaped_key":
+            data["rca"] = {
+                "hypothesis": state["credential"],
+                "locations": [],
+                "confidence": "low",
+                "confirm_with": "check",
+            }
         if mode == "run_id":
             data["run_id"] = "other"
         if mode == "base_sha":
@@ -258,6 +296,11 @@ def action(monkeypatch, tmp_path, decision):
         if mode == "escapedkey":
             encoded = encoded.replace(
                 "credential-value", "".join(chr(92) + f"u{ord(c):04x}" for c in "credential-value")
+            )
+        if mode == "other_escaped_key":
+            encoded = encoded.replace(
+                state["credential"],
+                "".join(chr(92) + f"u{ord(c):04x}" for c in state["credential"]),
             )
         stdout = (prefix + "```json\n" + encoded + "\n```\n").encode()
         # Every adverse mode has otherwise schema-valid JSON.
@@ -374,11 +417,46 @@ def test_invalid_taxonomy_fails_closed(action, context):
     assert json.loads(action["output"].read_text())["escalate"]["to"] == "maintainer"
 
 
-def test_short_token_named_value_is_not_a_credential(action, monkeypatch):
+def test_ambiguous_short_credential_fails_closed(action, monkeypatch):
     monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
-    assert action["module"].main() == 0
-    assert '"security": false' in action["output"].read_text()
-    assert "[redacted credential]" not in action["calls"][0][0][-1]
+    assert action["module"].main() == 1
+    assert not action["output"].exists()
+
+
+@pytest.mark.parametrize(
+    "name,credential",
+    [
+        ("GITHUB_TOKEN", "github-sentinel"),
+        ("ACTIONS_RUNTIME_TOKEN", "run-sentinel"),
+        ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-sentinel"),
+        ("OTHER_TOKEN", "other-token"),
+        ("OTHER_KEY", "other-key"),
+        ("OTHER_SECRET", "other-secret"),
+        ("OTHER_PASSWORD", "other-password"),
+    ],
+)
+@pytest.mark.parametrize("source", ["tier1", "raw", "decoded"])
+def test_unrelated_short_credentials_cannot_escape(
+    action, monkeypatch, capsys, name, credential, source
+):
+    import os
+
+    monkeypatch.setenv(name, credential)
+    action["output"].write_text("stale artifact")
+    if source == "tier1":
+        decision = copy.deepcopy(action["decision"])
+        decision["notes"] = [credential]
+        Path(os.environ["DECISION_FILE"]).write_text(json.dumps(decision))
+    else:
+        action["credential"] = credential
+        action["mode"] = "other_key" if source == "raw" else "other_escaped_key"
+    assert action["module"].main() == 1
+    assert action["calls"]
+    text = action["output"].read_text() if action["output"].exists() else ""
+    if text:
+        assert json.loads(text)["escalate"]["to"] == "maintainer"
+    captured = capsys.readouterr()
+    assert credential not in text + captured.out + captured.err
 
 
 def test_context_taxonomy_uses_shared_loader_and_unknown(action, tmp_path):
