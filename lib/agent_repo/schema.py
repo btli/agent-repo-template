@@ -119,8 +119,10 @@ def validate(instance: object, schema: dict) -> list[str]:
                 errors.append(f"{path}: maxLength")
             if "pattern" in rule:
                 pattern = rule["pattern"]
-                if pattern.endswith("$") and (len(pattern) - len(pattern.rstrip("\\"))) % 2 == 0:
-                    pattern = pattern[:-1] + r"\Z"
+                if pattern.endswith("$"):
+                    trailing_backslashes = len(pattern[:-1]) - len(pattern[:-1].rstrip("\\"))
+                    if trailing_backslashes % 2 == 0:
+                        pattern = pattern[:-1] + r"\Z"
                 if re.search(pattern, value) is None:
                     errors.append(f"{path}: pattern")
 

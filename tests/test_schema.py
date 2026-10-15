@@ -27,6 +27,10 @@ def test_enum_const_type_and_pattern_mismatches_each_give_one_error():
 def test_anchored_pattern_rejects_trailing_newline():
     fix = load_schema("fix")
     assert validate("a" * 40 + "\n", fix["properties"]["base_sha"])
+    assert validate("price$", {"type": "string", "pattern": r"price\$"}) == []
+    escaped_backslash_anchor = {"type": "string", "pattern": r"path\\$"}
+    assert validate("path\\", escaped_backslash_anchor) == []
+    assert validate("path\\\n", escaped_backslash_anchor)
 
 
 def test_const_and_enum_use_json_type_equality():
