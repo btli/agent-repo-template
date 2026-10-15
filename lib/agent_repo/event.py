@@ -54,7 +54,6 @@ def load_event(name: str, path: Path) -> Event:
     if is_comment:
         item = _obj(issue)
         is_pr = "pull_request" in item
-        pull = _obj(item.get("pull_request")) if is_pr else {}
     else:
         is_pr = name == "pull_request_target"
         selected_item = pull if is_pr else issue

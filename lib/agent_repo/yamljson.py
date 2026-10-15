@@ -23,7 +23,11 @@ def load_yaml(path: Path) -> object:
         raise YamlError("yq v4 is required to read YAML")
     try:
         result = subprocess.run(
-            [binary, "-o=json", str(path)], capture_output=True, text=True, check=False, timeout=30
+            [binary, "-o=json", str(path.resolve())],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise YamlError(f"cannot read YAML file: {path}") from exc

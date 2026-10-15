@@ -59,6 +59,8 @@ def lint_charter(text: str) -> list[str]:
     missing = [heading for heading in REQUIRED_HEADINGS if heading not in sections]
     if missing:
         return [f"missing required heading: {heading}" for heading in missing]
+    if not sections["Mission"]:
+        return ["Mission must not be empty"]
     present = _priorities(sections["Priorities"])
     return [f"missing priority: P{number}" for number in range(4) if f"P{number}" not in present]
 
@@ -77,8 +79,6 @@ def parse_charter(text: str) -> Charter:
         DocRef(title, url)
         for title, url in re.findall(r"\[([^]]+)\]\((https?://[^)]+)\)", sections["Docs index"])
     )
-    if not sections["Mission"]:
-        raise ValueError("Mission must not be empty")
     return Charter(
         sections["Mission"],
         _items(sections["In scope"]),

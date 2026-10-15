@@ -137,6 +137,34 @@ def test_paginate_follows_next_url_with_comma_using_url_dependent_responses():
     assert seen == list(responses)
 
 
+def test_paginate_rejects_repeated_next_url():
+    seen: list[str] = []
+
+    def transport(request: Request, timeout: float):
+        seen.append(request.full_url)
+        if len(seen) > 2:
+            raise AssertionError("pagination should stop on the repeated URL")
+        return 200, {"Link": '<https://api.github.com/start>; rel="next"'}, b"[1]"
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError, match="pagination loop"):
+        api.paginate("/start")
+    assert seen == ["https://api.github.com/start"]
+
+
+def test_paginate_reports_unexpected_response_shape():
+    def transport(request: Request, timeout: float):
+        return 200, {}, b'{"items": "not a list"}'
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError) as caught:
+        api.paginate("/start", key="items")
+    assert caught.value.message == "unexpected paginated response shape"
+    assert str(caught.value) == (
+        "GitHub API request failed with status 200: unexpected paginated response shape"
+    )
+
+
 def test_http_error_excludes_token():
     def transport(request: Request, timeout: float):
         return (

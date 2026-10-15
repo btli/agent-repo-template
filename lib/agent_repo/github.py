@@ -113,26 +113,7 @@ class GitHub:
         body: object | None = None,
         accept: str | None = None,
     ) -> tuple[object | str, dict[str, str]]:
-        try:
-            parsed_path = urllib.parse.urlsplit(path)
-            if parsed_path.scheme or parsed_path.netloc:
-                url = path
-            elif path.startswith("/"):
-                url = f"{self._api_url}{path}"
-            else:
-                url = f"{self._api_url}/repos/{self._repo}/{path}"
-            if params:
-                query = urllib.parse.urlencode(params, doseq=True)
-                url = f"{url}{'&' if '?' in url else '?'}{query}"
-            request_origin = _url_origin(url)
-        except Exception:
-            raise GitHubError(0, "invalid API URL", token=self._token) from None
-        if request_origin != self._api_origin:
-            raise GitHubError(
-                0,
-                "refused request to a different origin",
-                token=self._token,
-            )
+        url = self._request_url(path, params)
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Accept": accept or "application/vnd.github+json",
@@ -175,6 +156,29 @@ class GitHub:
             except json.JSONDecodeError:
                 raise GitHubError(status, "invalid JSON response", token=self._token) from None
         return value, response_headers
+
+    def _request_url(self, path: str, params: dict | None = None) -> str:
+        try:
+            parsed_path = urllib.parse.urlsplit(path)
+            if parsed_path.scheme or parsed_path.netloc:
+                url = path
+            elif path.startswith("/"):
+                url = f"{self._api_url}{path}"
+            else:
+                url = f"{self._api_url}/repos/{self._repo}/{path}"
+            if params:
+                query = urllib.parse.urlencode(params, doseq=True)
+                url = f"{url}{'&' if '?' in url else '?'}{query}"
+            request_origin = _url_origin(url)
+        except Exception:
+            raise GitHubError(0, "invalid API URL", token=self._token) from None
+        if request_origin != self._api_origin:
+            raise GitHubError(
+                0,
+                "refused request to a different origin",
+                token=self._token,
+            ) from None
+        return url
 
     def _http_error(self, status: int, headers: dict[str, str], body: bytes) -> GitHubError:
         try:
@@ -257,16 +261,21 @@ class GitHub:
         results: list = []
         next_path = path
         next_params = params
+        visited_urls: set[str] = set()
         while next_path is not None:
+            request_url = self._request_url(next_path, next_params)
+            if request_url in visited_urls:
+                raise GitHubError(0, "pagination loop", token=self._token) from None
+            visited_urls.add(request_url)
             value, headers = self._send("GET", next_path, params=next_params)
             next_path = self._next_link(headers)
             next_params = None
             if key is not None:
                 if not isinstance(value, dict) or not isinstance(value.get(key), list):
-                    raise GitHubError(200)
+                    raise GitHubError(200, "unexpected paginated response shape")
                 results.extend(value[key])
             elif isinstance(value, list):
                 results.extend(value)
             else:
-                raise GitHubError(200)
+                raise GitHubError(200, "unexpected paginated response shape")
         return results

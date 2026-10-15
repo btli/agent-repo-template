@@ -23,3 +23,10 @@ def test_missing_yq_mentions_v4(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("PATH", "")
     with pytest.raises(YamlError, match="yq v4"):
         load_yaml(path)
+
+
+def test_path_starting_with_dash_is_read_as_a_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    path = tmp_path / "-x.yml"
+    path.write_text("value: safe\n")
+    monkeypatch.chdir(tmp_path)
+    assert load_yaml(Path("-x.yml")) == {"value": "safe"}

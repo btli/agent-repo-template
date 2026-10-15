@@ -26,6 +26,13 @@ def test_missing_heading_returns_one_named_error():
     assert "Priorities" in errors[0]
 
 
+def test_empty_mission_is_reported_by_linter():
+    text = EXAMPLE.read_text().replace("Maintain a reliable library for data validation.\n", "")
+    assert lint_charter(text) == ["Mission must not be empty"]
+    with pytest.raises(ValueError, match="Mission must not be empty"):
+        parse_charter(text)
+
+
 def test_out_of_scope_doc_link_is_extracted():
     text = EXAMPLE.read_text().replace("Cloud sync", "Cloud sync ([docs](https://x/y))")
     charter = parse_charter(text)

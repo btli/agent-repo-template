@@ -79,6 +79,29 @@ def test_area_sensitive_defaults_to_false(tmp_path: Path):
     assert load_config(target).areas[0].sensitive is False
 
 
+def test_areas_reject_unknown_top_level_key(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "areas.yml"
+    path.write_text(path.read_text() + "unexpected: true\n")
+    with pytest.raises(ConfigError, match="unexpected key"):
+        load_config(target)
+
+
+def test_areas_reject_duplicate_names(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "areas.yml"
+    content = path.read_text()
+    path.write_text(
+        content
+        + "  - name: core\n"
+        + "    description: duplicate area\n"
+        + "    paths: []\n"
+        + "    owners: []\n"
+    )
+    with pytest.raises(ConfigError, match="duplicate area name"):
+        load_config(target)
+
+
 def test_missing_config_is_config_error(tmp_path: Path):
     target = copy_agents(tmp_path)
     (target / "config.yml").unlink()

@@ -52,7 +52,11 @@ def load_config(agents_dir: Path) -> RepoConfig:
     areas_data = _read(agents_dir / "areas.yml")
     if not isinstance(areas_data, dict) or not isinstance(areas_data.get("areas"), list):
         raise ConfigError("areas.yml must contain an areas list")
+    unknown_areas = set(areas_data) - {"areas"}
+    if unknown_areas:
+        raise ConfigError(f"areas.yml: unexpected key {sorted(unknown_areas)[0]}")
     areas: list[Area] = []
+    area_names: set[str] = set()
     for index, item in enumerate(areas_data["areas"]):
         prefix = f"areas[{index}]"
         if not isinstance(item, dict):
@@ -62,6 +66,9 @@ def load_config(agents_dir: Path) -> RepoConfig:
             raise ConfigError(f"{prefix}: unexpected key {sorted(unknown)[0]}")
         if not isinstance(item.get("name"), str) or not isinstance(item.get("description"), str):
             raise ConfigError(f"{prefix} requires name and description strings")
+        if item["name"] in area_names:
+            raise ConfigError(f"{prefix}: duplicate area name {item['name']}")
+        area_names.add(item["name"])
         for key in ("paths", "owners"):
             if not isinstance(item.get(key), list) or not all(
                 isinstance(value, str) for value in item[key]
