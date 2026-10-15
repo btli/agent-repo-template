@@ -22,7 +22,6 @@ def merge(decision: dict, tier2: dict | None, error: str | None) -> dict:
             "reason": "Tier-2 triage failed or returned invalid output.",
         }
         return result
-    result["tier"] = 2
     for key in ["rca", "needs_info", "escalate"]:
         result[key] = copy.deepcopy(tier2[key])
     result["labels"] = [
