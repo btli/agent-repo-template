@@ -103,7 +103,9 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     if errors:
         return _maintainer(ctx, None, errors)
     answers = decision["answers"]
-    area = answers.get("area", {}).get("value")
+    apply_min = ctx.config.raw["thresholds"]["apply_min"]
+    area_answer = answers.get("area", {})
+    area = area_answer.get("value") if area_answer.get("p", 0) >= apply_min else None
     area = area.removeprefix("area:") if isinstance(area, str) else None
     # Scan before rendering: escaping or truncation must not hide a credential.
     if any(find_leaks(text, ctx.secrets, ctx.canary) for text in _strings(decision)):
@@ -116,7 +118,6 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
             return _maintainer(ctx, area, ["Outbound scan alert: rendered action dropped."])
         actions.append(Action("comment", {"number": ctx.event.number, "body": body}))
         return actions
-    apply_min = ctx.config.raw["thresholds"]["apply_min"]
     allowed = set(ctx.config.labels)
     selected: list[str] = []
     text: list[str] = []

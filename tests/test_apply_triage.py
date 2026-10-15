@@ -505,3 +505,60 @@ def test_duplicate_comment_contains_clickable_trusted_link():
     text = bodies(plan(data, ctx))
     assert "<https://github.com/your-org/project/issues/99>" in text
     assert text.index("<https://") > text.rindex("```")
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "live"])
+@pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
+def test_summary_describes_actions_without_model_text(mode, kind, tmp_path):
+    from agent_repo.apply.actions import execute
+
+    api = API()
+    data = decision()
+    data["close"] = closing(kind)
+    data["escalate"] = {"to": "maintainer", "reason": "uncertain"}
+    data["rca"] = {
+        "hypothesis": "MODEL_DIAGNOSTIC",
+        "locations": [],
+        "confidence": "low",
+        "confirm_with": "MODEL_CONFIRMATION",
+    }
+    actions = plan(data, context(api, enabled=True))
+    summary_path = tmp_path / "summary.md"
+    assert execute(actions, api.gh, mode, summary_path) == []
+    summary = summary_path.read_text()
+    assert '"labels": ["type:bug", "area:api", "P2", "agent:closed"]' in summary
+    assert '"labels": ["needs-maintainer"]' in summary
+    assert '"assignees": ["octocat"]' in summary
+    assert f'"kind": "{kind}"' in summary
+    assert '"target": 7' in next(line for line in summary.splitlines() if "Planned: close" in line)
+    if kind == "duplicate":
+        assert '"duplicate_target": 99' in summary
+    comment = next(action.payload["body"] for action in actions if action.kind == "comment")
+    assert f'"body_chars": {len(comment)}' in summary
+    assert "MODEL_DIAGNOSTIC" not in summary and "MODEL_CONFIRMATION" not in summary
+    assert "<!--" not in summary
+    if mode == "dry-run":
+        assert api.writes == []
+
+
+@pytest.mark.parametrize("route", ["escalation", "security"])
+@pytest.mark.parametrize("apply_min", [0.8, 0.95])
+def test_maintainer_owner_assignment_requires_decided_area(route, apply_min):
+    ctx = context()
+    ctx.config.raw["thresholds"]["apply_min"] = apply_min
+    data = decision()
+    if route == "security":
+        data["security"] = True
+    else:
+        data["escalate"] = {"to": "maintainer", "reason": "uncertain"}
+    data["answers"]["area"]["p"] = apply_min - 0.01
+    actions = plan(data, ctx)
+    assert "needs-maintainer" in labels(actions)
+    assert not any(action.kind == "assign" for action in actions)
+
+    data["answers"]["area"]["p"] = apply_min
+    actions = plan(data, ctx)
+    assert "needs-maintainer" in labels(actions)
+    assert [action.payload for action in actions if action.kind == "assign"] == [
+        {"number": 7, "assignees": ["octocat"]}
+    ]
