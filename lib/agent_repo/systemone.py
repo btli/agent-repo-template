@@ -68,6 +68,7 @@ PROVIDERS: dict[str, dict[str, str | int]] = {
 
 _CHOICE_SUM_TOLERANCE = 0.05
 _CHOICE_PICK_TOLERANCE = 1e-12
+_MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 def build_request(
@@ -132,8 +133,12 @@ def parse_response(
     _provider(cfg)
     try:
         payload = json.loads(body)
-    except (ValueError, TypeError, OverflowError):
-        raise SystemOneError("provider returned malformed JSON") from None
+    except Exception:
+        malformed_json = True
+    else:
+        malformed_json = False
+    if malformed_json:
+        raise SystemOneError("provider returned malformed JSON")
     if not isinstance(payload, dict) or not isinstance(payload.get("answers"), dict):
         raise SystemOneError("provider returned a malformed response")
 
@@ -160,16 +165,22 @@ def ask(
 ) -> dict[str, Answer | None]:
     request = build_request(cfg, base_url, key, input_text, questions)
     sender = transport or _send
+    failure: SystemOneError | None = None
     try:
         response = sender(request, timeout)
     except urllib.error.HTTPError as exc:
-        raise SystemOneError(f"provider returned HTTP {exc.code}", status=exc.code) from None
+        failure = SystemOneError(f"provider returned HTTP {exc.code}", status=exc.code)
     except (TimeoutError, urllib.error.URLError) as exc:
         if isinstance(exc, TimeoutError) or isinstance(exc.reason, TimeoutError):
-            raise SystemOneError("provider request timed out") from None
-        raise SystemOneError("provider request failed") from None
+            failure = SystemOneError("provider request timed out")
+        else:
+            failure = SystemOneError("provider request failed")
+    except SystemOneError as exc:
+        failure = SystemOneError(str(exc), status=exc.status)
     except Exception:
-        raise SystemOneError("provider request failed") from None
+        failure = SystemOneError("provider request failed")
+    if failure is not None:
+        raise failure
     return parse_response(cfg, response, questions)
 
 
@@ -184,22 +195,29 @@ def _validate_base_url(base_url: str) -> None:
     try:
         parsed = urlsplit(base_url)
         hostname = parsed.hostname
-    except ValueError:
-        raise SystemOneError("base URL must use HTTPS or loopback HTTP") from None
-    if parsed.scheme == "https" and hostname:
-        return
-    if (
-        parsed.scheme == "http"
-        and hostname
-        and hostname.lower()
-        in {
-            "localhost",
-            "127.0.0.1",
-            "::1",
-        }
-    ):
-        return
-    raise SystemOneError("base URL must use HTTPS or loopback HTTP")
+        port = parsed.port
+        has_credentials = parsed.username is not None or parsed.password is not None
+        has_query_or_fragment = (
+            bool(parsed.query or parsed.fragment) or "?" in base_url or "#" in base_url
+        )
+        valid_port = port is None or 0 < port < 65536
+        valid = (
+            not has_credentials
+            and not has_query_or_fragment
+            and valid_port
+            and (
+                (parsed.scheme == "https" and bool(hostname))
+                or (
+                    parsed.scheme == "http"
+                    and hostname is not None
+                    and hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+                )
+            )
+        )
+    except (TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise SystemOneError("base URL must use HTTPS or loopback HTTP")
 
 
 def _parse_noul(question: Question, answer: dict[str, object]) -> Answer | None:
@@ -269,6 +287,12 @@ def _send(request: urllib.request.Request, timeout: float) -> bytes:
         def redirect_request(self, *_args: object, **_kwargs: object) -> None:
             return None
 
-    opener = urllib.request.build_opener(NoRedirectHandler())
+    handlers: list[urllib.request.BaseHandler] = [NoRedirectHandler()]
+    if request.type == "http":
+        handlers.append(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(*handlers)
     with opener.open(request, timeout=timeout) as response:
-        return response.read()
+        body = response.read(_MAX_RESPONSE_BYTES + 1)
+    if len(body) > _MAX_RESPONSE_BYTES:
+        raise SystemOneError("provider response too large")
+    return body

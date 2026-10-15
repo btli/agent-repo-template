@@ -234,10 +234,20 @@ def test_choice_pick_accepts_tied_probability_maxima(
     assert result["route"] == Answer(id="route", value="a", p=distribution["a"])
 
 
+def test_choice_pick_outside_tie_tolerance_is_none() -> None:
+    result = parse_response(
+        ProviderConfig(provider="jev", model="jev-latest"),
+        b'{"answers":{"route":{"type":"choice","choice":"a","probabilities":{"a":0.5,"b":0.500000001}}}}',
+        [Question(id="route", kind="choice", prompt="Choose", options={"a": "A", "b": "B"})],
+    )
+
+    assert result == {"route": None}
+
+
 @pytest.mark.parametrize(
     "distribution",
     [
-        {"a": 0.5},
+        {"a": 1.0},
         {"a": 0.5, "b": 0.5, "c": 0.0},
     ],
 )
@@ -366,6 +376,33 @@ def test_ask_wraps_integer_digit_limit_as_malformed_json() -> None:
     assert "credential-for-test" not in str(exc_info.value)
 
 
+def test_ask_wraps_deeply_nested_provider_json() -> None:
+    config, questions = _request()
+    canary = "deep-json-canary"
+    body = (
+        f'{{"answers":{{"check":{{"type":"noul","noul":0.9,"canary":"{canary}","extra":'.encode()
+        + b"[" * 10000
+        + b"0"
+        + b"]" * 10000
+        + b"}}}"
+    )
+    calls = []
+
+    def respond(request: Any, timeout: float) -> bytes:
+        calls.append((request, timeout))
+        return body
+
+    with pytest.raises(SystemOneError, match="malformed JSON") as parse_error:
+        parse_response(config, body, questions)
+    _assert_canary_absent(parse_error.value, canary)
+
+    with pytest.raises(SystemOneError, match="malformed JSON") as exc_info:
+        ask(config, _BASE_URLS["jev"], canary, "text", questions, transport=respond)
+
+    assert len(calls) == 1
+    _assert_canary_absent(exc_info.value, canary)
+
+
 def test_gateway_rejects_a_choice_with_one_option() -> None:
     key = "test-key"
     with pytest.raises(SystemOneError) as exc_info:
@@ -384,6 +421,12 @@ def _request() -> tuple[ProviderConfig, list[Question]]:
         ProviderConfig(provider="jev", model="jev-latest"),
         [Question(id="check", kind="noul", prompt="Is it true?", options=None)],
     )
+
+
+def _assert_canary_absent(error: SystemOneError, canary: str) -> None:
+    values = [str(error), repr(error.args), repr(vars(error))]
+    values.extend(repr(getattr(error, name)) for name in dir(error))
+    assert all(canary not in value for value in values)
 
 
 def test_timeout_is_wrapped_without_leaking_the_key() -> None:
@@ -547,9 +590,13 @@ def test_redirect_is_rejected_without_forwarding_authorization() -> None:
 
     class RedirectHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            self.send_response(302)
-            self.send_header("Location", target_url)
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(302, f"Redirect canary {key}")
+            self.send_header("Location", f"{target_url}?{key}")
+            self.send_header("X-Reason", key)
+            self.send_header("Content-Length", str(len(key)))
             self.end_headers()
+            self.wfile.write(key.encode())
 
         def log_message(self, _format: str, *_args: object) -> None:
             return
@@ -571,14 +618,21 @@ def test_redirect_is_rejected_without_forwarding_authorization() -> None:
 
     assert exc_info.value.status == 302
     assert received_authorization == []
+    _assert_canary_absent(exc_info.value, key)
 
 
 @pytest.mark.parametrize(
     "base_url",
     [
-        "http://api.example.com",
-        "ftp://localhost",
-        "https://",
+        "http://api.example.com/url-canary",
+        "ftp://localhost/url-canary",
+        "https:///url-canary?url-canary",
+        "http://localhost.evil.example/url-canary",
+        "http://127.0.0.1.nip.io/url-canary",
+        "http://url-canary@localhost/path",
+        "http://url-canary:password@localhost/path",
+        "https://provider.example/?url-canary",
+        "https://provider.example/#url-canary",
     ],
 )
 def test_nonsecure_nonloopback_base_urls_are_rejected_before_transport(
@@ -591,7 +645,123 @@ def test_nonsecure_nonloopback_base_urls_are_rejected_before_transport(
         calls.append((request, timeout))
         return b'{"answers":{"check":{"type":"noul","noul":0.9}}}'
 
-    with pytest.raises(SystemOneError):
-        ask(config, base_url, "key", "text", questions, transport=transport)
+    with pytest.raises(SystemOneError) as exc_info:
+        ask(config, base_url, "url-canary", "text", questions, transport=transport)
 
     assert calls == []
+    _assert_canary_absent(exc_info.value, "url-canary")
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://[::1]:8000",
+        "HTTPS://provider.example",
+    ],
+)
+def test_base_url_allows_https_and_exact_loopback_hosts(base_url: str) -> None:
+    config, questions = _request()
+
+    request = build_request(config, base_url, "key", "text", questions)
+
+    assert urlsplit(request.full_url).path == "/v1/systemone"
+
+
+def test_loopback_http_request_does_not_use_http_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy_requests: list[str] = []
+    provider_requests: list[str] = []
+
+    class ProviderHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers["Content-Length"]))
+            provider_requests.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"answers":{"check":{"type":"noul","noul":0.9}}}')
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers["Content-Length"]))
+            proxy_requests.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"answers":{"check":{"type":"noul","noul":0.9}}}')
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    provider = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+    provider_thread.start()
+    proxy_thread.start()
+    proxy_url = f"http://127.0.0.1:{proxy.server_port}"
+    monkeypatch.setenv("HTTP_PROXY", proxy_url)
+    monkeypatch.setenv("http_proxy", proxy_url)
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.delenv("all_proxy", raising=False)
+    try:
+        config, questions = _request()
+        result = ask(
+            config,
+            f"http://127.0.0.1:{provider.server_port}",
+            "proxy-canary",
+            "text",
+            questions,
+        )
+    finally:
+        provider.shutdown()
+        proxy.shutdown()
+        provider.server_close()
+        proxy.server_close()
+        provider_thread.join(timeout=2)
+        proxy_thread.join(timeout=2)
+
+    assert result == {"check": Answer(id="check", value="yes", p=0.9)}
+    assert proxy_requests == []
+
+
+def test_oversized_provider_response_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    oversized = b"x" * (1024 * 1024 + 32)
+
+    class LargeResponseHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(oversized)))
+            self.end_headers()
+            self.wfile.write(oversized)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), LargeResponseHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    try:
+        config, questions = _request()
+        with pytest.raises(SystemOneError, match="response too large"):
+            ask(config, f"http://127.0.0.1:{server.server_port}", "key", "text", questions)
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
