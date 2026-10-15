@@ -22,7 +22,8 @@ def main() -> int:
             or parsed.query
             or parsed.fragment
             or re.fullmatch(r"[A-Z_][A-Z0-9_]*", key_env) is None
-            or re.fullmatch(r"(?:[A-Za-z0-9_-]+\.)*claude[-.a-zA-Z0-9_]+", model) is None
+            or re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", model) is None
+            or re.search(r"(?:^|[-./])claude[-.][A-Za-z0-9]", model) is None
         ):
             raise ValueError("invalid gateway configuration")
         base = url + "/anthropic" if kind == "databricks" else url
