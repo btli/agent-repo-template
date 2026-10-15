@@ -20,6 +20,7 @@ from agent_repo.systemone import (
     Question,
     SystemOneError,
     _send,
+    _TrustedSystemOneError,
     ask,
     build_request,
     parse_response,
@@ -531,6 +532,63 @@ def test_transport_exception_text_and_chain_are_not_retained(error_kind: str) ->
     assert error.__cause__ is None
     assert error.__context__ is None
     assert str(error) == "provider request failed"
+
+
+def test_constructed_trusted_error_text_is_not_retained() -> None:
+    key = "constructed-error-canary"
+    url = "https://constructed.example/private"
+    message = f"transport failure {key} at {url}"
+    config, questions = _request()
+
+    def fail(_request: Any, _timeout: float) -> bytes:
+        raise _TrustedSystemOneError(message, status=503)
+
+    with pytest.raises(SystemOneError) as exc_info:
+        ask(config, _BASE_URLS["jev"], key, "text", questions, transport=fail)
+
+    error = exc_info.value
+    details = [str(error), "".join(traceback.format_exception(error))]
+    details.extend(repr(getattr(error, name)) for name in dir(error))
+    assert all(value not in detail for value in (key, url) for detail in details)
+    assert error.status == 503
+
+
+def test_mutated_internal_error_args_are_not_retained(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = "mutated-error-canary"
+    url = "https://mutated.example/private"
+    message = f"response failure {key} at {url}"
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            return b"x" * (size + 1)
+
+    class Opener:
+        def open(self, _request: Any, timeout: float) -> Response:
+            return Response()
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_handlers: Opener())
+    config, questions = _request()
+
+    def fail(request: Any, timeout: float) -> bytes:
+        try:
+            return _send(request, timeout)
+        except _TrustedSystemOneError as exc:
+            exc.args = (message,)
+            raise
+
+    with pytest.raises(SystemOneError) as exc_info:
+        ask(config, _BASE_URLS["jev"], key, "text", questions, transport=fail)
+
+    error = exc_info.value
+    details = [str(error), "".join(traceback.format_exception(error))]
+    details.extend(repr(getattr(error, name)) for name in dir(error))
+    assert all(value not in detail for value in (key, url) for detail in details)
 
 
 def test_urlerror_timeout_reason_uses_timeout_message() -> None:
