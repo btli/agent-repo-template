@@ -40,6 +40,10 @@ class SystemOneError(Exception):
         self.status = status
 
 
+class _TrustedSystemOneError(SystemOneError):
+    """An error message created by this module rather than a transport."""
+
+
 # Unverified: TypeSafe's schema sets no maximum for choice criteria.
 PROVIDERS: dict[str, dict[str, str | int]] = {
     # TypeSafe API reference: https://api.typesafe.ai/redoc
@@ -165,22 +169,32 @@ def ask(
 ) -> dict[str, Answer | None]:
     request = build_request(cfg, base_url, key, input_text, questions)
     sender = transport or _send
-    failure: SystemOneError | None = None
+    failure_message: str | None = None
+    failure_status: int | None = None
     try:
         response = sender(request, timeout)
     except urllib.error.HTTPError as exc:
-        failure = SystemOneError(f"provider returned HTTP {exc.code}", status=exc.code)
+        if type(exc.code) is int:
+            failure_message = f"provider returned HTTP {exc.code}"
+            failure_status = exc.code
+        else:
+            failure_message = "provider request failed"
     except (TimeoutError, urllib.error.URLError) as exc:
         if isinstance(exc, TimeoutError) or isinstance(exc.reason, TimeoutError):
-            failure = SystemOneError("provider request timed out")
+            failure_message = "provider request timed out"
         else:
-            failure = SystemOneError("provider request failed")
-    except SystemOneError as exc:
-        failure = SystemOneError(str(exc), status=exc.status)
-    except Exception:
-        failure = SystemOneError("provider request failed")
-    if failure is not None:
-        raise failure
+            failure_message = "provider request failed"
+    except _TrustedSystemOneError as exc:
+        failure_message = str(exc)
+        if type(exc.status) is int:
+            failure_status = exc.status
+    except Exception as exc:
+        failure_message = "provider request failed"
+        status = exc.__dict__.get("status")
+        if type(status) is int:
+            failure_status = status
+    if failure_message is not None:
+        raise SystemOneError(failure_message, status=failure_status) from None
     return parse_response(cfg, response, questions)
 
 
@@ -294,5 +308,5 @@ def _send(request: urllib.request.Request, timeout: float) -> bytes:
     with opener.open(request, timeout=timeout) as response:
         body = response.read(_MAX_RESPONSE_BYTES + 1)
     if len(body) > _MAX_RESPONSE_BYTES:
-        raise SystemOneError("provider response too large")
+        raise _TrustedSystemOneError("provider response too large")
     return body
