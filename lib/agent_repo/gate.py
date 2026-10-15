@@ -3,6 +3,7 @@ import secrets
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from heapq import merge
 from typing import Literal
 from urllib.parse import quote
 
@@ -72,9 +73,10 @@ def _mapping(value: object) -> dict:
     return value
 
 
-def _agent_pr(event: Event) -> bool:
+def _agent_pr(event: Event, bot_login: str) -> bool:
     return bool(
         event.is_pr
+        and event.author.casefold() == bot_login.casefold()
         and event.head_ref
         and event.head_ref.startswith("agent/")
         and event.head_repo
@@ -87,6 +89,8 @@ def evaluate(event: Event, ctx: GateContext) -> GateResult:
     command = parse_command(event.comment_body or "")
     try:
         return _evaluate(event, ctx, command, canary)
+    except _HistoryCapped:
+        return GateResult(False, "cycle-cap", False, True, command, canary)
     except GitHubError:
         return GateResult(False, "api-error", False, False, command, canary)
     except (ValueError, TypeError, KeyError, AttributeError):
@@ -105,7 +109,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         ctx.workflow == "review"
         and event.name == "pull_request_target"
         and event.action in {"opened", "reopened", "ready_for_review", "synchronize"}
-        and _agent_pr(event)
+        and _agent_pr(event, ctx.bot_login)
         and event.sender.casefold() == ctx.bot_login.casefold()
     )
     if event.sender.casefold() == ctx.bot_login.casefold() and not agent_review:
@@ -129,8 +133,9 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
             head_ref=head.get("ref"),
             head_repo=_mapping(head.get("repo") or {}).get("full_name"),
             draft=pull["draft"],
+            author=_mapping(pull["user"])["login"],
         )
-    if ctx.workflow == "review" and event.draft and not _agent_pr(event):
+    if ctx.workflow == "review" and event.draft and not _agent_pr(event, ctx.bot_login):
         return result(False, "draft")
     comments = ctx.gh.paginate(f"issues/{event.number}/comments", params={"per_page": 100})
     for comment in comments:
@@ -180,10 +185,10 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         if (
             event.name != "pull_request_target"
             or event.action not in {"opened", "reopened", "ready_for_review", "synchronize"}
-            or (event.action == "synchronize" and not _agent_pr(event))
+            or (event.action == "synchronize" and not _agent_pr(event, ctx.bot_login))
         ):
             return result(False, "unsupported-event")
-        if not _agent_pr(event) and event.author_association not in {
+        if not _agent_pr(event, ctx.bot_login) and event.author_association not in {
             "OWNER",
             "MEMBER",
             "COLLABORATOR",
@@ -195,7 +200,11 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
 
     if ctx.workflow == "review" and not event.is_pr:
         return result(False, "unsupported-event")
-    if ctx.workflow == "fix" and event.is_pr and not (_agent_pr(event) and event.draft):
+    if (
+        ctx.workflow == "fix"
+        and event.is_pr
+        and not (_agent_pr(event, ctx.bot_login) and event.draft)
+    ):
         return result(False, "not-agent-draft")
 
     current = _mapping(ctx.gh.request("GET", f"actions/runs/{ctx.run_id}"))
@@ -209,32 +218,46 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         created = _timestamp(issue["created_at"])
         prior = 0
         latest = None
-        if limits["triage_runs_per_issue"] <= 0:
+        cap = limits["triage_runs_per_issue"]
+        if cap <= 0:
             return result(False, "cycle-cap", capped=True)
-        for trigger in ("issues", "issue_comment"):
-            for run in _items(
+        histories = [
+            _items(
                 ctx.gh,
                 f"actions/workflows/{current['workflow_id']}/runs",
                 "workflow_runs",
                 {"event": trigger, "created": f">={issue['created_at']}"},
+                history_start=created,
+            )
+            for trigger in ("issues", "issue_comment")
+        ]
+        candidates = 0
+        seen = set()
+        for run in merge(*histories, key=lambda run: _timestamp(run["created_at"]), reverse=True):
+            if (
+                str(run["id"]) == ctx.run_id
+                or run["id"] in seen
+                or run.get("display_title") != f"agent-triage #{event.number}"
+                or run["workflow_id"] != current["workflow_id"]
+                or run["path"].split("@", 1)[0] != current["path"].split("@", 1)[0]
+                or run["event"] not in {"issues", "issue_comment"}
+                or _mapping(run["repository"])["id"] != repository_id
+                or _mapping(run.get("head_repository") or {}).get("id") != repository_id
             ):
-                if (
-                    str(run["id"]) == ctx.run_id
-                    or run.get("display_title") != f"agent-triage #{event.number}"
-                    or run["workflow_id"] != current["workflow_id"]
-                    or run["path"].split("@", 1)[0] != current["path"].split("@", 1)[0]
-                    or run["event"] != trigger
-                    or _mapping(run["repository"])["id"] != repository_id
-                    or _mapping(run.get("head_repository") or {}).get("id") != repository_id
-                ):
-                    continue
-                started = _timestamp(run["created_at"])
-                if started < created or not _proposed(ctx.gh, run["id"]):
-                    continue
-                prior += 1
-                latest = max(latest, started) if latest else started
-                if prior >= limits["triage_runs_per_issue"]:
-                    return result(False, "cycle-cap", capped=True)
+                continue
+            started = _timestamp(run["created_at"])
+            if started < created:
+                continue
+            seen.add(run["id"])
+            if candidates >= max(10, 3 * cap):
+                return result(False, "cycle-cap", capped=True)
+            candidates += 1
+            if not _proposed(ctx.gh, run["id"]):
+                continue
+            prior += 1
+            latest = max(latest, started) if latest else started
+            if prior >= cap:
+                return result(False, "cycle-cap", capped=True)
         if (
             event.action == "edited"
             and latest
@@ -268,8 +291,20 @@ def _timestamp(value: str) -> datetime:
     return timestamp
 
 
-def _items(gh: GitHub, path: str, key: str, params: dict | None = None) -> Iterator[dict]:
+class _HistoryCapped(Exception):
+    pass
+
+
+def _items(
+    gh: GitHub,
+    path: str,
+    key: str,
+    params: dict | None = None,
+    *,
+    history_start: datetime | None = None,
+) -> Iterator[dict]:
     page = 1
+    consumed = 0
     while True:
         data = _mapping(
             gh.request("GET", path, params={**(params or {}), "per_page": 100, "page": page})
@@ -279,6 +314,20 @@ def _items(gh: GitHub, path: str, key: str, params: dict | None = None) -> Itera
             raise ValueError("invalid metadata")
         for item in items:
             yield _mapping(item)
+        consumed += len(items)
+        if history_start is not None:
+            total = data["total_count"]
+            if not isinstance(total, int) or total < 0:
+                raise ValueError("invalid history count")
+            if len(items) < 100 and consumed < total:
+                raise _HistoryCapped
+            if consumed >= 1000:
+                # Filtered workflow searches stop at 1,000 even when older runs exist.
+                if consumed < total or _timestamp(items[-1]["created_at"]) > history_start:
+                    raise _HistoryCapped
+                return
+            if consumed >= total:
+                return
         if len(items) < 100:
             return
         page += 1
@@ -289,5 +338,6 @@ def _proposed(gh: GitHub, run_id: int) -> bool:
         job["name"] == "propose"
         and job["status"] in {"in_progress", "completed"}
         and job["conclusion"] != "skipped"
-        for job in _items(gh, f"actions/runs/{run_id}/jobs", "jobs")
+        and (job.get("steps") or (job.get("started_at") and job.get("runner_id")))
+        for job in _items(gh, f"actions/runs/{run_id}/jobs", "jobs", {"filter": "all"})
     )

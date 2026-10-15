@@ -2455,7 +2455,8 @@
         "body": "Updates the parser",
         "draft": true,
         "user": {
-          "login": "contributor"
+          "login": "helper[bot]",
+          "type": "Bot"
         },
         "author_association": "NONE",
         "labels": [],
@@ -2498,7 +2499,8 @@
         "body": "Updates the parser",
         "draft": true,
         "user": {
-          "login": "contributor"
+          "login": "helper[bot]",
+          "type": "Bot"
         },
         "author_association": "NONE",
         "labels": [],
@@ -2541,7 +2543,8 @@
         "body": "Updates the parser",
         "draft": true,
         "user": {
-          "login": "contributor"
+          "login": "helper[bot]",
+          "type": "Bot"
         },
         "author_association": "NONE",
         "labels": [],
@@ -2711,7 +2714,8 @@
         "title": "Improve validation messages",
         "body": "PR discussion",
         "user": {
-          "login": "contributor"
+          "login": "helper[bot]",
+          "type": "Bot"
         },
         "author_association": "MEMBER",
         "labels": [],
@@ -2741,7 +2745,8 @@
       "body": "Updates the parser",
       "draft": true,
       "user": {
-        "login": "contributor"
+        "login": "helper[bot]",
+        "type": "Bot"
       },
       "author_association": "NONE",
       "labels": [],
@@ -2776,7 +2781,8 @@
         "title": "Improve validation messages",
         "body": "PR discussion",
         "user": {
-          "login": "contributor"
+          "login": "helper[bot]",
+          "type": "Bot"
         },
         "author_association": "MEMBER",
         "labels": [],
@@ -2806,7 +2812,8 @@
       "body": "Updates the parser",
       "draft": false,
       "user": {
-        "login": "contributor"
+        "login": "helper[bot]",
+        "type": "Bot"
       },
       "author_association": "NONE",
       "labels": [],
