@@ -61,15 +61,13 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         headers: Any,
         new_url: str,
     ) -> urllib.request.Request | None:
+        redirected = super().redirect_request(request, response, code, message, headers, new_url)
+        if redirected is None:
+            return None
         try:
-            redirected = super().redirect_request(
-                request, response, code, message, headers, new_url
-            )
-            if redirected is None:
-                return None
             source_origin = _url_origin(request.full_url)
             target_origin = _url_origin(new_url)
-        except Exception:
+        except ValueError:
             raise GitHubError(0, "invalid redirect URL", token=self._token) from None
         if source_origin != target_origin or target_origin != self._api_origin:
             for header_set in (redirected.headers, redirected.unredirected_hdrs):
@@ -150,6 +148,8 @@ class GitHub:
             raise GitHubError(0, "invalid API URL", token=self._token) from None
         try:
             status, response_headers, response_body = self._transport(request, 30.0)
+        except GitHubError:
+            raise
         except Exception as exc:
             raise GitHubError(0, type(exc).__name__, token=self._token) from None
         if status < 200 or status >= 300:
@@ -226,7 +226,7 @@ class GitHub:
     def _next_link(headers: dict[str, str]) -> str | None:
         link = next((value for key, value in headers.items() if key.lower() == "link"), "")
         for part in GitHub._split_link_values(link, ","):
-            match = re.match(r"\s*<([^>]*)>(.*)", part)
+            match = re.match(r"\s*<([^>]+)>(.*)", part)
             if match is None:
                 continue
             parameters = GitHub._split_link_values(match.group(2), ";")

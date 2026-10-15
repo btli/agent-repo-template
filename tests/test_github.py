@@ -109,6 +109,7 @@ def test_next_link_parses_independent_parameters_and_relation_tokens(link: str):
         ('<https://api.github.com/page/2>; REL="NEXT"', "https://api.github.com/page/2"),
         ('<https://api.github.com/page/2>; rel=""', None),
         ('<https://api.github.com/page/2>; title="x; rel=next fake"; rel="last"', None),
+        ('<>; rel="next"', None),
     ],
 )
 def test_next_link_handles_commas_case_and_quoted_parameters(link: str, expected: str | None):
@@ -158,6 +159,27 @@ def test_http_error_excludes_token():
     assert _credential_is_absent(str(caught.value))
 
 
+def test_http_error_preserves_safe_diagnostics():
+    def transport(request: Request, timeout: float):
+        return (
+            404,
+            {
+                "X-GitHub-Request-Id": "request-123",
+                "Retry-After": "30",
+                "X-RateLimit-Remaining": "0",
+            },
+            b'{"message":"Not Found"}',
+        )
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError) as caught:
+        api.request("GET", "/missing")
+    assert caught.value.message == "Not Found"
+    assert caught.value.request_id == "request-123"
+    assert caught.value.retry_after == "30"
+    assert caught.value.ratelimit_remaining == "0"
+
+
 def test_github_error_message_is_capped_and_token_free():
     def transport(request: Request, timeout: float):
         return 403, {}, json.dumps({"message": TOKEN + " invalid " + "x" * 250}).encode()
@@ -203,6 +225,18 @@ def test_transport_exception_excludes_token():
     assert caught.value.message == "RuntimeError"
     credential_absent = _credential_is_absent(str(caught.value))
     assert credential_absent, "credential leaked in error text"
+
+
+def test_sanitized_github_error_from_transport_is_preserved():
+    def transport(request: Request, timeout: float):
+        raise GitHubError(0, "invalid redirect URL", token=TOKEN)
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError) as caught:
+        api.request("GET", "/issues")
+    assert caught.value.status == 0
+    assert caught.value.message == "invalid redirect URL"
+    assert _credential_is_absent(str(caught.value))
 
 
 @pytest.mark.parametrize(
@@ -326,6 +360,41 @@ def test_redirect_to_another_origin_never_receives_token():
         destination.server_close()
         destination_thread.join()
     assert received == [False], "credential reached a different origin"
+
+
+def test_post_redirect_error_preserves_status_and_hides_token():
+    received: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            received.append(self.path)
+            self.send_response(307)
+            self.send_header("Location", "/renamed/issues")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    try:
+        api = GitHub(
+            TOKEN,
+            "your-org/project",
+            api_url=f"http://127.0.0.1:{server.server_port}",
+        )
+        with pytest.raises(GitHubError) as caught:
+            api.request("POST", "issues", body={"title": "example"})
+        assert caught.value.status == 307
+        assert _credential_is_absent(str(caught.value))
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join()
+    assert received == ["/repos/your-org/project/issues"]
 
 
 def test_same_origin_redirect_keeps_authorization():
