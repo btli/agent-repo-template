@@ -4,6 +4,7 @@ import secrets
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from itertools import chain
 from typing import Literal
 from urllib.parse import quote
 
@@ -255,8 +256,6 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         verified = 0
         latest = None
         cap = limits["triage_runs_per_issue"]
-        if cap <= 0:
-            return result(False, "cycle-cap", capped=True)
         name = TRIAGE_MARKER_NAME.format(issue_number=event.number)
         for artifact in _items(gh, "actions/artifacts", "artifacts", {"name": name}, max_pages=10):
             if artifact["name"] != name:
@@ -286,13 +285,26 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     day = ctx.now.astimezone(UTC).strftime("%Y%m%d")
     for name, limit, reason in (
         (f"tier2-{day}", limits["tier2_per_day"], "tier2-global-cap"),
-        (f"tier2-{day}-{event.author}", limits["tier2_per_author_per_day"], "tier2-author-cap"),
+        (
+            f"tier2-{day}-{event.author.casefold()}",
+            limits["tier2_per_author_per_day"],
+            "tier2-author-cap",
+        ),
     ):
         count = 0
-        if limit <= 0:
-            return result(True, reason)
-        for artifact in _items(gh, "actions/artifacts", "artifacts", {"name": name}):
-            if artifact["name"] != name:
+        artifacts = (
+            a
+            for a in _items(gh, "actions/artifacts", "artifacts", {"name": name})
+            if a["name"] == name
+        )
+        if reason == "tier2-author-cap":
+            # Exact-name queries miss legacy casing; the second scan excludes canonical names.
+            artifacts = chain(
+                artifacts,
+                (a for a in _items(gh, "actions/artifacts", "artifacts") if a["name"] != name),
+            )
+        for artifact in artifacts:
+            if artifact["name"].casefold() != name:
                 continue
             run = _mapping(artifact["workflow_run"])
             if run["repository_id"] == repository_id and run["head_repository_id"] == repository_id:

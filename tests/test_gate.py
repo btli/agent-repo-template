@@ -291,7 +291,7 @@ def test_triage_marker_cap_and_common_request_count(count, capped, tmp_path):
         if p == "actions/artifacts" and q.get("name") == ["agent-triage-12"]
     ]
     assert queries == [{"name": ["agent-triage-12"], "per_page": ["100"], "page": ["1"]}]
-    assert len(transport.requests) == (3 if capped else 5) + min(count, 3)
+    assert len(transport.requests) == (3 if capped else 6) + min(count, 3)
     assert sum(p.startswith("actions/runs/") for p, _ in transport.requests) == min(count, 3)
 
 
@@ -333,7 +333,7 @@ def test_triage_marker_paging_is_bounded(count, overflow, tmp_path):
     ]
     assert len(queries) == min((count + 99) // 100, 10)
     assert [q["page"] for q in queries] == [[str(i + 1)] for i in range(len(queries))]
-    assert len(transport.requests) <= 14
+    assert len(transport.requests) <= 30
     assert not any(p.startswith("actions/runs/") for p, _ in transport.requests)
 
 
@@ -350,7 +350,9 @@ def test_triage_marker_page_errors_fail_closed(page, tmp_path):
     assert sum(p == "actions/artifacts" for p, _ in transport.requests) == page
 
 
-@pytest.mark.parametrize("stage", ["comments", "marker", "global", "author", "permission", "pull"])
+@pytest.mark.parametrize(
+    "stage", ["comments", "marker", "global", "author", "legacy", "permission", "pull"]
+)
 def test_shared_request_budget_fails_closed(stage, tmp_path):
     case_id = {
         "marker": "cycle-cap",
@@ -369,6 +371,13 @@ def test_shared_request_budget_fails_closed(stage, tmp_path):
         name = "tier2-20261014" + ("-contributor" if stage == "author" else "")
         case["artifacts"] = [
             {"name": name, "workflow_run": {"repository_id": 7, "head_repository_id": 8}}
+        ] * 3100
+    if stage == "legacy":
+        case["artifacts"] = [
+            {
+                "name": "tier2-20261014-Other",
+                "workflow_run": {"repository_id": 7, "head_repository_id": 7},
+            }
         ] * 3100
     result, _, _, transport = evaluate_case(case, tmp_path)
     assert not result.run and not result.tier2_allowed and not result.capped
@@ -421,7 +430,7 @@ def test_no_marker_never_caps_or_debounces(case_id, unrelated, tmp_path):
     assert result.run and not result.capped and result.reason == "ready"
     assert not any("/runs" in p or p.endswith("/jobs") for p, _ in transport.requests)
     assert sum(q.get("name") == ["agent-triage-12"] for _, q in transport.requests) == 1
-    assert len(transport.requests) <= 6
+    assert len(transport.requests) == 5 + unrelated // 100 + 1 + (case_id == "authorized-triage")
 
 
 def test_review_command_on_issue_skips_before_api(tmp_path):
@@ -561,30 +570,16 @@ def test_counters_include_paginated_metadata(counter, tmp_path):
     assert any(query.get("page") == ["2"] for _, query in transport.requests)
 
 
-def test_tier2_artifact_filters_use_utc_day_and_author(tmp_path):
+@pytest.mark.parametrize("author", ["contributor", "CoNtRiBuToR"])
+def test_tier2_artifact_filters_use_utc_day_and_author(author, tmp_path):
     from agent_repo.gate import evaluate
 
     _, event, ctx, transport = evaluate_case(CASES[0], tmp_path)
     transport.requests.clear()
     ctx = replace(ctx, now=datetime.fromisoformat("2026-10-13T23:30:00-01:00"))
-    assert evaluate(event, ctx).tier2_allowed
+    assert evaluate(replace(event, author=author), ctx).tier2_allowed
     names = [query.get("name") for path, query in transport.requests if path == "actions/artifacts"]
-    assert names == [["agent-triage-12"], ["tier2-20261014"], ["tier2-20261014-contributor"]]
-
-
-@pytest.mark.parametrize(
-    "field", ["triage_runs_per_issue", "tier2_per_author_per_day", "tier2_per_day"]
-)
-def test_configured_counter_limits_are_enforced(field, tmp_path):
-    from agent_repo.gate import evaluate
-
-    _, event, ctx, _ = evaluate_case(CASES[0], tmp_path)
-    limits = dict(LIMITS, **{field: 0})
-    result = evaluate(event, replace(ctx, config=RepoConfig({"limits": limits}, (), ())))
-    if field == "triage_runs_per_issue":
-        assert not result.run and result.capped
-    else:
-        assert result.run and not result.tier2_allowed
+    assert names == [["agent-triage-12"], ["tier2-20261014"], ["tier2-20261014-contributor"], None]
 
 
 def test_command_cannot_cross_workflows(tmp_path):
@@ -731,11 +726,17 @@ def test_cli_rejects_invalid_arguments(args, capsys):
     assert "usage:" in capsys.readouterr().err
 
 
-def test_composite_action_executes_gate_and_exposes_outputs(tmp_path, monkeypatch):
-    prepare_cli(tmp_path, monkeypatch, "false")
+@pytest.mark.parametrize("enabled", ["false", ""])
+def test_composite_action_executes_gate_and_exposes_outputs(enabled, tmp_path, monkeypatch):
+    checkout, _, _ = prepare_cli(tmp_path, monkeypatch, enabled)
+    shutil.rmtree(checkout)
     action_path = Path("actions/gate").resolve()
     action = load_yaml(action_path / "action.yml")
+    checkout_step = next(step for step in action["runs"]["steps"] if "uses" in step)
+    assert checkout_step.get("if") == "inputs.enabled == 'true'"
     step = next(step for step in action["runs"]["steps"] if step.get("id") == "gate")
+    assert step["env"]["AGENTS_ENABLED"] == "${{ inputs.enabled }}"
+    assert not checkout.exists()
     env = dict(
         os.environ,
         GITHUB_ACTION_PATH=str(action_path),

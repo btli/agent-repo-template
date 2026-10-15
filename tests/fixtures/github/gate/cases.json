@@ -3142,5 +3142,213 @@
         }
       }
     ]
+  },
+  {
+    "id": "author-cap-current-casing",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "CoNtRiBuToR"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "tier2-author-cap",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "name": "tier2-20261014-contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
+      },
+      {
+        "name": "tier2-20261014-contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
+      }
+    ]
+  },
+  {
+    "id": "author-cap-legacy-casing",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "tier2-author-cap",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "name": "tier2-20261014-Contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
+      },
+      {
+        "name": "tier2-20261014-Contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
+      }
+    ]
+  },
+  {
+    "id": "author-cap-mixed-history",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "CONTRIBUTOR"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "tier2-author-cap",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "name": "tier2-20261014-contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
+      },
+      {
+        "name": "tier2-20261014-Contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
+      }
+    ]
+  },
+  {
+    "id": "author-legacy-not-double-counted",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "tier2_allowed": true
+    },
+    "artifacts": [
+      {
+        "name": "tier2-20261014-Contributor",
+        "workflow_run": {
+          "id": 1,
+          "repository_id": 7,
+          "head_repository_id": 7
+        }
+      }
+    ],
+    "unfiltered_artifacts": true
   }
 ]
