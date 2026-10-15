@@ -4,7 +4,9 @@ import base64
 import io
 import json
 import threading
+import traceback
 import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -12,10 +14,12 @@ from urllib.parse import urlsplit
 
 import pytest
 from agent_repo.systemone import (
+    _MAX_RESPONSE_BYTES,
     Answer,
     ProviderConfig,
     Question,
     SystemOneError,
+    _send,
     ask,
     build_request,
     parse_response,
@@ -376,31 +380,30 @@ def test_ask_wraps_integer_digit_limit_as_malformed_json() -> None:
     assert "credential-for-test" not in str(exc_info.value)
 
 
-def test_ask_wraps_deeply_nested_provider_json() -> None:
+def test_ask_wraps_decoder_recursion_error(monkeypatch: pytest.MonkeyPatch) -> None:
     config, questions = _request()
-    canary = "deep-json-canary"
-    body = (
-        f'{{"answers":{{"check":{{"type":"noul","noul":0.9,"canary":"{canary}","extra":'.encode()
-        + b"[" * 10000
-        + b"0"
-        + b"]" * 10000
-        + b"}}}"
-    )
-    calls = []
+    calls: list[tuple[Any, float]] = []
 
-    def respond(request: Any, timeout: float) -> bytes:
-        calls.append((request, timeout))
-        return body
+    def decode(_body: bytes) -> object:
+        raise RecursionError("decoder recursion")
 
-    with pytest.raises(SystemOneError, match="malformed JSON") as parse_error:
-        parse_response(config, body, questions)
-    _assert_canary_absent(parse_error.value, canary)
+    monkeypatch.setattr("agent_repo.systemone.json.loads", decode)
+
+    with pytest.raises(SystemOneError, match="malformed JSON"):
+        parse_response(config, b"{}", questions)
 
     with pytest.raises(SystemOneError, match="malformed JSON") as exc_info:
-        ask(config, _BASE_URLS["jev"], canary, "text", questions, transport=respond)
+        ask(
+            config,
+            _BASE_URLS["jev"],
+            "decoder-test-key",
+            "text",
+            questions,
+            transport=lambda request, timeout: calls.append((request, timeout)) or b"{}",
+        )
 
     assert len(calls) == 1
-    _assert_canary_absent(exc_info.value, canary)
+    assert str(exc_info.value) == "provider returned malformed JSON"
 
 
 def test_gateway_rejects_a_choice_with_one_option() -> None:
@@ -500,6 +503,34 @@ def test_other_transport_errors_are_wrapped_without_leaking_key(
     assert calls[0][1] == 4.0
     assert str(exc_info.value) == expected_message
     assert key not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("error_kind", ["systemone", "generic"])
+def test_transport_exception_text_and_chain_are_not_retained(error_kind: str) -> None:
+    key = "transport-canary"
+    url = "https://private.example/path"
+    error_text = f"transport failed for {key} at {url}"
+    cause = RuntimeError(error_text)
+    config, questions = _request()
+
+    def fail(_request: Any, _timeout: float) -> bytes:
+        if error_kind == "systemone":
+            raise SystemOneError(error_text, status=503) from cause
+        error = Exception(error_text)
+        error.status = 503
+        raise error from cause
+
+    with pytest.raises(SystemOneError) as exc_info:
+        ask(config, _BASE_URLS["jev"], key, "text", questions, transport=fail)
+
+    error = exc_info.value
+    details = [str(error), "".join(traceback.format_exception(error))]
+    details.extend(repr(getattr(error, name)) for name in dir(error))
+    assert all(value not in detail for value in (key, url) for detail in details)
+    assert error.status == 503
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert str(error) == "provider request failed"
 
 
 def test_urlerror_timeout_reason_uses_timeout_message() -> None:
@@ -629,6 +660,8 @@ def test_redirect_is_rejected_without_forwarding_authorization() -> None:
         "https:///url-canary?url-canary",
         "http://localhost.evil.example/url-canary",
         "http://127.0.0.1.nip.io/url-canary",
+        "http://localhost:0",
+        "https://h?",
         "http://url-canary@localhost/path",
         "http://url-canary:password@localhost/path",
         "https://provider.example/?url-canary",
@@ -765,3 +798,33 @@ def test_oversized_provider_response_is_rejected(monkeypatch: pytest.MonkeyPatch
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=2)
+
+
+def test_send_bounds_response_read_and_rejects_oversize(monkeypatch: pytest.MonkeyPatch) -> None:
+    read_sizes: list[int] = []
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            read_sizes.append(size)
+            return b"x" * (size + 1 if size >= 0 else _MAX_RESPONSE_BYTES + 1)
+
+    class Opener:
+        def open(self, _request: Any, timeout: float) -> Response:
+            assert timeout == 1.0
+            return Response()
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_handlers: Opener())
+    config, questions = _request()
+    request = build_request(config, _BASE_URLS["jev"], "test-key", "text", questions)
+
+    with pytest.raises(SystemOneError, match="provider response too large") as exc_info:
+        _send(request, timeout=1.0)
+
+    assert str(exc_info.value) == "provider response too large"
+    assert read_sizes == [_MAX_RESPONSE_BYTES + 1]
