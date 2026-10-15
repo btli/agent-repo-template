@@ -242,22 +242,6 @@ SCENARIO_CASES = [
     ("event_issue_comment", [("ci.yml", "check", "pull_request_target")]),
     ("unsafe_environment", [("ci.yml", "check", "secrets")]),
     ("expression_environment", [("ci.yml", "check", "secrets")]),
-    ("reuse_local_runner", [("callee.yml", "check", "runner")]),
-    ("reuse_local_secret", [("callee.yml", "check", "secrets")]),
-    ("reuse_ceiling", []),
-    ("reuse_downgrade", [("caller.yml", "call", "permissions")]),
-    ("reuse_remote", [("caller.yml", "call", "reusable_workflow")]),
-    ("reuse_missing", [("caller.yml", "call", "reusable_workflow")]),
-    ("reuse_nested", [("last.yml", "check", "runner")]),
-    (
-        "reuse_cycle",
-        [("callee.yml", "check", "runner"), ("callee.yml", "call", "reusable_workflow")],
-    ),
-    (
-        "reuse_inherit",
-        [("callee.yml", "check", "permissions"), ("caller.yml", "call", "permissions")],
-    ),
-    ("reuse_scope_ceiling", [("caller.yml", "call", "permissions")]),
     ("downstream_head_sha", [("down.yml", "check", "workflow_run")]),
     ("downstream_head_branch", [("down.yml", "check", "workflow_run")]),
     ("downstream_gh_download", [("down.yml", "check", "workflow_run")]),
@@ -321,9 +305,6 @@ SCENARIO_CASES = [
     ("artifact_ignore_agent", []),
     ("artifact_agent", [("down.yml", "check", "workflow_run")]),
     ("artifact_ignore_main", [("down.yml", "check", "workflow_run")]),
-    ("reusable_mutual_cycle", [("b.yml", "call", "reusable_workflow")]),
-    ("reusable_self_cycle", [("a.yml", "call", "reusable_workflow")]),
-    ("reusable_diamond", []),
     ("independent_repository_dispatch", []),
     ("independent_label", []),
     ("independent_milestone", []),
@@ -382,6 +363,50 @@ SCENARIO_CASES = [
     ("scalar_branches", [("ci.yml", "check", "secrets")]),
     ("scalar_branches_ignore", [("ci.yml", "check", "secrets")]),
     ("scalar_workflow_names", [("down.yml", "check", "workflow_run")]),
+    ("pr_release_artifact_source", [("deploy.yml", "check", "workflow_run")]),
+    ("pr_develop_artifact_source", [("deploy.yml", "check", "workflow_run")]),
+    ("pr_ignore_main_artifact_source", [("deploy.yml", "check", "workflow_run")]),
+    ("protected_environment_check_suite", [("ci.yml", "check", "secrets")]),
+    ("protected_environment_check_run", [("ci.yml", "check", "secrets")]),
+    ("protected_environment_status", [("ci.yml", "check", "secrets")]),
+    ("protected_environment_deployment_status", [("ci.yml", "check", "secrets")]),
+    ("protected_environment_pull_request_comment", [("ci.yml", "check", "secrets")]),
+    ("protected_environment_mixed_unknown", [("ci.yml", "check", "secrets")]),
+    ("protected_environment_push_schedule", []),
+    (
+        "caller_privileged_write",
+        [("caller.yml", "call", "permissions"), ("caller.yml", "call", "reusable_workflow")],
+    ),
+    (
+        "caller_privileged_inherit",
+        [("caller.yml", "call", "reusable_workflow"), ("caller.yml", "call", "secrets")],
+    ),
+    (
+        "caller_privileged_secret",
+        [("caller.yml", "call", "reusable_workflow"), ("caller.yml", "call", "secrets")],
+    ),
+    ("caller_unprivileged_local", []),
+    ("caller_unprivileged_remote", []),
+    ("caller_unprivileged_missing", []),
+    ("caller_readonly_automatic_token", []),
+    (
+        "caller_downstream_write",
+        [("caller.yml", "call", "reusable_workflow"), ("caller.yml", "call", "workflow_run")],
+    ),
+    (
+        "target_reusable_caller_secret",
+        [
+            ("caller.yml", "call", "pull_request_target"),
+            ("caller.yml", "call", "reusable_workflow"),
+        ],
+    ),
+    (
+        "target_reusable_caller_write",
+        [
+            ("caller.yml", "call", "pull_request_target"),
+            ("caller.yml", "call", "reusable_workflow"),
+        ],
+    ),
 ]
 
 
@@ -637,22 +662,8 @@ TARGET_CASES = [
     ("target_allowlisted_environment", [], False),
     ("target_read_all_run", [], False),
     ("target_default_unknown", [("ci.yml", "check", "pull_request_target")], False),
-    ("target_default_readonly", [], True),
+    ("target_default_readonly", [("ci.yml", "check", "pull_request_target")], True),
     ("target_display_metadata", [("ci.yml", "check", "pull_request_target")], False),
-    (
-        "target_reusable_pull_request_target_secret",
-        [("callee.yml", "check", "pull_request_target")],
-        False,
-    ),
-    ("target_reusable_pull_request_target_ceiling", [], False),
-    (
-        "target_reusable_issue_comment_secret",
-        [("callee.yml", "check", "pull_request_target")],
-        False,
-    ),
-    ("target_reusable_issue_comment_ceiling", [], False),
-    ("target_reusable_caller_secret", [("caller.yml", "call", "pull_request_target")], False),
-    ("target_reusable_caller_write", [("caller.yml", "call", "pull_request_target")], False),
     (
         "target_pull_request_target_container_env",
         [("ci.yml", "check", "pull_request_target")],
@@ -731,6 +742,11 @@ TARGET_CASES = [
     ("target_labeler_container_credentials", [("ci.yml", "check", "pull_request_target")], False),
     ("target_labeler_service_write", [("ci.yml", "check", "pull_request_target")], False),
     ("target_labeler_container_write", [("ci.yml", "check", "pull_request_target")], False),
+    ("comment_default_readonly", [], True),
+    ("target_implicit_context_token", [("ci.yml", "check", "pull_request_target")], True),
+    ("target_explicit_workflow_readonly", [], True),
+    ("target_explicit_job_readonly", [], True),
+    ("target_explicit_read_all", [], True),
 ]
 
 

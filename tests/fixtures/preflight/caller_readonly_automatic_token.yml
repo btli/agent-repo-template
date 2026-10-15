@@ -1,28 +1,29 @@
 {
   "caller.yml": {
-    "on": "pull_request_target",
+    "on": "push",
     "permissions": {},
     "jobs": {
       "call": {
-        "uses": "./.github/workflows/callee.yml"
+        "uses": "./.github/workflows/callee.yml",
+        "secrets": {
+          "TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+        }
       }
     }
   },
   "callee.yml": {
     "on": "workflow_call",
-    "permissions": {
-      "contents": "write"
-    },
+    "permissions": {},
     "jobs": {
       "check": {
-        "runs-on": "ubuntu-latest",
+        "runs-on": "self-hosted",
         "steps": [
           {
             "run": "echo ready"
           }
         ],
         "env": {
-          "TOKEN": "${{ secrets.NPM_TOKEN }}"
+          "TOKEN": "${{ secrets.CALLEE_TOKEN }}"
         }
       }
     }

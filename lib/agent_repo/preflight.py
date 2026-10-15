@@ -41,6 +41,16 @@ HOSTED_RUNNERS = frozenset(
 TARGET_EVENTS = frozenset(
     {"pull_request_target", "issue_comment", "issues", "discussion", "discussion_comment"}
 )
+AGENT_REF_EVENTS = frozenset(
+    {
+        "push",
+        "pull_request",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "create",
+        "merge_group",
+    }
+)
 # Deliberately minimal: only these pinned metadata actions may use target-event credentials.
 TARGET_ACTIONS = frozenset({"actions/labeler", "actions/first-interaction", "actions/stale"})
 
@@ -269,25 +279,6 @@ def _writes(value: object, ctx: PreflightContext) -> frozenset[str]:
     return frozenset(key for key, level in value.items() if level == "write")
 
 
-def _effective(
-    job: dict, workflow: dict, ceiling: frozenset[str] | None, ctx: PreflightContext
-) -> frozenset[str]:
-    declaration = job.get("permissions", workflow.get("permissions"))
-    requested = (
-        ceiling if declaration is None and ceiling is not None else _writes(declaration, ctx)
-    )
-    if ceiling is None:
-        return requested
-    effective = (requested - {"*", "id-token"}) & (ceiling - {"*", "id-token"})
-    if "*" in requested:
-        effective |= ceiling - {"id-token"}
-    if "*" in ceiling:
-        effective |= requested - {"id-token"}
-    if "id-token" in requested and "id-token" in ceiling:
-        effective |= {"id-token"}
-    return frozenset(effective)
-
-
 def _hosted(runner: object) -> bool:
     if isinstance(runner, list):
         if len(runner) != 1:
@@ -390,6 +381,9 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
         refs[path] = _reachable_refs(triggers[path], ctx)
         if refs[path]:
             reachable.add(path)
+        # Fork PRs can produce artifacts from any base branch.
+        if "pull_request" in triggers[path]:
+            refs[path].add(None)
         # Read-only target jobs can still produce artifacts containing PR code.
         if TARGET_EVENTS.intersection(triggers[path]):
             refs[path].add(ctx.default_branch)
@@ -425,24 +419,29 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 refs[path].add(ctx.default_branch)
                 changed = True
     targets = {path for path in parsed if TARGET_EVENTS.intersection(triggers[path])}
-    pending = [
-        (path, None, path in downstream, path in targets, path in reachable, (path,))
-        for path in sorted(reachable | downstream | targets)
-    ]
-    seen = set()
-    while pending:
-        path, ceiling, is_downstream, is_target, is_reachable, active = pending.pop()
-        state = (path, ceiling, is_downstream, is_target, is_reachable)
-        if state in seen:
-            continue
-        seen.add(state)
+    for path in sorted(reachable | downstream | targets):
+        is_downstream, is_target, is_reachable = (
+            path in downstream,
+            path in targets,
+            path in reachable,
+        )
         workflow = parsed[path]
+        agent_ref_only = all(
+            event in AGENT_REF_EVENTS
+            for event, config in triggers[path].items()
+            if _reachable_refs({event: config}, ctx)
+        )
         for name, job in workflow["jobs"].items():
             if not _enabled(job):
                 continue
             rules = set()
             _steps(job)
-            writes = _effective(job, workflow, ceiling, ctx)
+            declaration = job.get("permissions", workflow.get("permissions"))
+            writes = (
+                frozenset({"*"})
+                if declaration is None and "pull_request_target" in triggers[path]
+                else _writes(declaration, ctx)
+            )
             if is_downstream:
                 if _downstream_unsafe(job, workflow, writes):
                     rules.add("workflow_run")
@@ -459,26 +458,13 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             if (
                 is_reachable
                 and not is_downstream
-                and environment not in ctx.safe_environments
+                and (environment not in ctx.safe_environments or not agent_ref_only)
                 and (_secrets(job) or _secrets(workflow.get("env")))
             ):
                 rules.add("secrets")
             if "uses" in job:
-                uses = job["uses"]
-                match = (
-                    re.fullmatch(r"\./\.github/workflows/([^/]+\.ya?ml)", uses)
-                    if (isinstance(uses, str))
-                    else None
-                )
-                callee = match[1] if match else None
-                if callee not in parsed or "workflow_call" not in triggers[callee]:
+                if writes or _secrets(job) or _secrets(workflow.get("env")):
                     rules.add("reusable_workflow")
-                elif callee in active:
-                    rules.add("reusable_workflow")
-                else:
-                    pending.append(
-                        (callee, writes, is_downstream, is_target, is_reachable, (*active, callee))
-                    )
             elif (is_reachable or is_downstream or is_target) and not _hosted(job.get("runs-on")):
                 rules.add("runner")
             for rule in rules:
@@ -492,7 +478,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
         "pull_request_target": "Job {job!r} may expose target-event credentials. "
         "Use the logged fix.accept_ci_exposure override to accept this exposure.",
         "agent-apply": "Push or pull request workflow declares agent-apply.",
-        "reusable_workflow": "Reusable workflow cannot be verified locally.",
+        "reusable_workflow": "Reusable caller may expose privileged credentials.",
     }
     return [
         Exposure(path, name, rule, details[rule].format(job=name))

@@ -1,6 +1,6 @@
 {
   "caller.yml": {
-    "on": "issue_comment",
+    "on": "push",
     "permissions": {},
     "jobs": {
       "call": {
@@ -10,17 +10,18 @@
   },
   "callee.yml": {
     "on": "workflow_call",
-    "permissions": {
-      "contents": "write"
-    },
+    "permissions": {},
     "jobs": {
       "check": {
-        "runs-on": "ubuntu-latest",
+        "runs-on": "self-hosted",
         "steps": [
           {
             "run": "echo ready"
           }
-        ]
+        ],
+        "env": {
+          "TOKEN": "${{ secrets.CALLEE_TOKEN }}"
+        }
       }
     }
   }

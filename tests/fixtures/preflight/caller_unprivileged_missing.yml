@@ -4,7 +4,7 @@
     "permissions": {},
     "jobs": {
       "call": {
-        "uses": "./.github/workflows/missing.yml"
+        "uses": "./.github/workflows/callee.yml"
       }
     }
   }

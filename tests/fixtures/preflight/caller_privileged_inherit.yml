@@ -4,7 +4,8 @@
     "permissions": {},
     "jobs": {
       "call": {
-        "uses": "./.github/workflows/callee.yml"
+        "uses": "./.github/workflows/callee.yml",
+        "secrets": "inherit"
       }
     }
   },
@@ -12,20 +13,11 @@
     "on": "workflow_call",
     "permissions": {},
     "jobs": {
-      "call": {
-        "uses": "./.github/workflows/last.yml"
-      }
-    }
-  },
-  "last.yml": {
-    "on": "workflow_call",
-    "permissions": {},
-    "jobs": {
       "check": {
-        "runs-on": "internal",
+        "runs-on": "ubuntu-latest",
         "steps": [
           {
-            "run": "echo safe"
+            "run": "echo ready"
           }
         ]
       }
