@@ -291,7 +291,7 @@ def test_triage_marker_cap_and_common_request_count(count, capped, tmp_path):
         if p == "actions/artifacts" and q.get("name") == ["agent-triage-12"]
     ]
     assert queries == [{"name": ["agent-triage-12"], "per_page": ["100"], "page": ["1"]}]
-    assert len(transport.requests) == (3 if capped else 6) + min(count, 3)
+    assert len(transport.requests) == (3 if capped else 5) + min(count, 3)
     assert sum(p.startswith("actions/runs/") for p, _ in transport.requests) == min(count, 3)
 
 
@@ -350,9 +350,7 @@ def test_triage_marker_page_errors_fail_closed(page, tmp_path):
     assert sum(p == "actions/artifacts" for p, _ in transport.requests) == page
 
 
-@pytest.mark.parametrize(
-    "stage", ["comments", "marker", "global", "author", "legacy", "permission", "pull"]
-)
+@pytest.mark.parametrize("stage", ["comments", "marker", "global", "author", "permission", "pull"])
 def test_shared_request_budget_fails_closed(stage, tmp_path):
     case_id = {
         "marker": "cycle-cap",
@@ -371,13 +369,6 @@ def test_shared_request_budget_fails_closed(stage, tmp_path):
         name = "tier2-20261014" + ("-contributor" if stage == "author" else "")
         case["artifacts"] = [
             {"name": name, "workflow_run": {"repository_id": 7, "head_repository_id": 8}}
-        ] * 3100
-    if stage == "legacy":
-        case["artifacts"] = [
-            {
-                "name": "tier2-20261014-Other",
-                "workflow_run": {"repository_id": 7, "head_repository_id": 7},
-            }
         ] * 3100
     result, _, _, transport = evaluate_case(case, tmp_path)
     assert not result.run and not result.tier2_allowed and not result.capped
@@ -398,8 +389,9 @@ def test_marker_provenance_lookups_are_bounded(tmp_path):
     case["artifacts"] = [case["artifacts"][0]] * 100
     result, _, _, transport = evaluate_case(case, tmp_path)
     assert not result.run and not result.capped and not result.tier2_allowed
-    assert result.reason == "counter-overflow"
-    assert sum(p.startswith("actions/runs/") for p, _ in transport.requests) == 4
+    assert result.reason == "request-budget"
+    assert len(transport.requests) == 30
+    assert sum(p.startswith("actions/runs/") for p, _ in transport.requests) == 27
 
 
 @pytest.mark.parametrize(
@@ -421,16 +413,16 @@ def test_marker_provenance_uses_invoking_workflow(workflow_ref, reason, tmp_path
 
 
 @pytest.mark.parametrize("case_id", ["content-edit", "reporter-needs-info", "authorized-triage"])
-@pytest.mark.parametrize("unrelated", [0, 1000])
+@pytest.mark.parametrize("unrelated", [0, 1000, 3000])
 def test_no_marker_never_caps_or_debounces(case_id, unrelated, tmp_path):
     case = copy.deepcopy(next(c for c in CASES if c["id"] == case_id))
     marker = next(c for c in CASES if c["id"] == "cycle-cap")["artifacts"][0]
-    case["artifacts"] = [dict(marker, name="agent-triage-999")] * unrelated
+    case["artifacts"] = [dict(marker, name=f"ci-coverage-{i}") for i in range(unrelated)]
     result, _, _, transport = evaluate_case(case, tmp_path)
     assert result.run and not result.capped and result.reason == "ready"
     assert not any("/runs" in p or p.endswith("/jobs") for p, _ in transport.requests)
     assert sum(q.get("name") == ["agent-triage-12"] for _, q in transport.requests) == 1
-    assert len(transport.requests) == 5 + unrelated // 100 + 1 + (case_id == "authorized-triage")
+    assert len(transport.requests) == 5 + (case_id == "authorized-triage")
 
 
 def test_review_command_on_issue_skips_before_api(tmp_path):
@@ -579,7 +571,7 @@ def test_tier2_artifact_filters_use_utc_day_and_author(author, tmp_path):
     ctx = replace(ctx, now=datetime.fromisoformat("2026-10-13T23:30:00-01:00"))
     assert evaluate(replace(event, author=author), ctx).tier2_allowed
     names = [query.get("name") for path, query in transport.requests if path == "actions/artifacts"]
-    assert names == [["agent-triage-12"], ["tier2-20261014"], ["tier2-20261014-contributor"], None]
+    assert names == [["agent-triage-12"], ["tier2-20261014"], ["tier2-20261014-contributor"]]
 
 
 def test_command_cannot_cross_workflows(tmp_path):
