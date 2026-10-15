@@ -214,7 +214,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     if command is not None and command.name == "agent-off":
         return result(True, "agent-off")
 
-    repository = _mapping(ctx.gh.request("GET", f"repos/{event.repo}"))
+    repository = _mapping(ctx.gh.request("GET", f"/repos/{event.repo}"))
     if repository["full_name"].casefold() != event.repo.casefold():
         raise ValueError("invalid repository")
     repository_id = repository["id"]
