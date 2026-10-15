@@ -4,7 +4,6 @@ import secrets
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from itertools import chain
 from typing import Literal
 from urllib.parse import quote
 
@@ -253,7 +252,6 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     limits = ctx.config.raw["limits"]
     if ctx.workflow == "triage":
         prior = 0
-        verified = 0
         latest = None
         cap = limits["triage_runs_per_issue"]
         name = TRIAGE_MARKER_NAME.format(issue_number=event.number)
@@ -263,9 +261,6 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
             run = _mapping(artifact["workflow_run"])
             if run["repository_id"] != repository_id or run["head_repository_id"] != repository_id:
                 continue
-            if verified >= cap + 1:
-                raise _CounterOverflow
-            verified += 1
             source = _mapping(gh.request("GET", f"actions/runs/{run['id']}"))
             if source["path"] != workflow_path:
                 continue
@@ -292,19 +287,8 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         ),
     ):
         count = 0
-        artifacts = (
-            a
-            for a in _items(gh, "actions/artifacts", "artifacts", {"name": name})
-            if a["name"] == name
-        )
-        if reason == "tier2-author-cap":
-            # Exact-name queries miss legacy casing; the second scan excludes canonical names.
-            artifacts = chain(
-                artifacts,
-                (a for a in _items(gh, "actions/artifacts", "artifacts") if a["name"] != name),
-            )
-        for artifact in artifacts:
-            if artifact["name"].casefold() != name:
+        for artifact in _items(gh, "actions/artifacts", "artifacts", {"name": name}):
+            if artifact["name"] != name:
                 continue
             run = _mapping(artifact["workflow_run"])
             if run["repository_id"] == repository_id and run["head_repository_id"] == repository_id:
