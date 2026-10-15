@@ -3,7 +3,17 @@ import json
 import sys
 from pathlib import Path
 
+from agent_repo.config import ConfigError, load_config
 from agent_repo.schema import load_schema, validate
+
+
+def taxonomy(agents_dir: Path) -> set[str]:
+    config = load_config(agents_dir)
+    return (
+        {label for label in config.labels if label.startswith("type:")}
+        | {"area:" + area.name for area in config.areas}
+        | {"area:unknown"}
+    )
 
 
 def label_corrections(tier2: dict, allowed_labels: set[str] | None) -> list[str] | None:
@@ -63,18 +73,25 @@ def merge(
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: triage_merge <decision> <tier2-or-dash> <output>", file=sys.stderr)
+    if len(argv) != 4:
+        print(
+            "usage: triage_merge <decision> <tier2-or-dash> <output> <trusted-agents-dir>",
+            file=sys.stderr,
+        )
         return 2
     try:
         decision = json.loads(Path(argv[0]).read_text())
         tier2 = json.loads(Path(argv[1]).read_text()) if argv[1] != "-" else None
-        result = merge(decision, tier2, None)
+        result = merge(decision, tier2, None, allowed_labels=taxonomy(Path(argv[3])))
         encoded = json.dumps(result, indent=2) + "\n"
         output = Path(argv[2])
         if not output.exists() or output.read_text() != encoded:
             output.write_text(encoded)
-    except (OSError, ValueError):
+    except (OSError, ValueError, ConfigError):
         print("triage merge failed", file=sys.stderr)
         return 1
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

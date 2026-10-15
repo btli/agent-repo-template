@@ -74,7 +74,9 @@ except Exception as error:
         env["_AP_RESPONSE_FD"] = str(write_fd)
         code = code.replace(
             "print(json.dumps(result))",
-            "os.write(int(os.environ['_AP_RESPONSE_FD']), json.dumps(result).encode())",
+            "serialized=result if isinstance(result,str) else json.dumps(result)\n "
+            "os.write(int(os.environ['_AP_RESPONSE_FD']), "
+            "json.dumps({'result':serialized}).encode())",
         )
     try:
         run = subprocess.run(
@@ -83,11 +85,12 @@ except Exception as error:
             pass_fds=() if write_fd is None else (write_fd,),
             capture_output=True,
             text=True,
+            timeout=3,
         )
         if write_fd is not None:
             os.close(write_fd)
             write_fd = None
-            run.stdout = os.read(read_fd, 4096).decode()
+            run.stdout = os.read(read_fd, 65536).decode()
         return run
     finally:
         if read_fd is not None:
@@ -98,8 +101,8 @@ except Exception as error:
 
 def test_subprocess_tools_share_run_budget(tools):
     root = Path(os.environ["GITHUB_WORKSPACE"])
-    (root / "file").write_text("x" * 65536)
-    Path(os.environ["AGENT_REPO_BUDGET_FILE"]).write_text(str(524288 - 2 * 65536) + "\n")
+    (root / "file").write_text("x" * 16)
+    Path(os.environ["AGENT_REPO_BUDGET_FILE"]).write_text(str(524288 - 2 * 16) + "\n")
     first = tool_process("read_repo_file", "file")
     second = tool_process("grep_repo", "x", "file", 1)
     third = tool_process("read_repo_file", "file")
@@ -137,4 +140,22 @@ def test_tool_process_drops_job_environment(tools):
 def test_tool_preserves_response_pipe_metadata(tools):
     (Path(os.environ["GITHUB_WORKSPACE"]) / "file").write_text("safe")
     result = tool_process("read_repo_file", "file", protocol=True)
-    assert result.returncode == 0 and json.loads(result.stdout) == "safe"
+    assert result.returncode == 0 and json.loads(result.stdout)["result"] == "safe"
+
+
+@pytest.mark.parametrize("name", ["read_repo_file", "grep_repo"])
+@pytest.mark.parametrize("content", ["x", "\x01", "é", '\\"'])
+def test_maximum_response_completes_before_pipe_read(tools, name, content):
+    root = Path(os.environ["GITHUB_WORKSPACE"])
+    filename = "f" * 120
+    (root / filename).write_text(
+        content * 32768 if name == "read_repo_file" else (content * 32 + "\n") * 200
+    )
+    arguments = (filename,) if name == "read_repo_file" else (".", filename)
+    result = tool_process(name, *arguments, protocol=True)
+    assert result.returncode == 0
+    assert len(result.stdout.encode()) <= 32768
+    assert (
+        "truncated" in json.loads(result.stdout)["result"]
+        or "skipped" in json.loads(result.stdout)["result"]
+    )

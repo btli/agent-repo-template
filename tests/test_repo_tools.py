@@ -51,9 +51,14 @@ def test_line_selection_and_utf8(tmp_path):
 
 def test_read_per_call_cap(tmp_path):
     (tmp_path / "file").write_text("x" * 9)
-    module = importlib.import_module("agent_repo.repo_tools")
-    with pytest.raises(module.ToolError):
-        reader(tmp_path, per_call_bytes=8).read_file("file")
+    result = reader(tmp_path, per_call_bytes=8).read_file("file")
+    assert result.startswith("x" * 8) and "truncated" in result
+
+
+def test_read_window_in_large_file(tmp_path):
+    (tmp_path / "file").write_text("prefix\n" * 10000 + "wanted\nlast\n")
+    result = reader(tmp_path).read_file("file", start_line=10001, max_lines=1)
+    assert result.startswith("wanted\n") and "truncated" in result
 
 
 @pytest.mark.parametrize("method", ["read_file", "grep"])
@@ -86,17 +91,16 @@ def test_invalid_line_limits(tmp_path, kwargs):
         reader(tmp_path).read_file("file", **kwargs)
 
 
-def test_grep_skips_large_files_and_accounts_budget(tmp_path):
-    (tmp_path / "large").write_text("x" * 300)
+def test_grep_skips_large_files_without_charging_budget(tmp_path):
+    for index in range(12):
+        (tmp_path / f"a{index:02}").write_text("x" * 70000)
     (tmp_path / "small").write_text("needle\n")
-    obj = reader(tmp_path, per_call_bytes=128, per_run_bytes=250)
+    obj = reader(tmp_path, per_run_bytes=100)
     result = obj.grep("needle")
     assert ("small", 1, "needle") in result
-    assert any(path == "large" and "skipped" in line for path, _, line in result)
-    from agent_repo.repo_tools import ToolError
-
-    with pytest.raises(ToolError):
-        obj.grep("needle")
+    assert sum("skipped" in line for _, _, line in result) == 12
+    assert obj._used == 7
+    assert obj.read_file("small") == "needle\n"
 
 
 def test_grep_returns_partial_with_marker(tmp_path):
@@ -108,11 +112,8 @@ def test_grep_returns_partial_with_marker(tmp_path):
 
 
 def test_default_glob_searches_template_with_large_lockfiles():
-    result = reader(Path.cwd()).grep("def merge")
-    assert any(
-        path == "lib/agent_repo/commands/triage_merge.py" and "def merge" in line
-        for path, _, line in result
-    )
+    result = reader(Path.cwd()).grep("name:")
+    assert any(path == ".github/workflows/ci.yml" and "name:" in line for path, _, line in result)
     assert any("skipped" in line for _, _, line in result)
 
 

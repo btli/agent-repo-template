@@ -87,15 +87,43 @@ def test_matching_close_vote_and_info_request(decision):
 
 
 def test_merge_cli_is_idempotent(tmp_path, decision):
-    command = importlib.import_module("agent_repo.commands.triage_merge")
+    import os
+    import subprocess
+    import sys
+
     source = Path("tests/fixtures/triage/tier1.json")
+    tier2 = copy.deepcopy(decision)
+    tier2["labels"] = ["type:feature", "area:unknown"]
+    tier2["needs_info"] = {"text": "Which version?"}
+    tier2["close"]["tier2_agrees"] = True
+    incoming = tmp_path / "tier2.json"
+    incoming.write_text(json.dumps(tier2))
     output = tmp_path / "decision.json"
-    args = [str(source), str(source), str(output)]
-    assert command.main(args) == 0
+    args = [str(source), str(incoming), str(output), "tests/fixtures/agents"]
+    command = [sys.executable, "-m", "agent_repo.commands.triage_merge", *args]
+    env = dict(os.environ, PYTHONPATH=str(Path("lib").resolve()))
+    assert subprocess.run(command, env=env, capture_output=True).returncode == 0
     before = output.stat().st_mtime_ns
-    assert command.main(args) == 0
+    assert subprocess.run(command, env=env, capture_output=True).returncode == 0
     assert output.stat().st_mtime_ns == before
-    assert json.loads(output.read_text())["answers"] == decision["answers"]
+    result = json.loads(output.read_text())
+    assert result["answers"] == decision["answers"]
+    assert result["labels"] == ["priority:P2", "keep", "type:feature", "area:unknown"]
+    assert result["needs_info"] == tier2["needs_info"]
+    assert result["close"]["tier2_agrees"] is True
+    assert result["escalate"] is None
+
+
+@pytest.mark.parametrize("taxonomy", [None, "missing"])
+def test_merge_cli_refuses_missing_taxonomy(tmp_path, taxonomy):
+    command = importlib.import_module("agent_repo.commands.triage_merge")
+    source = "tests/fixtures/triage/tier1.json"
+    output = tmp_path / "decision.json"
+    args = [source, source, str(output)]
+    if taxonomy is not None:
+        args.append(str(tmp_path / taxonomy))
+    assert command.main(args) != 0
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -137,11 +165,12 @@ def action(monkeypatch, tmp_path, decision):
         "DECISION_FILE": json.dumps(decision),
         "CONTEXT_FILE": json.dumps(
             {
+                "config": Path("tests/fixtures/agents/config.yml").read_text(),
                 "charter": "report",
                 "contributing": "tests",
                 "docs_index": "README.md",
                 "labels": json.dumps({"labels": ["type:bug", "type:question", "area:core"]}),
-                "areas": json.dumps({"areas": [{"name": "core"}]}),
+                "areas": Path("tests/fixtures/agents/areas.yml").read_text(),
             }
         ),
         "ISSUE_FILE": "Parser bug",
@@ -327,3 +356,24 @@ def test_invalid_taxonomy_fails_closed(action, context):
     assert action["module"].main() == 1
     assert not action["calls"]
     assert json.loads(action["output"].read_text())["escalate"]["to"] == "maintainer"
+
+
+def test_short_token_named_value_is_not_a_credential(action, monkeypatch):
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
+    assert action["module"].main() == 0
+    assert '"security": false' in action["output"].read_text()
+    assert "[redacted credential]" not in action["calls"][0][0][-1]
+
+
+def test_context_taxonomy_uses_shared_loader_and_unknown(action, tmp_path):
+    context = {
+        key: Path(f"tests/fixtures/agents/{key}.yml").read_text()
+        for key in ["config", "labels", "areas"]
+    }
+    labels = action["module"].context_taxonomy(context, tmp_path)
+    assert labels == {"type:bug", "type:feature", "area:core", "area:unknown"}
+    context["areas"] = "areas: [{name: core}]"
+    from agent_repo.config import ConfigError
+
+    with pytest.raises(ConfigError):
+        action["module"].context_taxonomy(context, tmp_path)
