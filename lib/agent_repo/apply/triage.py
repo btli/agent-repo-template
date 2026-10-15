@@ -108,7 +108,9 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     area = area_answer.get("value") if area_answer.get("p", 0) >= apply_min else None
     area = area.removeprefix("area:") if isinstance(area, str) else None
     # Scan before rendering: escaping or truncation must not hide a credential.
-    if find_leaks("".join(_strings(decision)), ctx.secrets, ctx.canary):
+    if find_leaks("".join(_strings(decision)), ctx.secrets, ctx.canary) or find_leaks(
+        "".join(decision["answers"]), ctx.secrets, ctx.canary
+    ):
         return _maintainer(ctx, area, ["Outbound scan alert: proposed action dropped."])
     if decision["security"]:
         actions = _maintainer(ctx, area, [])

@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -32,6 +33,12 @@ class ApplyContext:
     github: GitHub | None = None
     off_authorized: bool = False
     bot_login: str = ""
+
+
+def canonical_bot_login(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9-]+(?:\[bot\])?", value, re.IGNORECASE) is None:
+        return ""
+    return value.casefold().removesuffix("[bot]") + "[bot]"
 
 
 def check_identity(artifact: dict, ctx: ApplyContext, schema: str) -> list[str]:
@@ -95,6 +102,11 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
     numbers = {action.payload["number"] for action in actions}
     if len(numbers) != 1 or any(type(number) is not int or number < 1 for number in numbers):
         raise ValueError("invalid action target")
+    for action in actions:
+        if action.kind in {"comment", "close"} and not canonical_bot_login(
+            action.payload.get("bot_login", "")
+        ):
+            raise ValueError("trusted bot identity required")
     number = numbers.pop()
     path = f"issues/{number}"
     item = gh.request("GET", path)
@@ -108,20 +120,23 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
         else []
     )
     completed_comments = {
-        (comment["user"]["login"], comment["body"])
+        (canonical_bot_login(comment["user"]["login"]), comment["body"])
         for comment in comments
         if isinstance(comment.get("user"), dict)
         and comment["user"].get("type") == "Bot"
-        and comment["user"].get("login")
+        and canonical_bot_login(comment["user"].get("login", ""))
     }
     planned_comments = {
-        (action.payload.get("bot_login", ""), action.payload["body"])
+        (canonical_bot_login(action.payload.get("bot_login", "")), action.payload["body"])
         for action in actions
         if action.kind == "comment"
     }
     for action in actions:
         if action.kind == "close":
-            explanation = (action.payload.get("bot_login", ""), action.payload.get("comment_body"))
+            explanation = (
+                canonical_bot_login(action.payload.get("bot_login", "")),
+                action.payload.get("comment_body"),
+            )
             if explanation not in completed_comments and explanation not in planned_comments:
                 raise ValueError("closure explanation required")
     order = {"add_labels": 0, "remove_labels": 1, "assign": 2, "comment": 3, "close": 4}
@@ -154,13 +169,13 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
                 gh.request("POST", f"{path}/assignees", body={"assignees": missing})
                 existing_owners.update(missing)
         elif action.kind == "comment":
-            identity = (payload.get("bot_login", ""), payload["body"])
+            identity = (canonical_bot_login(payload.get("bot_login", "")), payload["body"])
             if identity not in completed_comments:
                 gh.request("POST", f"{path}/comments", body={"body": payload["body"]})
                 completed_comments.add(identity)
         elif action.kind == "close" and item.get("state") == "open":
             if (
-                payload.get("bot_login", ""),
+                canonical_bot_login(payload.get("bot_login", "")),
                 payload.get("comment_body"),
             ) not in completed_comments:
                 raise ValueError("closure explanation not posted")

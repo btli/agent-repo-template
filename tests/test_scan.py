@@ -83,12 +83,15 @@ def test_base64_alignment_and_padding(remainder, urlsafe, padded):
 
 
 @pytest.mark.parametrize("start", [0, 5, 16])
-def test_sixteen_character_key_fragments_are_detected(start):
+@pytest.mark.parametrize("prefix", ["sk-ant-api03-", "gateway_public_"])
+def test_private_key_fragments_require_twelve_bytes(start, prefix):
     from agent_repo.scan import find_leaks
 
-    key = "AbCdEf0123456789-?_~XYZabcDEFghiJKL"
-    assert bool(find_leaks(key[start : start + 16], [key], "")), "key fragment missed"
-    assert not find_leaks(key[start : start + 15], [key], ""), "short overlap matched"
+    private = "AbCdEf0123456789GhIjKlMnOpQrStUvWxYz"
+    key = prefix + private
+    assert not find_leaks(prefix, [key], ""), "public prefix matched"
+    assert bool(find_leaks(private[start : start + 12], [key], "")), "private fragment missed"
+    assert not find_leaks(private[start : start + 11], [key], ""), "short overlap matched"
 
 
 def test_short_key_requires_the_whole_normalized_key():
@@ -124,3 +127,79 @@ def test_canary_uses_key_encodings_and_normalization(encoding):
         "normalized": "\u200b".join(canary.upper()),
     }
     assert find_leaks(values[encoding], [], canary) == ["canary"]
+
+
+@pytest.mark.parametrize("form", ["literal", "hex", "base64"])
+@pytest.mark.parametrize("public", ["prefix", "documentation", "prose", "sha"])
+def test_public_material_is_not_a_key_fragment(form, public):
+    from agent_repo.scan import find_leaks
+
+    key = "sk-ant-api03-" + "AbGhJkMnPqRsTuVwXyZ1234567890CdEf"
+    value = {
+        "prefix": "sk-ant-a",
+        "documentation": "The provider format begins sk-ant-api03- followed by private material.",
+        "prose": "Use the configured gateway credential for a request.",
+        "sha": "0123456789abcdef0123456789abcdef01234567",
+    }[public]
+    if form == "hex":
+        value = value.encode().hex()
+    elif form == "base64":
+        value = base64.b64encode(value.encode()).decode()
+    assert not find_leaks(value, [key], ""), "public material matched"
+
+
+@pytest.mark.parametrize("form", ["hex", "base64"])
+def test_encoded_fragments_measure_original_private_bytes(form):
+    from agent_repo.scan import find_leaks
+
+    private = "AbCdEf0123456789GhIjKlMnOpQrStUvWxYz"
+    key = "sk-ant-api03-" + private
+    encoder = (
+        (lambda value: value.hex())
+        if form == "hex"
+        else (lambda value: base64.b64encode(value).decode())
+    )
+    assert not find_leaks(encoder(b"sk-ant-api03-"), [key], ""), "public bytes matched"
+    assert not find_leaks(encoder(private[:11].encode()), [key], ""), "short bytes matched"
+    assert bool(find_leaks(encoder(private[:12].encode()), [key], "")), "private bytes missed"
+
+
+def test_short_private_suffix_needs_the_whole_key():
+    from agent_repo.scan import find_leaks
+
+    key = "sk-ant-api03-" + "AbCdE"
+    assert not find_leaks("Provider prefix: " + key[:-1], [key], ""), "prefix matched"
+    assert bool(find_leaks(key, [key], "")), "whole key missed"
+
+
+def test_scan_total_work_budget_fails_closed():
+    from agent_repo.scan import find_leaks
+
+    hits = find_leaks("ordinary prose " * 4000, [secrets.token_urlsafe(512)], "")
+    assert hits == ["scan_budget"], "work budget did not fail closed"
+
+
+@pytest.mark.parametrize("form", ["percent", "html"])
+def test_two_decode_layers_still_detect_keys(form):
+    from agent_repo.scan import find_leaks
+
+    key = secrets.token_hex(20)
+    value = key
+    for _ in range(2):
+        value = (
+            "".join(f"%{ord(char):02X}" for char in value)
+            if form == "percent"
+            else "".join(f"&#{ord(char)};" for char in value)
+        )
+    assert bool(find_leaks(value, [key], "")), "bounded nested decoding missed key"
+
+
+@pytest.mark.parametrize("remainder", [1, 2])
+def test_base64_padding_does_not_count_as_private_bytes(remainder):
+    from agent_repo.scan import find_leaks
+
+    private = "AbCdEf0123456789GhIjKlMnOpQrStUvWxYz"
+    private += "Z" * ((remainder - len(private)) % 3)
+    key = "sk-ant-api03-" + private
+    fragment = base64.b64encode(private[-(9 + remainder) :].encode()).decode()
+    assert not find_leaks(fragment, [key], ""), "base64 padding counted as private material"
