@@ -5,7 +5,6 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import quote
 
 from agent_repo.apply.actions import Action, ApplyContext, canonical_bot_login, execute
 from agent_repo.apply.triage import plan_triage
@@ -15,11 +14,9 @@ from agent_repo.event import load_event
 from agent_repo.github import GitHub
 
 
-def _policy(gh: GitHub, branch: str, directory: Path):
-    ref = gh.request("GET", f"git/ref/heads/{quote(branch, safe='')}")
-    sha = ref["object"]["sha"]
+def _policy(gh: GitHub, sha: str, directory: Path):
     if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
-        raise ValueError("invalid default branch SHA")
+        raise ValueError("invalid workflow SHA")
     for name in ("config.yml", "labels.yml", "areas.yml", "charter.md"):
         value = gh.request("GET", f"contents/.agents/{name}", params={"ref": sha})
         if value["encoding"] != "base64":
@@ -59,7 +56,7 @@ def main(argv: list[str]) -> int:
         token = os.environ["GH_TOKEN"]
         gh = GitHub(token, event.repo)
         with tempfile.TemporaryDirectory(prefix="agent-apply-") as directory:
-            base_sha, config, charter = _policy(gh, event.default_branch, Path(directory))
+            base_sha, config, charter = _policy(gh, os.environ["GITHUB_SHA"], Path(directory))
         mode = config.mode_for("triage")
         ctx = ApplyContext(
             event,
