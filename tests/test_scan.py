@@ -63,3 +63,64 @@ def test_empty_values_do_not_match_everything():
 
     assert encodings("") == []
     assert find_leaks("ordinary text", [""], "") == []
+
+
+@pytest.mark.parametrize("remainder", [0, 1, 2])
+@pytest.mark.parametrize("urlsafe", [False, True], ids=["standard", "urlsafe"])
+@pytest.mark.parametrize("padded", [False, True], ids=["unpadded", "padded"])
+def test_base64_alignment_and_padding(remainder, urlsafe, padded):
+    from agent_repo.scan import find_leaks
+
+    key = "???~~~?~??~?~?~~?~????~???~??~?~~~~~"
+    key += "?" * ((remainder - len(key)) % 3)
+    encoder = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    for offset in (0, 1, 2):
+        for suffix in (b"", b"suffix"):
+            blob = encoder(b"xy"[:offset] + key.encode() + suffix).decode()
+            if not padded:
+                blob = blob.rstrip("=")
+            assert bool(find_leaks(blob, [key], "")), "base64 alignment missed"
+
+
+@pytest.mark.parametrize("start", [0, 5, 16])
+def test_sixteen_character_key_fragments_are_detected(start):
+    from agent_repo.scan import find_leaks
+
+    key = "AbCdEf0123456789-?_~XYZabcDEFghiJKL"
+    assert bool(find_leaks(key[start : start + 16], [key], "")), "key fragment missed"
+    assert not find_leaks(key[start : start + 15], [key], ""), "short overlap matched"
+
+
+def test_short_key_requires_the_whole_normalized_key():
+    from agent_repo.scan import find_leaks
+
+    key = "AbC9xY7"
+    assert bool(find_leaks(key.lower(), [key], "")), "short key missed"
+    assert not find_leaks(key[:3], [key], ""), "partial short key matched"
+
+
+@pytest.mark.parametrize("remainder", [0, 1, 2])
+@pytest.mark.parametrize("urlsafe", [False, True], ids=["standard", "urlsafe"])
+def test_canary_uses_all_base64_alignments(remainder, urlsafe):
+    from agent_repo.scan import find_leaks
+
+    canary = "???~~~?~??~?~?~~?~????~???~??~?~~~~~"
+    canary += "?" * ((remainder - len(canary)) % 3)
+    encoder = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    for offset in (0, 1, 2):
+        value = encoder(b"xy"[:offset] + canary.encode() + b"suffix").decode()
+        for blob in (value, value.rstrip("=")):
+            assert find_leaks(blob, [], canary) == ["canary"]
+
+
+@pytest.mark.parametrize("encoding", ["hex", "reversed", "normalized"])
+def test_canary_uses_key_encodings_and_normalization(encoding):
+    from agent_repo.scan import find_leaks
+
+    canary = "Canary-AbCdEf0123456789-?_~XYZabc"
+    values = {
+        "hex": canary.encode().hex(),
+        "reversed": canary[::-1],
+        "normalized": "\u200b".join(canary.upper()),
+    }
+    assert find_leaks(values[encoding], [], canary) == ["canary"]

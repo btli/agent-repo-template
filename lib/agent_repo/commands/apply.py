@@ -69,6 +69,7 @@ def main(argv: list[str]) -> int:
             os.environ.get("AGENT_CAPPED") == "true",
             github=gh,
             off_authorized=os.environ.get("AGENT_OFF_AUTHORIZED") == "true",
+            bot_login=os.environ["AGENT_BOT_LOGIN"],
         )
         try:
             artifact = Path(argv[0])

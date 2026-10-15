@@ -1,5 +1,4 @@
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -9,7 +8,6 @@ from agent_repo.charter import Charter
 from agent_repo.config import RepoConfig
 from agent_repo.event import Event
 from agent_repo.github import GitHub
-from agent_repo.markers import find_markers
 from agent_repo.schema import load_schema, validate
 
 
@@ -33,21 +31,12 @@ class ApplyContext:
     capped: bool
     github: GitHub | None = None
     off_authorized: bool = False
-
-
-def _finite(value: object) -> bool:
-    if isinstance(value, float):
-        return math.isfinite(value)
-    if isinstance(value, dict):
-        return all(_finite(child) for child in value.values())
-    if isinstance(value, list):
-        return all(_finite(child) for child in value)
-    return True
+    bot_login: str = ""
 
 
 def check_identity(artifact: dict, ctx: ApplyContext, schema: str) -> list[str]:
     # Validator paths can contain untrusted keys, so never publish its diagnostics.
-    if validate(artifact, load_schema(schema)) or not _finite(artifact):
+    if validate(artifact, load_schema(schema)):
         return ["Artifact rejected: invalid schema."]
     if artifact["run_id"] != ctx.run_id or artifact["base_sha"] != ctx.base_sha:
         return ["Artifact rejected: identity mismatch."]
@@ -113,12 +102,28 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
         raise ValueError("invalid issue response")
     existing_labels = {label["name"] for label in item["labels"]}
     existing_owners = {owner["login"] for owner in item["assignees"]}
-    comments = gh.paginate(f"{path}/comments") if any(a.kind == "comment" for a in actions) else []
-    existing_markers = {
-        (found.role, found.run_id)
+    comments = (
+        gh.paginate(f"{path}/comments")
+        if any(a.kind in {"comment", "close"} for a in actions)
+        else []
+    )
+    completed_comments = {
+        (comment["user"]["login"], comment["body"])
         for comment in comments
-        for found in find_markers(comment["body"])
+        if isinstance(comment.get("user"), dict)
+        and comment["user"].get("type") == "Bot"
+        and comment["user"].get("login")
     }
+    planned_comments = {
+        (action.payload.get("bot_login", ""), action.payload["body"])
+        for action in actions
+        if action.kind == "comment"
+    }
+    for action in actions:
+        if action.kind == "close":
+            explanation = (action.payload.get("bot_login", ""), action.payload.get("comment_body"))
+            if explanation not in completed_comments and explanation not in planned_comments:
+                raise ValueError("closure explanation required")
     order = {"add_labels": 0, "remove_labels": 1, "assign": 2, "comment": 3, "close": 4}
     if any(action.kind not in order for action in actions):
         raise ValueError("unsupported action")
@@ -149,10 +154,15 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
                 gh.request("POST", f"{path}/assignees", body={"assignees": missing})
                 existing_owners.update(missing)
         elif action.kind == "comment":
-            markers = {(found.role, found.run_id) for found in find_markers(payload["body"])}
-            if not markers or not markers <= existing_markers:
+            identity = (payload.get("bot_login", ""), payload["body"])
+            if identity not in completed_comments:
                 gh.request("POST", f"{path}/comments", body={"body": payload["body"]})
-                existing_markers.update(markers)
+                completed_comments.add(identity)
         elif action.kind == "close" and item.get("state") == "open":
+            if (
+                payload.get("bot_login", ""),
+                payload.get("comment_body"),
+            ) not in completed_comments:
+                raise ValueError("closure explanation not posted")
             gh.request("PATCH", path, body={"state": "closed", "state_reason": "not_planned"})
             item["state"] = "closed"

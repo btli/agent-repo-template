@@ -10,6 +10,9 @@ inputs:
   scan-keys:
     description: Newline-separated AGENT_SCAN_KEYS from the agent-apply environment.
     required: true
+  bot-login:
+    description: Trusted AGENT_BOT_LOGIN of the GitHub App that posts comments.
+    required: true
   canary:
     description: Canary for this proposal run.
     required: true
@@ -29,6 +32,7 @@ runs:
         AGENT_ARTIFACT: ${{ inputs.artifact }}
         GH_TOKEN: ${{ inputs.token }}
         AGENT_SCAN_KEYS: ${{ inputs.scan-keys }}
+        AGENT_BOT_LOGIN: ${{ inputs.bot-login }}
         AGENT_CANARY: ${{ inputs.canary }}
         AGENT_CAPPED: ${{ inputs.capped }}
         AGENT_OFF_AUTHORIZED: ${{ inputs.off-authorized }}
