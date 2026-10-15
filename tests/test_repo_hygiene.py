@@ -202,7 +202,6 @@ def test_github_owner_scanner_catches_host_forms(repository: str):
 @pytest.mark.parametrize(
     "reference",
     [
-        "      - uses: untrusted/action@0123456789abcdef0123456789abcdef01234567",
         '      - "uses": untrusted/action@0123456789abcdef0123456789abcdef01234567',
         "      - 'uses': untrusted/action@0123456789abcdef0123456789abcdef01234567",
         "      - uses : untrusted/action@0123456789abcdef0123456789abcdef01234567",
@@ -217,24 +216,8 @@ def test_github_owner_scanner_checks_uses_references(tmp_path: Path, monkeypatch
     monkeypatch.setattr(sys.modules[__name__], "ROOT", root)
     with pytest.raises(AssertionError):
         test_no_unexpected_github_owners()
-
-
-@pytest.mark.parametrize(
-    "reference",
-    [
-        "      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567",
-        '      - "uses": actions/checkout@0123456789abcdef0123456789abcdef01234567',
-        "      - 'uses': actions/checkout@0123456789abcdef0123456789abcdef01234567",
-        "      - uses : actions/checkout@0123456789abcdef0123456789abcdef01234567",
-        "      - {uses: actions/checkout@0123456789abcdef0123456789abcdef01234567}",
-    ],
-)
-def test_github_owner_scanner_allows_uses_references(tmp_path: Path, monkeypatch, reference: str):
-    root = tmp_path / "workflow"
-    workflow_dir = root / ".github" / "workflows"
-    workflow_dir.mkdir(parents=True)
-    (workflow_dir / "ci.yml").write_text(f"jobs:\n  checks:\n    steps:\n{reference}\n")
-    monkeypatch.setattr(sys.modules[__name__], "ROOT", root)
+    allowed = reference.replace("untrusted/action", "actions/checkout")
+    (workflow_dir / "ci.yml").write_text(f"jobs:\n  checks:\n    steps:\n{allowed}\n")
     test_no_unexpected_github_owners()
 
 
@@ -264,45 +247,41 @@ def test_owner_gate_checks_reusable_and_composite_references(
 
 
 @pytest.mark.parametrize(
-    ("reference", "expected_valid"),
+    "key_value",
     [
-        (
-            '      - "uses": actions/checkout@0123456789abcdef0123456789abcdef01234567 # v1.0.0',
-            True,
-        ),
-        (
-            "      - 'uses': actions/checkout@0123456789abcdef0123456789abcdef01234567 # v1.0.0",
-            True,
-        ),
-        ("      - uses : actions/checkout@0123456789abcdef0123456789abcdef01234567 # v1.0.0", True),
-        (
-            "      - {uses: actions/checkout@0123456789abcdef0123456789abcdef01234567} # v1.0.0",
-            True,
-        ),
-        (
-            "      - uses: actions/checkout@v4 # uses: actions/checkout@"
-            "0123456789abcdef0123456789abcdef01234567 # v4.2.2",
-            False,
-        ),
-        ('      - "uses": actions/checkout@v4', False),
-        ("      - 'uses': actions/checkout@v4", False),
-        ("      - uses : actions/checkout@v4", False),
-        ("      - {uses: actions/checkout@v4}", False),
+        "uses:",
+        '"uses":',
+        "'uses':",
+        "uses :",
+        "{uses:",
     ],
 )
-def test_action_sha_gate_validates_yaml_scalar(
-    tmp_path: Path, monkeypatch, reference: str, expected_valid: bool
-):
+def test_action_sha_gate_validates_yaml_scalar(tmp_path: Path, monkeypatch, key_value: str):
     root = tmp_path / "workflow"
     workflow_dir = root / ".github" / "workflows"
     workflow_dir.mkdir(parents=True)
-    (workflow_dir / "ci.yml").write_text(f"jobs:\n  checks:\n    steps:\n{reference}\n")
     monkeypatch.setattr(sys.modules[__name__], "ROOT", root)
-    if expected_valid:
-        test_actions_pinned_to_sha()
+    pin = "0123456789abcdef0123456789abcdef01234567"
+    if key_value == "uses:":
+        allowed = f"      - uses: actions/checkout@{pin} # v1.0.0"
+        unpinned = f"      - uses: actions/checkout@v4 # uses: actions/checkout@{pin} # v4.2.2"
+    elif key_value == "{uses:":
+        allowed = f"      - {{uses: actions/checkout@{pin}}} # v1.0.0"
+        unpinned = "      - {uses: actions/checkout@v4}"
     else:
-        with pytest.raises(AssertionError):
-            test_actions_pinned_to_sha()
+        key_prefix = f"      - {key_value} "
+        allowed = f"{key_prefix}actions/checkout@{pin} # v1.0.0"
+        unpinned = f"{key_prefix}actions/checkout@v4"
+        if key_value == "uses :":
+            allowed = f"      - uses : actions/checkout@{pin} # v1.0.0"
+            unpinned = "      - uses : actions/checkout@v4"
+    if key_value == "uses :":
+        unpinned += f" # uses: actions/checkout@{pin} # v4.2.2"
+    (workflow_dir / "ci.yml").write_text(f"jobs:\n  checks:\n    steps:\n{allowed}\n")
+    test_actions_pinned_to_sha()
+    (workflow_dir / "ci.yml").write_text(f"jobs:\n  checks:\n    steps:\n{unpinned}\n")
+    with pytest.raises(AssertionError):
+        test_actions_pinned_to_sha()
 
 
 @pytest.mark.parametrize("composite", [False, True])
