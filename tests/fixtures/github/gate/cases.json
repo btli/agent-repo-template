@@ -548,19 +548,15 @@
       "tier2_allowed": false,
       "capped": false
     },
-    "runs": [
+    "artifacts": [
       {
         "id": 1,
-        "display_title": "agent-triage #12",
+        "name": "agent-triage-12",
+        "expired": false,
         "created_at": "2026-10-14T11:55:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7
         }
       }
     ]
@@ -605,19 +601,15 @@
       "tier2_allowed": true,
       "capped": false
     },
-    "runs": [
+    "artifacts": [
       {
         "id": 1,
-        "display_title": "agent-triage #12",
+        "name": "agent-triage-12",
+        "expired": false,
         "created_at": "2026-10-14T11:50:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7
         }
       }
     ]
@@ -657,47 +649,35 @@
       "tier2_allowed": false,
       "capped": true
     },
-    "runs": [
+    "artifacts": [
       {
         "id": 1,
-        "display_title": "agent-triage #12",
+        "name": "agent-triage-12",
+        "expired": false,
         "created_at": "2026-10-14T10:00:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7
         }
       },
       {
         "id": 2,
-        "display_title": "agent-triage #12",
+        "name": "agent-triage-12",
+        "expired": false,
         "created_at": "2026-10-14T10:00:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7
         }
       },
       {
         "id": 3,
-        "display_title": "agent-triage #12",
+        "name": "agent-triage-12",
+        "expired": false,
         "created_at": "2026-10-14T10:00:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7
         }
       }
     ]
@@ -737,207 +717,25 @@
       "tier2_allowed": true,
       "capped": false
     },
-    "runs": [
+    "artifacts": [
       {
         "id": 1,
-        "display_title": "agent-triage #12",
+        "name": "agent-triage-12",
+        "expired": false,
         "created_at": "2026-10-14T10:00:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7
         }
       },
       {
         "id": 2,
-        "display_title": "agent-triage #12",
+        "name": "agent-triage-12",
+        "expired": false,
         "created_at": "2026-10-14T10:00:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
-        }
-      }
-    ]
-  },
-  {
-    "id": "current-run-excluded",
-    "event_name": "issues",
-    "workflow": "triage",
-    "payload": {
-      "action": "opened",
-      "repository": {
-        "full_name": "your-org/project",
-        "default_branch": "main"
-      },
-      "sender": {
-        "login": "contributor",
-        "type": "User"
-      },
-      "issue": {
-        "number": 12,
-        "title": "Validation fails for empty input",
-        "body": "Steps to reproduce",
-        "user": {
-          "login": "contributor"
-        },
-        "author_association": "CONTRIBUTOR",
-        "labels": [
-          {
-            "name": "type:bug"
-          }
-        ]
-      }
-    },
-    "expected": {
-      "run": true,
-      "reason": "ready",
-      "tier2_allowed": true,
-      "capped": false
-    },
-    "runs": [
-      {
-        "id": 1,
-        "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
-        }
-      },
-      {
-        "id": 2,
-        "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T10:00:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
-        }
-      },
-      {
-        "id": 99,
-        "display_title": "agent-triage #12",
-        "created_at": "2026-10-14T11:55:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
-        }
-      }
-    ]
-  },
-  {
-    "id": "exact-display-title",
-    "event_name": "issues",
-    "workflow": "triage",
-    "payload": {
-      "action": "opened",
-      "repository": {
-        "full_name": "your-org/project",
-        "default_branch": "main"
-      },
-      "sender": {
-        "login": "contributor",
-        "type": "User"
-      },
-      "issue": {
-        "number": 12,
-        "title": "Validation fails for empty input",
-        "body": "Steps to reproduce",
-        "user": {
-          "login": "contributor"
-        },
-        "author_association": "CONTRIBUTOR",
-        "labels": [
-          {
-            "name": "type:bug"
-          }
-        ]
-      }
-    },
-    "expected": {
-      "run": true,
-      "reason": "ready",
-      "tier2_allowed": true,
-      "capped": false
-    },
-    "runs": [
-      {
-        "id": 0,
-        "display_title": "agent-triage #120",
-        "created_at": "2026-10-14T11:55:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
-        }
-      },
-      {
-        "id": 1,
-        "display_title": "agent-triage #12 extra",
-        "created_at": "2026-10-14T11:55:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
-        }
-      },
-      {
-        "id": 2,
-        "display_title": "other",
-        "created_at": "2026-10-14T11:55:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
-        }
-      },
-      {
-        "id": 4,
-        "display_title": "agent-triage #12x",
-        "created_at": "2026-10-14T11:55:00Z",
-        "workflow_id": 77,
-        "event": "issues",
-        "path": ".github/workflows/agent-triage.yml",
-        "repository": {
-          "id": 7
-        },
-        "head_repository": {
-          "id": 7
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7
         }
       }
     ]

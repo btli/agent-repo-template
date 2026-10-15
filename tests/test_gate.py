@@ -49,55 +49,11 @@ class FakeTransport:
             data = self.case.get("permission", {"role_name": "read", "permission": "read"})
         elif path.endswith("/comments"):
             status, data = 200, self.case.get("comments", [])
-        elif path == "actions/runs":
-            status, data = 200, {"workflow_runs": self.case.get("runs", [])}
-        elif path == "actions/runs/99":
-            status, data = (
-                200,
-                {
-                    "id": 99,
-                    "workflow_id": 77,
-                    "path": ".github/workflows/agent-triage.yml",
-                    "repository": {"id": 7, "full_name": "your-org/project"},
-                },
-            )
-        elif path == "issues/12":
-            status, data = 200, {"created_at": "2026-10-01T00:00:00Z"}
-        elif path == "actions/workflows/77/runs":
-            runs = self.case.get("runs", [])
-            if not self.case.get("unfiltered_runs"):
-                runs = [r for r in runs if r["event"] == query["event"][0]]
-            runs = sorted(runs, key=lambda r: r["created_at"], reverse=True)
-            status, data = (
-                200,
-                {"workflow_runs": runs, "total_count": self.case.get("reported_total", len(runs))},
-            )
-        elif path.endswith("/jobs"):
-            run_id = path.split("/")[-2]
-            jobs = self.case.get("jobs", {}).get(
-                run_id,
-                [
-                    {
-                        "name": "propose",
-                        "status": "completed",
-                        "conclusion": "success",
-                        "started_at": "2026-10-14T10:00:01Z",
-                        "runner_id": 42,
-                        "steps": [],
-                    },
-                ],
-            )
-            attempts = self.case.get("attempts", {}).get(run_id)
-            if attempts:
-                jobs = (
-                    [job for attempt in reversed(attempts) for job in attempt]
-                    if query.get("filter") == ["all"]
-                    else attempts[-1]
-                )
-            if query.get("page") == [str(self.case.get("fail_jobs_page", 0))]:
-                return 503, {}, b"{}"
-            status, data = 200, {"jobs": jobs}
+        elif path == "/repos/your-org/project":
+            status, data = 200, {"id": 7, "full_name": "your-org/project"}
         elif path == "actions/artifacts":
+            if query.get("page") == [str(self.case.get("fail_artifact_page", 0))]:
+                return 503, {}, b"{}"
             name = query.get("name", [None])[0]
             artifacts = self.case.get("artifacts", [])
             data = {
@@ -118,16 +74,12 @@ class FakeTransport:
         if self.case.get("failure") == "malformed":
             data = None
         headers = {}
-        if isinstance(data, dict) and any(
-            k in data for k in ("workflow_runs", "artifacts", "jobs")
-        ):
-            key = next(k for k in ("workflow_runs", "artifacts", "jobs") if k in data)
-            items = data[key]
-            if key == "workflow_runs":
-                items = items[: self.case.get("result_window", len(items))]
+        if isinstance(data, dict) and "artifacts" in data:
+            items = data["artifacts"]
+            data["total_count"] = len(items)
             page = int(query.get("page", ["1"])[0])
             start = (page - 1) * 100
-            data = dict(data, **{key: items[start : start + 100]})
+            data = dict(data, artifacts=items[start : start + 100])
             if len(items) > start + 100:
                 next_query = dict(query, page=[str(page + 1)])
                 from urllib.parse import urlencode
@@ -299,204 +251,92 @@ def test_comment_exceptions_use_api_pr_authorship(workflow, author, tmp_path):
         assert result.reason == ("draft" if workflow == "review" else "not-agent-draft")
 
 
-@pytest.mark.parametrize("edited", [False, True])
-@pytest.mark.parametrize("started_at", [None, "2026-10-14T11:55:01Z"])
-def test_unassigned_cancelled_propose_does_not_count(edited, started_at, tmp_path):
-    case = copy.deepcopy(
-        next(c for c in CASES if c["id"] == ("debounce" if edited else "cycle-cap"))
-    )
-    case["jobs"] = {
-        str(run["id"]): [
-            {
-                "name": "propose",
-                "status": "completed",
-                "conclusion": "cancelled",
-                "runner_id": None,
-                "steps": [],
-                "started_at": started_at,
-            }
-        ]
-        for run in case["runs"]
-    }
-    result, _, _, _ = evaluate_case(case, tmp_path)
-    assert result.run and result.reason == "ready" and not result.capped
+@pytest.mark.parametrize("count,capped", [(0, False), (2, False), (3, True), (4, True)])
+def test_triage_marker_cap_and_common_request_count(count, capped, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
+    case["artifacts"] = [dict(case["artifacts"][0], id=i) for i in range(count)]
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert result.capped is capped and result.run is not capped
+    assert result.reason == ("cycle-cap" if capped else "ready")
+    queries = [
+        q
+        for p, q in transport.requests
+        if p == "actions/artifacts" and q.get("name") == ["agent-triage-12"]
+    ]
+    assert queries == [{"name": ["agent-triage-12"], "per_page": ["100"], "page": ["1"]}]
+    assert len(transport.requests) == (3 if capped else 5)
 
 
 @pytest.mark.parametrize("edited", [False, True])
 @pytest.mark.parametrize(
-    "evidence",
+    "changed",
     [
-        {"runner_id": 42, "started_at": "2026-10-14T11:55:01Z", "steps": []},
-        {
-            "runner_id": None,
-            "started_at": None,
-            "steps": [{"name": "Set up job", "status": "completed"}],
-        },
+        {"expired": True},
+        {"workflow_run": {"repository_id": 7, "head_repository_id": 8}},
+        {"workflow_run": {"repository_id": 8, "head_repository_id": 7}},
+        {"name": "agent-triage-120"},
+        {"name": "agent-triage-12-extra"},
+        {"name": "agent-triage-13"},
     ],
 )
-def test_executed_cancelled_propose_still_counts(edited, evidence, tmp_path):
-    case = copy.deepcopy(
-        next(c for c in CASES if c["id"] == ("debounce" if edited else "cycle-cap"))
-    )
-    case["jobs"] = {
-        str(run["id"]): [
-            dict(
-                name="propose",
-                status="completed",
-                conclusion="cancelled",
-                **evidence,
-            )
-        ]
-        for run in case["runs"]
-    }
-    result, _, _, _ = evaluate_case(case, tmp_path)
-    assert not result.run
-    assert result.reason == ("debounce" if edited else "cycle-cap")
-
-
-@pytest.mark.parametrize("edited", [False, True])
-@pytest.mark.parametrize("later_page", [False, True])
-def test_earlier_attempt_propose_preserves_run_count(edited, later_page, tmp_path):
-    case = copy.deepcopy(
-        next(c for c in CASES if c["id"] == ("debounce" if edited else "cycle-cap"))
-    )
-    executed = {
-        "name": "propose",
-        "status": "completed",
-        "conclusion": "success",
-        "runner_id": 42,
-        "started_at": "2026-10-14T11:55:01Z",
-        "steps": [],
-    }
-    skipped = {
-        "name": "propose",
-        "status": "completed",
-        "conclusion": "skipped",
-        "runner_id": None,
-        "started_at": None,
-        "steps": [],
-    }
-    filler = [dict(skipped, name="gate")] * 99 if later_page else []
-    case["attempts"] = {str(run["id"]): [filler + [executed], [skipped]] for run in case["runs"]}
-    result, _, _, transport = evaluate_case(case, tmp_path)
-    assert not result.run and result.reason == ("debounce" if edited else "cycle-cap")
-    queries = [q for p, q in transport.requests if p.endswith("/jobs")]
-    assert all(q.get("filter") == ["all"] for q in queries)
-    if later_page:
-        assert any(q.get("page") == ["2"] for q in queries)
-
-
-def test_earlier_attempt_job_page_errors_fail_closed(tmp_path):
+def test_invalid_triage_markers_cannot_cap_or_debounce(edited, changed, tmp_path):
     case = copy.deepcopy(next(c for c in CASES if c["id"] == "debounce"))
-    skipped = {
-        "name": "propose",
-        "status": "completed",
-        "conclusion": "skipped",
-        "runner_id": None,
-        "started_at": None,
-        "steps": [],
-    }
-    executed = dict(skipped, conclusion="success", runner_id=42, started_at="2026-10-14T11:55:01Z")
-    case["attempts"] = {"1": [[dict(skipped, name="gate")] * 99 + [executed], [skipped]]}
-    case["fail_jobs_page"] = 2
+    if not edited:
+        case["payload"]["action"] = "opened"
+    case["unfiltered_artifacts"] = True
+    case["artifacts"] = [dict(case["artifacts"][0], **changed)] * 3
     result, _, _, _ = evaluate_case(case, tmp_path)
-    assert not result.run and result.reason == "api-error"
+    assert result.run and not result.capped and result.reason == "ready"
 
 
-def test_repeated_run_ids_and_attempts_count_once(tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-boundary"))
-    case["runs"] *= 3
-    executed = {
-        "name": "propose",
-        "status": "completed",
-        "conclusion": "success",
-        "runner_id": 42,
-        "started_at": "2026-10-14T10:00:01Z",
-        "steps": [],
-    }
-    case["attempts"] = {str(run["id"]): [[executed], [executed]] for run in case["runs"]}
-    result, _, _, transport = evaluate_case(case, tmp_path)
-    assert result.run and not result.capped
-    assert sum(p.endswith("/jobs") for p, _ in transport.requests) == 2
-
-
-@pytest.mark.parametrize("cap,bound", [(1, 10), (3, 10), (5, 15)])
-def test_many_skipped_runs_bound_job_requests(cap, bound, tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-boundary"))
-    case["limits"] = dict(LIMITS, triage_runs_per_issue=cap)
-    case["runs"] = [dict(case["runs"][0], id=1000 + i, event="issue_comment") for i in range(500)]
-    case["jobs"] = {
-        str(run["id"]): [
-            {
-                "name": "propose",
-                "status": "completed",
-                "conclusion": "skipped",
-                "runner_id": None,
-                "started_at": None,
-                "steps": [],
-            }
-        ]
-        for run in case["runs"]
-    }
-    result, _, _, transport = evaluate_case(case, tmp_path)
-    assert sum(p.endswith("/jobs") for p, _ in transport.requests) == bound
-    assert len(transport.requests) <= bound + 5
-    assert not result.run and result.capped and result.reason == "cycle-cap"
-
-
-def test_complete_skipped_history_at_lookup_bound_is_not_capped(tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-boundary"))
-    case["runs"] = [dict(case["runs"][0], id=1000 + i) for i in range(10)]
-    case["jobs"] = {str(run["id"]): [] for run in case["runs"]}
-    result, _, _, transport = evaluate_case(case, tmp_path)
-    assert result.run and not result.capped
-    assert sum(p.endswith("/jobs") for p, _ in transport.requests) == 10
-
-
-def test_candidate_runs_are_checked_newest_first_across_events(tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-boundary"))
-    old = [dict(case["runs"][0], id=1000 + i) for i in range(50)]
-    recent = [
-        dict(
-            case["runs"][0],
-            id=2000 + i,
-            event="issue_comment",
-            created_at=f"2026-10-14T11:5{i}:00Z",
-        )
-        for i in range(3)
-    ]
-    case["runs"] = old + recent
-    case["jobs"] = {str(r["id"]): [] for r in old}
-    result, _, _, transport = evaluate_case(case, tmp_path)
-    assert result.capped
-    jobs = [p for p, _ in transport.requests if p.endswith("/jobs")]
-    assert jobs == ["actions/runs/2002/jobs", "actions/runs/2001/jobs", "actions/runs/2000/jobs"]
-
-
-@pytest.mark.parametrize("window,total", [(1000, 2500), (1000, 1000), (150, 2500), (0, 2500)])
-def test_truncated_filtered_history_is_capped(window, total, tmp_path):
+@pytest.mark.parametrize("count,capped", [(299, False), (300, False), (301, True), (1000, True)])
+def test_triage_marker_paging_is_bounded(count, capped, tmp_path):
     case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
-    recent = [
-        dict(case["runs"][0], id=1000 + i, display_title="agent-triage #999") for i in range(1000)
-    ]
-    case["runs"] = recent + [dict(r, created_at="2026-10-13T10:00:00Z") for r in case["runs"]]
-    case["result_window"] = window
-    case["reported_total"] = total
+    foreign = dict(case["artifacts"][0], workflow_run={"repository_id": 7, "head_repository_id": 8})
+    case["artifacts"] = [dict(foreign, id=i) for i in range(count)]
     result, _, _, transport = evaluate_case(case, tmp_path)
-    assert not result.run and result.capped and result.reason == "cycle-cap"
-    queries = [q for p, q in transport.requests if p == "actions/workflows/77/runs"]
-    assert all(int(q.get("page", ["1"])[0]) <= 10 for q in queries)
+    assert result.run is not capped and result.capped is capped
+    assert result.reason == ("cycle-cap" if capped else "ready")
+    queries = [
+        q
+        for p, q in transport.requests
+        if p == "actions/artifacts" and q.get("name") == ["agent-triage-12"]
+    ]
+    assert [q["page"] for q in queries] == [["1"], ["2"], ["3"]]
+    assert len(transport.requests) <= 7
 
 
-@pytest.mark.parametrize("count,at_creation", [(999, False), (1000, True)])
-def test_complete_history_before_window_or_at_creation_is_allowed(count, at_creation, tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-boundary"))
-    template = dict(case["runs"][0], display_title="agent-triage #999")
-    if at_creation:
-        template["created_at"] = "2026-10-01T00:00:00Z"
-    case["runs"] = [dict(template, id=1000 + i) for i in range(count)]
-    result, _, _, _ = evaluate_case(case, tmp_path)
-    assert result.run and not result.capped
+@pytest.mark.parametrize("page", [1, 2, 3])
+def test_triage_marker_page_errors_fail_closed(page, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
+    case["artifacts"] = [dict(case["artifacts"][0], expired=True)] * 300
+    case["fail_artifact_page"] = page
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert not result.run and not result.tier2_allowed and not result.capped
+    assert result.reason == "api-error"
+    assert sum(p == "actions/artifacts" for p, _ in transport.requests) == page
+
+
+@pytest.mark.parametrize("case_id", ["content-edit", "reporter-needs-info", "authorized-triage"])
+@pytest.mark.parametrize("unrelated", [0, 1000])
+def test_no_marker_never_caps_or_debounces(case_id, unrelated, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == case_id))
+    marker = next(c for c in CASES if c["id"] == "cycle-cap")["artifacts"][0]
+    case["artifacts"] = [dict(marker, name="agent-triage-999")] * unrelated
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert result.run and not result.capped and result.reason == "ready"
+    assert not any("/runs" in p or p.endswith("/jobs") for p, _ in transport.requests)
+    assert sum(q.get("name") == ["agent-triage-12"] for _, q in transport.requests) == 1
+    assert len(transport.requests) <= 6
+
+
+def test_review_command_on_issue_skips_before_api(tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "authorized-triage"))
+    case["workflow"] = "review"
+    case["payload"]["comment"]["body"] = "/review"
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert not result.run and result.reason == "unsupported-event"
+    assert transport.requests == []
 
 
 def test_authorized_review_overrides_first_time_cost_gate(tmp_path):
@@ -528,92 +368,13 @@ def test_authorized_review_overrides_first_time_cost_gate(tmp_path):
 )
 def test_cheap_skips_never_read_counters(case_id, tmp_path):
     case = copy.deepcopy(next(c for c in CASES if c["id"] == case_id))
-    case["runs"] = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap")["runs"])
+    case["artifacts"] = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap")["artifacts"])
     result, _, _, transport = evaluate_case(case, tmp_path)
     assert result.reason == case["expected"]["reason"]
-    assert not any(path.startswith("actions/") for path, _ in transport.requests)
-
-
-@pytest.mark.parametrize(
-    "jobs",
-    [
-        [
-            {"name": "gate", "status": "completed", "conclusion": "success"},
-            {"name": "propose", "status": "completed", "conclusion": "skipped"},
-        ],
-        [{"name": "propose", "status": "queued", "conclusion": None}],
-        [],
-    ],
-)
-@pytest.mark.parametrize("edited", [False, True])
-def test_skipped_propose_cannot_cap_or_debounce(jobs, edited, tmp_path):
-    case = copy.deepcopy(
-        next(c for c in CASES if c["id"] == "debounce")
-        if edited
-        else next(c for c in CASES if c["id"] == "cycle-cap")
-    )
-    case["jobs"] = {str(run["id"]): jobs for run in case["runs"]}
-    result, _, _, _ = evaluate_case(case, tmp_path)
-    assert result.run and result.reason == "ready" and not result.capped
-
-
-@pytest.mark.parametrize(
-    "status,conclusion",
-    [
-        ("completed", "success"),
-        ("completed", "failure"),
-        ("completed", "cancelled"),
-        ("in_progress", None),
-    ],
-)
-def test_started_propose_runs_still_count(status, conclusion, tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
-    case["jobs"] = {
-        str(r["id"]): [
-            {
-                "name": "propose",
-                "status": status,
-                "conclusion": conclusion,
-                "runner_id": 42,
-                "started_at": "2026-10-14T10:00:01Z",
-                "steps": [],
-            },
-        ]
-        for r in case["runs"]
-    }
-    result, _, _, transport = evaluate_case(case, tmp_path)
-    assert not result.run and result.capped
-    assert any(path.endswith("/jobs") for path, _ in transport.requests)
-
-
-def test_counter_query_is_workflow_event_and_issue_scoped(tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
-    case["runs"][0]["event"] = "issue_comment"
-    result, _, _, transport = evaluate_case(case, tmp_path)
-    assert result.capped
-    queries = [query for path, query in transport.requests if path == "actions/workflows/77/runs"]
-    assert {q["event"][0] for q in queries} == {"issues", "issue_comment"}
-    assert all(q["created"] == [">=2026-10-01T00:00:00Z"] for q in queries)
-    assert not any(path == "actions/runs" for path, _ in transport.requests)
-
-
-@pytest.mark.parametrize(
-    "changed",
-    [
-        {"head_repository": {"id": 8}},
-        {"repository": {"id": 8}},
-        {"workflow_id": 78},
-        {"path": ".github/workflows/untrusted.yml"},
-        {"event": "pull_request"},
-        {"created_at": "2026-09-30T23:59:59Z"},
-    ],
-)
-def test_foreign_runs_cannot_cap_issue(changed, tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
-    case["unfiltered_runs"] = True
-    case["runs"] = [dict(run, **changed) for run in case["runs"]]
-    result, _, _, _ = evaluate_case(case, tmp_path)
-    assert result.run and not result.capped and result.tier2_allowed
+    if case_id.startswith("unauthorized"):
+        assert [p for p, _ in transport.requests] == ["collaborators/maintainer/permission"]
+    else:
+        assert transport.requests == []
 
 
 @pytest.mark.parametrize(
@@ -651,16 +412,10 @@ def test_unfiltered_artifact_names_do_not_exhaust_tier2(tmp_path):
 @pytest.mark.parametrize("counter", ["cycle-cap", "author-cap", "global-cap"])
 def test_counter_stops_paging_at_cap(counter, tmp_path):
     case = copy.deepcopy(next(c for c in CASES if c["id"] == counter))
-    if counter == "cycle-cap":
-        run = case["runs"][0]
-        case["runs"] = [dict(run, id=1000 + i) for i in range(201)]
-    else:
-        case["artifacts"] *= 101
+    case["artifacts"] *= 101
     result, _, _, transport = evaluate_case(case, tmp_path)
     assert result.reason == case["expected"]["reason"]
     assert not any(query.get("page") == ["2"] for _, query in transport.requests)
-    if counter == "cycle-cap":
-        assert sum(path.endswith("/jobs") for path, _ in transport.requests) == 3
     if counter == "global-cap":
         assert not any(
             q.get("name") == ["tier2-20261014-contributor"] for _, q in transport.requests
@@ -670,10 +425,7 @@ def test_counter_stops_paging_at_cap(counter, tmp_path):
 @pytest.mark.parametrize(
     "path",
     [
-        "actions/runs/99",
-        "issues/12",
-        "actions/workflows/77/runs",
-        "actions/runs/1/jobs",
+        "/repos/your-org/project",
         "actions/artifacts",
     ],
 )
@@ -707,14 +459,8 @@ def test_canary_is_fresh_and_32_hex_characters(tmp_path):
 @pytest.mark.parametrize("counter", ["cycle-cap", "author-cap", "global-cap"])
 def test_counters_include_paginated_metadata(counter, tmp_path):
     case = copy.deepcopy(next(c for c in CASES if c["id"] == counter))
-    if counter == "cycle-cap":
-        other = dict(case["runs"][0], display_title="agent-triage #999")
-        case["runs"] = [dict(other, id=1000 + i) for i in range(100)] + case["runs"]
-    else:
-        other = dict(
-            case["artifacts"][0], workflow_run={"repository_id": 7, "head_repository_id": 8}
-        )
-        case["artifacts"] = [other] * 100 + case["artifacts"]
+    other = dict(case["artifacts"][0], workflow_run={"repository_id": 7, "head_repository_id": 8})
+    case["artifacts"] = [other] * 100 + case["artifacts"]
     result, _, _, transport = evaluate_case(case, tmp_path)
     assert result.reason == case["expected"]["reason"]
     assert any(query.get("page") == ["2"] for _, query in transport.requests)
@@ -728,7 +474,7 @@ def test_tier2_artifact_filters_use_utc_day_and_author(tmp_path):
     ctx = replace(ctx, now=datetime.fromisoformat("2026-10-13T23:30:00-01:00"))
     assert evaluate(event, ctx).tier2_allowed
     names = [query.get("name") for path, query in transport.requests if path == "actions/artifacts"]
-    assert names == [["tier2-20261014"], ["tier2-20261014-contributor"]]
+    assert names == [["agent-triage-12"], ["tier2-20261014"], ["tier2-20261014-contributor"]]
 
 
 @pytest.mark.parametrize(
