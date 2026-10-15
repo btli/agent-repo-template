@@ -3,7 +3,6 @@ import secrets
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from heapq import merge
 from typing import Literal
 from urllib.parse import quote
 
@@ -11,6 +10,9 @@ from agent_repo.config import RepoConfig
 from agent_repo.event import Event
 from agent_repo.github import GitHub, GitHubError
 from agent_repo.markers import find_markers
+
+# The triage propose job uploads a zero-byte artifact with this exact name when it executes.
+TRIAGE_MARKER_NAME = "agent-triage-{issue_number}"
 
 
 @dataclass(frozen=True)
@@ -89,7 +91,7 @@ def evaluate(event: Event, ctx: GateContext) -> GateResult:
     command = parse_command(event.comment_body or "")
     try:
         return _evaluate(event, ctx, command, canary)
-    except _HistoryCapped:
+    except _CounterCapped:
         return GateResult(False, "cycle-cap", False, True, command, canary)
     except GitHubError:
         return GateResult(False, "api-error", False, False, command, canary)
@@ -124,28 +126,8 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         return result(False, "skip-label")
     if ctx.workflow == "triage" and event.is_pr:
         return result(False, "unsupported-event")
-    if event.name == "issue_comment" and event.is_pr:
-        # Comment webhooks contain a PR link, so fetch trusted head and draft metadata.
-        pull = _mapping(ctx.gh.request("GET", f"pulls/{event.number}"))
-        head = _mapping(pull.get("head"))
-        event = replace(
-            event,
-            head_ref=head.get("ref"),
-            head_repo=_mapping(head.get("repo") or {}).get("full_name"),
-            draft=pull["draft"],
-            author=_mapping(pull["user"])["login"],
-        )
     if ctx.workflow == "review" and event.draft and not _agent_pr(event, ctx.bot_login):
         return result(False, "draft")
-    comments = ctx.gh.paginate(f"issues/{event.number}/comments", params={"per_page": 100})
-    for comment in comments:
-        item = _mapping(comment)
-        login = _mapping(item.get("user") or {}).get("login", "")
-        if login.casefold() == ctx.bot_login.casefold() and any(
-            marker.role == "off" for marker in find_markers(item.get("body") or "")
-        ):
-            return result(False, "off")
-
     if (
         ctx.workflow == "triage"
         and event.name == "issues"
@@ -154,15 +136,17 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     ):
         return result(False, "no-op-edit")
 
+    if (
+        command is not None
+        and command.name != ctx.workflow
+        and not (command.name == "agent-off" and ctx.workflow == "triage")
+    ):
+        return result(False, "wrong-command")
+    if ctx.workflow == "review" and not event.is_pr:
+        return result(False, "unsupported-event")
     if command is not None:
-        if command.name != ctx.workflow and not (
-            command.name == "agent-off" and ctx.workflow == "triage"
-        ):
-            return result(False, "wrong-command")
         if not authorize(ctx.gh, event.sender, ctx.maintainers):
             return result(False, "unauthorized")
-        if command.name == "agent-off":
-            return result(True, "agent-off")
     elif ctx.workflow == "triage":
         if event.name == "issue_comment" and event.action == "created":
             if event.sender.casefold() != event.author.casefold():
@@ -198,8 +182,19 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     else:
         return result(False, "unsupported-event")
 
-    if ctx.workflow == "review" and not event.is_pr:
-        return result(False, "unsupported-event")
+    if event.name == "issue_comment" and event.is_pr:
+        # Comment webhooks contain a PR link, so fetch trusted head and draft metadata.
+        pull = _mapping(ctx.gh.request("GET", f"pulls/{event.number}"))
+        head = _mapping(pull.get("head"))
+        event = replace(
+            event,
+            head_ref=head.get("ref"),
+            head_repo=_mapping(head.get("repo") or {}).get("full_name"),
+            draft=pull["draft"],
+            author=_mapping(pull["user"])["login"],
+        )
+    if ctx.workflow == "review" and event.draft and not _agent_pr(event, ctx.bot_login):
+        return result(False, "draft")
     if (
         ctx.workflow == "fix"
         and event.is_pr
@@ -207,54 +202,40 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     ):
         return result(False, "not-agent-draft")
 
-    current = _mapping(ctx.gh.request("GET", f"actions/runs/{ctx.run_id}"))
-    repository = _mapping(current["repository"])
+    comments = ctx.gh.paginate(f"issues/{event.number}/comments", params={"per_page": 100})
+    for comment in comments:
+        item = _mapping(comment)
+        login = _mapping(item.get("user") or {}).get("login", "")
+        if login.casefold() == ctx.bot_login.casefold() and any(
+            marker.role == "off" for marker in find_markers(item.get("body") or "")
+        ):
+            return result(False, "off")
+
+    if command is not None and command.name == "agent-off":
+        return result(True, "agent-off")
+
+    repository = _mapping(ctx.gh.request("GET", f"repos/{event.repo}"))
     if repository["full_name"].casefold() != event.repo.casefold():
         raise ValueError("invalid repository")
     repository_id = repository["id"]
     limits = ctx.config.raw["limits"]
     if ctx.workflow == "triage":
-        issue = _mapping(ctx.gh.request("GET", f"issues/{event.number}"))
-        created = _timestamp(issue["created_at"])
         prior = 0
         latest = None
         cap = limits["triage_runs_per_issue"]
         if cap <= 0:
             return result(False, "cycle-cap", capped=True)
-        histories = [
-            _items(
-                ctx.gh,
-                f"actions/workflows/{current['workflow_id']}/runs",
-                "workflow_runs",
-                {"event": trigger, "created": f">={issue['created_at']}"},
-                history_start=created,
-            )
-            for trigger in ("issues", "issue_comment")
-        ]
-        candidates = 0
-        seen = set()
-        for run in merge(*histories, key=lambda run: _timestamp(run["created_at"]), reverse=True):
-            if (
-                str(run["id"]) == ctx.run_id
-                or run["id"] in seen
-                or run.get("display_title") != f"agent-triage #{event.number}"
-                or run["workflow_id"] != current["workflow_id"]
-                or run["path"].split("@", 1)[0] != current["path"].split("@", 1)[0]
-                or run["event"] not in {"issues", "issue_comment"}
-                or _mapping(run["repository"])["id"] != repository_id
-                or _mapping(run.get("head_repository") or {}).get("id") != repository_id
-            ):
+        name = TRIAGE_MARKER_NAME.format(issue_number=event.number)
+        for artifact in _items(
+            ctx.gh, "actions/artifacts", "artifacts", {"name": name}, max_pages=3
+        ):
+            if artifact["name"] != name or artifact["expired"]:
                 continue
-            started = _timestamp(run["created_at"])
-            if started < created:
-                continue
-            seen.add(run["id"])
-            if candidates >= max(10, 3 * cap):
-                return result(False, "cycle-cap", capped=True)
-            candidates += 1
-            if not _proposed(ctx.gh, run["id"]):
+            run = _mapping(artifact["workflow_run"])
+            if run["repository_id"] != repository_id or run["head_repository_id"] != repository_id:
                 continue
             prior += 1
+            started = _timestamp(artifact["created_at"])
             latest = max(latest, started) if latest else started
             if prior >= cap:
                 return result(False, "cycle-cap", capped=True)
@@ -291,7 +272,7 @@ def _timestamp(value: str) -> datetime:
     return timestamp
 
 
-class _HistoryCapped(Exception):
+class _CounterCapped(Exception):
     pass
 
 
@@ -301,10 +282,9 @@ def _items(
     key: str,
     params: dict | None = None,
     *,
-    history_start: datetime | None = None,
+    max_pages: int | None = None,
 ) -> Iterator[dict]:
     page = 1
-    consumed = 0
     while True:
         data = _mapping(
             gh.request("GET", path, params={**(params or {}), "per_page": 100, "page": page})
@@ -314,30 +294,8 @@ def _items(
             raise ValueError("invalid metadata")
         for item in items:
             yield _mapping(item)
-        consumed += len(items)
-        if history_start is not None:
-            total = data["total_count"]
-            if not isinstance(total, int) or total < 0:
-                raise ValueError("invalid history count")
-            if len(items) < 100 and consumed < total:
-                raise _HistoryCapped
-            if consumed >= 1000:
-                # Filtered workflow searches stop at 1,000 even when older runs exist.
-                if consumed < total or _timestamp(items[-1]["created_at"]) > history_start:
-                    raise _HistoryCapped
-                return
-            if consumed >= total:
-                return
-        if len(items) < 100:
+        if len(items) < 100 or (max_pages is not None and page * 100 >= data["total_count"]):
             return
+        if max_pages is not None and page >= max_pages:
+            raise _CounterCapped
         page += 1
-
-
-def _proposed(gh: GitHub, run_id: int) -> bool:
-    return any(
-        job["name"] == "propose"
-        and job["status"] in {"in_progress", "completed"}
-        and job["conclusion"] != "skipped"
-        and (job.get("steps") or (job.get("started_at") and job.get("runner_id")))
-        for job in _items(gh, f"actions/runs/{run_id}/jobs", "jobs", {"filter": "all"})
-    )
