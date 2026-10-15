@@ -1,3 +1,4 @@
+import os
 import re
 import secrets
 from collections.abc import Iterator
@@ -13,6 +14,26 @@ from agent_repo.markers import find_markers
 
 # The triage propose job uploads a zero-byte artifact with this exact name when it executes.
 TRIAGE_MARKER_NAME = "agent-triage-{issue_number}"
+
+
+class _RequestBudgetExceeded(Exception):
+    pass
+
+
+class _CounterOverflow(Exception):
+    pass
+
+
+@dataclass
+class _Budget:
+    gh: GitHub
+    remaining: int = 30
+
+    def request(self, method: str, path: str, *, params: dict | None = None) -> object:
+        if self.remaining <= 0:
+            raise _RequestBudgetExceeded
+        self.remaining -= 1
+        return self.gh.request(method, path, params=params)
 
 
 @dataclass(frozen=True)
@@ -31,7 +52,7 @@ def parse_command(body: str) -> Command | None:
     return None
 
 
-def authorize(gh: GitHub, login: str, maintainers: frozenset[str]) -> bool:
+def authorize(gh: GitHub | _Budget, login: str, maintainers: frozenset[str]) -> bool:
     if login.casefold().endswith("[bot]") or not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}", login
     ):
@@ -91,8 +112,10 @@ def evaluate(event: Event, ctx: GateContext) -> GateResult:
     command = parse_command(event.comment_body or "")
     try:
         return _evaluate(event, ctx, command, canary)
-    except _CounterCapped:
-        return GateResult(False, "cycle-cap", False, True, command, canary)
+    except _RequestBudgetExceeded:
+        return GateResult(False, "request-budget", False, False, command, canary)
+    except _CounterOverflow:
+        return GateResult(False, "counter-overflow", False, False, command, canary)
     except GitHubError:
         return GateResult(False, "api-error", False, False, command, canary)
     except (ValueError, TypeError, KeyError, AttributeError):
@@ -100,6 +123,8 @@ def evaluate(event: Event, ctx: GateContext) -> GateResult:
 
 
 def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: str) -> GateResult:
+    gh = _Budget(ctx.gh)
+
     def result(run: bool, reason: str, tier2: bool = False, capped: bool = False) -> GateResult:
         return GateResult(run, reason, tier2, capped, command, canary)
 
@@ -145,7 +170,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     if ctx.workflow == "review" and not event.is_pr:
         return result(False, "unsupported-event")
     if command is not None:
-        if not authorize(ctx.gh, event.sender, ctx.maintainers):
+        if not authorize(gh, event.sender, ctx.maintainers):
             return result(False, "unauthorized")
     elif ctx.workflow == "triage":
         if event.name == "issue_comment" and event.action == "created":
@@ -163,7 +188,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
             or event.is_pr
         ):
             return result(False, "unsupported-event")
-        if not authorize(ctx.gh, event.sender, ctx.maintainers):
+        if not authorize(gh, event.sender, ctx.maintainers):
             return result(False, "unauthorized")
     elif ctx.workflow == "review":
         if (
@@ -184,7 +209,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
 
     if event.name == "issue_comment" and event.is_pr:
         # Comment webhooks contain a PR link, so fetch trusted head and draft metadata.
-        pull = _mapping(ctx.gh.request("GET", f"pulls/{event.number}"))
+        pull = _mapping(gh.request("GET", f"pulls/{event.number}"))
         head = _mapping(pull.get("head"))
         event = replace(
             event,
@@ -202,7 +227,16 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     ):
         return result(False, "not-agent-draft")
 
-    comments = ctx.gh.paginate(f"issues/{event.number}/comments", params={"per_page": 100})
+    workflow_path = ""
+    if ctx.workflow == "triage":
+        # Gate and propose run in the same caller workflow.
+        workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF", "")
+        prefix = f"{event.repo}/"
+        workflow_path, separator, ref = workflow_ref.removeprefix(prefix).partition("@")
+        if not workflow_ref.startswith(prefix) or not separator or not ref:
+            return result(False, "invalid-metadata")
+
+    comments = _items(gh, f"issues/{event.number}/comments", None)
     for comment in comments:
         item = _mapping(comment)
         login = _mapping(item.get("user") or {}).get("login", "")
@@ -214,26 +248,32 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     if command is not None and command.name == "agent-off":
         return result(True, "agent-off")
 
-    repository = _mapping(ctx.gh.request("GET", f"/repos/{event.repo}"))
+    repository = _mapping(gh.request("GET", f"/repos/{event.repo}"))
     if repository["full_name"].casefold() != event.repo.casefold():
         raise ValueError("invalid repository")
     repository_id = repository["id"]
     limits = ctx.config.raw["limits"]
     if ctx.workflow == "triage":
         prior = 0
+        verified = 0
         latest = None
         cap = limits["triage_runs_per_issue"]
         if cap <= 0:
             return result(False, "cycle-cap", capped=True)
         name = TRIAGE_MARKER_NAME.format(issue_number=event.number)
-        for artifact in _items(
-            ctx.gh, "actions/artifacts", "artifacts", {"name": name}, max_pages=3
-        ):
-            if artifact["name"] != name or artifact["expired"]:
+        for artifact in _items(gh, "actions/artifacts", "artifacts", {"name": name}, max_pages=10):
+            if artifact["name"] != name:
                 continue
             run = _mapping(artifact["workflow_run"])
             if run["repository_id"] != repository_id or run["head_repository_id"] != repository_id:
                 continue
+            if verified >= cap + 1:
+                raise _CounterOverflow
+            verified += 1
+            source = _mapping(gh.request("GET", f"actions/runs/{run['id']}"))
+            if source["path"] != workflow_path:
+                continue
+            # Expired markers prove execution; the lifetime cap holds while GitHub lists them.
             prior += 1
             started = _timestamp(artifact["created_at"])
             latest = max(latest, started) if latest else started
@@ -254,7 +294,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         count = 0
         if limit <= 0:
             return result(True, reason)
-        for artifact in _items(ctx.gh, "actions/artifacts", "artifacts", {"name": name}):
+        for artifact in _items(gh, "actions/artifacts", "artifacts", {"name": name}):
             if artifact["name"] != name:
                 continue
             run = _mapping(artifact["workflow_run"])
@@ -272,30 +312,26 @@ def _timestamp(value: str) -> datetime:
     return timestamp
 
 
-class _CounterCapped(Exception):
-    pass
-
-
 def _items(
-    gh: GitHub,
+    gh: _Budget,
     path: str,
-    key: str,
+    key: str | None,
     params: dict | None = None,
     *,
     max_pages: int | None = None,
 ) -> Iterator[dict]:
     page = 1
     while True:
-        data = _mapping(
-            gh.request("GET", path, params={**(params or {}), "per_page": 100, "page": page})
-        )
-        items = data[key]
+        data = gh.request("GET", path, params={**(params or {}), "per_page": 100, "page": page})
+        items = _mapping(data)[key] if key is not None else data
         if not isinstance(items, list):
             raise ValueError("invalid metadata")
         for item in items:
             yield _mapping(item)
-        if len(items) < 100 or (max_pages is not None and page * 100 >= data["total_count"]):
+        if len(items) < 100 or (
+            max_pages is not None and page * 100 >= _mapping(data)["total_count"]
+        ):
             return
         if max_pages is not None and page >= max_pages:
-            raise _CounterCapped
+            raise _CounterOverflow
         page += 1
