@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -40,8 +41,32 @@ class SystemOneError(Exception):
         self.status = status
 
 
+class _FailureReason(Enum):
+    HTTP = auto()
+    REQUEST_FAILED = auto()
+    REQUEST_TIMED_OUT = auto()
+    RESPONSE_TOO_LARGE = auto()
+
+
+_FAILURE_MESSAGES = {
+    _FailureReason.HTTP: "provider request failed",
+    _FailureReason.REQUEST_FAILED: "provider request failed",
+    _FailureReason.REQUEST_TIMED_OUT: "provider request timed out",
+    _FailureReason.RESPONSE_TOO_LARGE: "provider response too large",
+}
+
+
 class _TrustedSystemOneError(SystemOneError):
     """An error message created by this module rather than a transport."""
+
+    def __init__(
+        self,
+        message: str,
+        status: int | None = None,
+        reason: _FailureReason | None = None,
+    ) -> None:
+        super().__init__(message, status=status)
+        self.reason = reason
 
 
 # Unverified: TypeSafe's schema sets no maximum for choice criteria.
@@ -169,32 +194,36 @@ def ask(
 ) -> dict[str, Answer | None]:
     request = build_request(cfg, base_url, key, input_text, questions)
     sender = transport or _send
-    failure_message: str | None = None
+    failure_reason: _FailureReason | None = None
     failure_status: int | None = None
     try:
         response = sender(request, timeout)
     except urllib.error.HTTPError as exc:
         if type(exc.code) is int:
-            failure_message = f"provider returned HTTP {exc.code}"
+            failure_reason = _FailureReason.HTTP
             failure_status = exc.code
         else:
-            failure_message = "provider request failed"
+            failure_reason = _FailureReason.REQUEST_FAILED
     except (TimeoutError, urllib.error.URLError) as exc:
         if isinstance(exc, TimeoutError) or isinstance(exc.reason, TimeoutError):
-            failure_message = "provider request timed out"
+            failure_reason = _FailureReason.REQUEST_TIMED_OUT
         else:
-            failure_message = "provider request failed"
+            failure_reason = _FailureReason.REQUEST_FAILED
     except _TrustedSystemOneError as exc:
-        failure_message = str(exc)
+        reason = exc.__dict__.get("reason")
+        if type(reason) is _FailureReason:
+            failure_reason = reason
+        else:
+            failure_reason = _FailureReason.REQUEST_FAILED
         if type(exc.status) is int:
             failure_status = exc.status
     except Exception as exc:
-        failure_message = "provider request failed"
+        failure_reason = _FailureReason.REQUEST_FAILED
         status = exc.__dict__.get("status")
         if type(status) is int:
             failure_status = status
-    if failure_message is not None:
-        raise SystemOneError(failure_message, status=failure_status) from None
+    if failure_reason is not None:
+        raise SystemOneError(_FAILURE_MESSAGES[failure_reason], status=failure_status) from None
     return parse_response(cfg, response, questions)
 
 
@@ -308,5 +337,7 @@ def _send(request: urllib.request.Request, timeout: float) -> bytes:
     with opener.open(request, timeout=timeout) as response:
         body = response.read(_MAX_RESPONSE_BYTES + 1)
     if len(body) > _MAX_RESPONSE_BYTES:
-        raise _TrustedSystemOneError("provider response too large")
+        raise _TrustedSystemOneError(
+            "provider response too large", reason=_FailureReason.RESPONSE_TOO_LARGE
+        )
     return body
