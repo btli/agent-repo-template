@@ -532,7 +532,43 @@ def test_apply_action_ignores_workspace_python_modules(modules, tmp_path):
     assert "Apply failed: trusted inputs unavailable." in summary.read_text()
 
 
-def test_composite_actions_do_not_use_python_module_or_command_mode():
+def _python_uses_script(run):
+    for line in run.splitlines():
+        words = shlex.split(line, comments=True)
+        for index, word in enumerate(words):
+            if not re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(word).name):
+                continue
+            options = iter(words[index + 1 :])
+            for option in options:
+                if not option.startswith("-") or option in {"-", "--"}:
+                    break
+                if option == "--check-hash-based-pycs":
+                    next(options, None)
+                    continue
+                if option.startswith("--"):
+                    continue
+                for position, flag in enumerate(option[1:], 1):
+                    if flag in {"m", "c"}:
+                        return False
+                    if flag in {"X", "W"}:
+                        # Interpreter option values may be attached or in the next word.
+                        if position == len(option) - 1:
+                            next(options, None)
+                        break
+    return True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        None,
+        "python3 -X dev -m agent_repo_cli",
+        "python3 -W ignore -m agent_repo_cli",
+        "python3 -X dev -Bm agent_repo_cli",
+    ],
+    ids=["real-actions", "x-option", "warnings-option", "clustered"],
+)
+def test_composite_actions_do_not_use_python_module_or_command_mode(command):
     from agent_repo.yamljson import load_yaml
 
     actions = Path(__file__).resolve().parents[1] / "actions"
@@ -541,17 +577,10 @@ def test_composite_actions_do_not_use_python_module_or_command_mode():
         if runs["using"] != "composite":
             continue
         for step in runs["steps"]:
-            for line in step.get("run", "").splitlines():
-                words = shlex.split(line, comments=True)
-                for index, word in enumerate(words):
-                    if not re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(word).name):
-                        continue
-                    for option in words[index + 1 :]:
-                        if not option.startswith("-"):
-                            break
-                        assert not re.match(r"^-[^-]*[mc]", option), (
-                            f"{path.relative_to(actions)}: Python must run a trusted script"
-                        )
+            run = step.get("run", "") if command is None else command
+            assert _python_uses_script(run) is (command is None), (
+                f"{path.relative_to(actions)}: unexpected Python invocation policy result"
+            )
 
 
 def test_label_absent_from_allowlist_is_dropped():
