@@ -70,16 +70,28 @@ def main() -> int:
     allowed_labels = None
     canary = secrets.token_hex(24)
     key_env = os.environ.get("API_KEY_ENV", "LLM_API_KEY")
+    explicit = {
+        key_env,
+        "LLM_API_KEY",
+        "GITHUB_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    }
+    # Ignore incidental values under four characters, but always protect explicit credentials.
     private = {
         value
         for name, value in os.environ.items()
         if value
         and (
-            name in {key_env, "LLM_API_KEY"}
-            or re.search(
-                r"TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|AUTH|PASS|PRIVATE|DSN|(?:^|_)PAT(?:_|$)",
-                name,
-                re.IGNORECASE,
+            name in explicit
+            or (
+                len(value) >= 4
+                and name.upper() != "SSH_AUTH_SOCK"
+                and re.search(
+                    r"(?:^|_)(?:PAT|AUTH|KEY|TOKEN|SECRET|PASSWORD|PASS|PASSWD|CREDENTIALS?|PRIVATE|DSN)(?:_|$)",
+                    name,
+                    re.IGNORECASE,
+                )
             )
         )
     }
@@ -93,7 +105,11 @@ def main() -> int:
         if url.username is not None:
             private.add(value)
             if url.password is not None:
-                private.update({url.password, unquote(url.password)})
+                private.update(
+                    password
+                    for password in {url.password, unquote(url.password)}
+                    if len(password) >= 4
+                )
     sensitive = set()
     for value in private | {canary, "LLM_API_KEY"}:
         raw = value.encode()
