@@ -168,6 +168,39 @@ def run(data, ctx, api, tmp_path, mode="live"):
     return alerts, summary.read_text()
 
 
+@pytest.mark.parametrize("maximum", [False, True], ids=["baseline", "schema-maximum"])
+def test_clean_production_secret_set_posts_comment(maximum, tmp_path, record_property):
+    from time import perf_counter
+
+    from agent_repo.apply.actions import check_identity
+
+    api = API()
+    keys = ["sk-ant-api03-" + secrets.token_urlsafe(32) for _ in range(3)]
+    keys.append("ghs_" + secrets.token_urlsafe(32))
+    ctx = replace(context(api), secrets=keys)
+    data = decision()
+    prose = "Please provide the application version and steps to reproduce. " * 70
+    data["answers"]["needs_info"] = {"value": True, "p": 0.9}
+    data["needs_info"] = {"text": prose[:2000]}
+    if maximum:
+        data["rca"] = {
+            "hypothesis": prose[:4000],
+            "locations": [],
+            "confidence": "low",
+            "confirm_with": prose[:1000],
+        }
+        data["notes"] = [prose[:500]] * 20
+    assert not check_identity(data, ctx, "decision"), "test artifact must be valid"
+    started = perf_counter()
+    alerts, _ = run(data, ctx, api, tmp_path)
+    elapsed = perf_counter() - started
+    record_property("apply_seconds", elapsed)
+    assert not alerts, "ordinary request raised an outbound scan alert"
+    assert len(api.comments) == 1, "ordinary request comment was dropped"
+    assert data["needs_info"]["text"] in api.comments[0]["body"]
+    assert elapsed < 2, "ordinary request exceeded bounded runtime"
+
+
 @pytest.mark.parametrize(
     "answer,label", [("type", "type:bug"), ("area", "area:api"), ("priority", "P2")]
 )

@@ -1,5 +1,6 @@
 import base64
 import secrets
+from time import perf_counter
 
 import pytest
 
@@ -83,11 +84,11 @@ def test_base64_alignment_and_padding(remainder, urlsafe, padded):
 
 
 @pytest.mark.parametrize("start", [0, 5, 16])
-@pytest.mark.parametrize("prefix", ["sk-ant-api03-", "gateway_public_"])
-def test_private_key_fragments_require_twelve_bytes(start, prefix):
+def test_private_key_fragments_require_twelve_bytes(start):
     from agent_repo.scan import find_leaks
 
     private = "AbCdEf0123456789GhIjKlMnOpQrStUvWxYz"
+    prefix = "sk-ant-api03-"
     key = prefix + private
     assert not find_leaks(prefix, [key], ""), "public prefix matched"
     assert bool(find_leaks(private[start : start + 12], [key], "")), "private fragment missed"
@@ -172,11 +173,70 @@ def test_short_private_suffix_needs_the_whole_key():
     assert bool(find_leaks(key, [key], "")), "whole key missed"
 
 
-def test_scan_total_work_budget_fails_closed():
+def test_scan_at_length_cap_is_fast_and_accepts_clean_text(record_property):
     from agent_repo.scan import find_leaks
 
-    hits = find_leaks("ordinary prose " * 4000, [secrets.token_urlsafe(512)], "")
-    assert hits == ["scan_budget"], "work budget did not fail closed"
+    text = ("ordinaryprose" * 6000)[:65536]
+    keys = [secrets.token_urlsafe(512) for _ in range(4)]
+    canary = secrets.token_hex(20)
+    started = perf_counter()
+    hits = find_leaks(text, keys, canary)
+    elapsed = perf_counter() - started
+    record_property("scan_seconds", elapsed)
+    assert not hits, "clean text at the length cap was rejected"
+    assert elapsed < 2, "scan at the length cap exceeded bounded runtime"
+
+
+@pytest.mark.parametrize("cap", ["input", "intermediate", "casefold"])
+def test_scan_length_caps_fail_closed_independently(cap):
+    from agent_repo.scan import find_leaks
+
+    payload = {
+        "input": "%41" * 21846,
+        "intermediate": r"\uFDFA" * 4000,
+        "casefold": "\u0130" * 32769,
+    }[cap]
+    assert find_leaks(payload, [], "") == ["scan_budget"], "length cap did not fail closed"
+
+
+@pytest.mark.parametrize("separator", ["-", "_"])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "sk-ant-api03-",
+        "sk-ant-",
+        "sk-proj-",
+        "sk-",
+        "dapi",
+        "ghp_",
+        "gho_",
+        "ghs_",
+        "ghu_",
+        "github_pat_",
+        "xai-",
+        "",
+    ],
+    ids=[
+        "anthropic-api",
+        "anthropic",
+        "project",
+        "openai",
+        "databricks",
+        "pat",
+        "oauth",
+        "app",
+        "user",
+        "fine-grained",
+        "xai",
+        "unknown",
+    ],
+)
+def test_private_delimiters_do_not_become_public_prefixes(prefix, separator):
+    from agent_repo.scan import find_leaks
+
+    private = "Ab" + separator + "CdEfG0123HiJkLmN4567OpQrStUv"
+    hits = find_leaks(private[:12], [prefix + private], "")
+    assert bool(hits), "private bytes were excluded as a public prefix"
 
 
 @pytest.mark.parametrize("form", ["percent", "html"])

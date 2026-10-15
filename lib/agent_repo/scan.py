@@ -44,17 +44,10 @@ class _ScanLimit(ValueError):
     pass
 
 
-def _spend(budget: list[int], amount: int) -> None:
-    budget[0] -= amount
-    if budget[0] < 0:
-        raise _ScanLimit
-
-
-def _normalize(text: str, budget: list[int]) -> str:
+def _normalize(text: str) -> str:
     for _ in range(3):
         if len(text) > 65536:
             raise _ScanLimit
-        _spend(budget, len(text))
         decoded = unicodedata.normalize("NFKC", html.unescape(unquote(text)))
         if decoded == text:
             break
@@ -69,7 +62,6 @@ def _normalize(text: str, budget: list[int]) -> str:
     text = unicodedata.normalize("NFKC", text)
     if len(text) > 65536:
         raise _ScanLimit
-    _spend(budget, len(text))
     normalized = "".join(
         char
         for char in text
@@ -79,12 +71,24 @@ def _normalize(text: str, budget: list[int]) -> str:
     ).casefold()
     if len(normalized) > 65536:
         raise _ScanLimit
-    _spend(budget, len(normalized))
     return normalized
 
 
 def _patterns(secret: str):
-    prefix = max(secret[:16].rfind("-"), secret[:16].rfind("_")) + 1
+    public_prefixes = (
+        "sk-ant-api03-",
+        "sk-ant-",
+        "sk-proj-",
+        "sk-",
+        "dapi",
+        "ghp_",
+        "gho_",
+        "ghs_",
+        "ghu_",
+        "github_pat_",
+        "xai-",
+    )
+    prefix = next((len(value) for value in public_prefixes if secret.startswith(value)), 0)
     private = secret[prefix:]
     if len(private.encode("utf-8")) < 12:
         for kind, value in _variants(secret).items():
@@ -110,21 +114,24 @@ def _patterns(secret: str):
 
 def find_leaks(text: str, secrets: list[str], canary: str) -> list[str]:
     # Defense in depth: bounded decoding and one separator comparison cover only known forms.
-    budget = [8_000_000]
     try:
-        text = _normalize(text, budget)
+        text = _normalize(text)
         compact = re.sub("[^a-z0-9]", "", text)
+        indexes: tuple[dict[int, dict[str, set[str]]], ...] = ({}, {})
         hits = set()
         for secret, is_canary in [(secret, False) for secret in secrets] + [(canary, True)]:
             for kind, value in _patterns(secret):
                 kind = "canary" if is_canary else kind
-                if kind in hits:
-                    continue
-                value = _normalize(value, budget)
+                value = _normalize(value)
                 alphanumeric = re.sub("[^a-z0-9]", "", value)
-                _spend(budget, len(text) + len(compact))
-                if (value and value in text) or (alphanumeric and alphanumeric in compact):
-                    hits.add(kind)
+                for index, pattern in zip(indexes, (value, alphanumeric), strict=True):
+                    if pattern:
+                        index.setdefault(len(pattern), {}).setdefault(pattern, set()).add(kind)
+        # Each text form is searched once per distinct window length, regardless of key count.
+        for index, form in zip(indexes, (text, compact), strict=True):
+            for width, patterns in index.items():
+                for start in range(len(form) - width + 1):
+                    hits.update(patterns.get(form[start : start + width], ()))
         return sorted(hits)
     except _ScanLimit:
         return ["scan_budget"]
