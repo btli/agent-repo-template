@@ -7,30 +7,17 @@ import sys
 import tempfile
 from pathlib import Path
 
-from agent_repo.commands.triage_merge import label_corrections, merge
+from agent_repo.commands.triage_merge import label_corrections, merge, taxonomy
+from agent_repo.config import ConfigError
 from agent_repo.policies import agent_environment
 from agent_repo.prompting import extract_json, render_prompt
 from agent_repo.schema import load_schema, validate
-from agent_repo.yamljson import YamlError, load_yaml
 
 
 def context_taxonomy(context: dict[str, str], directory: Path) -> set[str]:
-    values = {}
-    for key in ["labels", "areas"]:
-        path = directory / f"{key}.yaml"
-        path.write_text(context[key])
-        values[key] = load_yaml(path)
-    labels = values["labels"]["labels"]
-    areas = values["areas"]["areas"]
-    if not isinstance(labels, list) or not all(isinstance(x, str) for x in labels):
-        raise ValueError("invalid label taxonomy")
-    if not isinstance(areas, list) or not all(
-        isinstance(x, dict) and isinstance(x.get("name"), str) for x in areas
-    ):
-        raise ValueError("invalid area taxonomy")
-    return {label for label in labels if label.startswith("type:")} | {
-        "area:" + x["name"] for x in areas
-    }
+    for key in ["config", "labels", "areas"]:
+        (directory / f"{key}.yml").write_text(context[key])
+    return taxonomy(directory)
 
 
 def main() -> int:
@@ -45,8 +32,11 @@ def main() -> int:
         for name, value in os.environ.items()
         if value
         and (
-            name == key_env
-            or any(part in name.upper() for part in ["TOKEN", "KEY", "SECRET", "PASSWORD"])
+            name in {key_env, "LLM_API_KEY"}
+            or (
+                len(value) >= 16
+                and any(part in name.upper() for part in ["TOKEN", "KEY", "SECRET", "PASSWORD"])
+            )
         )
     }
     sensitive = private | {canary, "LLM_API_KEY"}
@@ -69,7 +59,7 @@ def main() -> int:
         if validate(decision, schema):
             raise ValueError("invalid input")
         context = json.loads(Path(os.environ["CONTEXT_FILE"]).read_text())
-        required = {"charter", "areas", "labels", "contributing", "docs_index"}
+        required = {"config", "charter", "areas", "labels", "contributing", "docs_index"}
         if (
             not isinstance(context, dict)
             or set(context) != required
@@ -82,7 +72,7 @@ def main() -> int:
             raise ValueError("unsafe runner temp")
         with tempfile.TemporaryDirectory(prefix="agent-triage-", dir=temp) as scratch:
             scratch = Path(scratch)
-            if any(unsafe(context[key]) for key in ["labels", "areas"]):
+            if any(unsafe(context[key]) for key in ["config", "labels", "areas"]):
                 raise ValueError("unsafe taxonomy")
             allowed_labels = context_taxonomy(context, scratch)
             budget = scratch / "budget"
@@ -160,7 +150,7 @@ def main() -> int:
         TypeError,
         subprocess.SubprocessError,
         RecursionError,
-        YamlError,
+        ConfigError,
     ):
         error = "Tier-2 triage failed."
     if decision is None or validate(decision, load_schema("decision")):

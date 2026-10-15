@@ -15,11 +15,17 @@ class ToolError(Exception):
     """A repository read was refused or exceeded its budget."""
 
 
+def response_bytes(result) -> int:
+    """Bound both the runtime JSON-string fallback and its outer response envelope."""
+    serialized = result if isinstance(result, str) else json.dumps(result)
+    return len(json.dumps({"result": serialized}).encode())
+
+
 class RepoReader:
     def __init__(
         self,
         root: Path,
-        per_call_bytes: int = 65536,
+        per_call_bytes: int = 16384,
         per_run_bytes: int = 524288,
         *,
         budget_file: Path | None = None,
@@ -27,7 +33,7 @@ class RepoReader:
         self.root = root.resolve(strict=True)
         if not self.root.is_dir() or per_call_bytes < 1 or per_run_bytes < 1:
             raise ToolError("invalid repository or byte budget")
-        self.per_call_bytes = per_call_bytes
+        self.per_call_bytes = min(per_call_bytes, 16384)
         self.per_run_bytes = per_run_bytes
         self._used = 0
         self._lock = threading.Lock()
@@ -74,7 +80,8 @@ class RepoReader:
             raise ToolError("per-run byte budget exceeded")
         self._used += count
 
-    def _read(self, rel: str, remaining: int, *, search: bool = False) -> tuple[bytes, bool] | None:
+    @contextmanager
+    def _open(self, rel: str):
         path = Path(rel)
         if (
             path.is_absolute()
@@ -96,22 +103,11 @@ class RepoReader:
             descriptor = os.open(
                 path.parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
             )
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode):
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise ToolError("only regular repository files are readable")
-            if search and info.st_size > self.per_call_bytes:
-                self._charge(self.per_call_bytes)
-                return None
-            if self._used >= self.per_run_bytes:
-                raise ToolError("per-run byte budget exceeded")
             with os.fdopen(descriptor, "rb") as stream:
                 descriptor = None
-                data = stream.read(min(remaining, self.per_run_bytes - self._used) + 1)
-            self._charge(len(data))
-            truncated = len(data) > remaining
-            if truncated and not search:
-                raise ToolError("per-call byte budget exceeded")
-            return data[:remaining], truncated
+                yield stream
         except (OSError, ValueError):
             raise ToolError("repository file is unavailable or unsafe") from None
         finally:
@@ -120,16 +116,50 @@ class RepoReader:
             if directory is not None:
                 os.close(directory)
 
+    def _chunk(self, stream, size: int, *, line: bool = False) -> bytes:
+        if self._used >= self.per_run_bytes:
+            raise ToolError("per-run byte budget exceeded")
+        size = min(size, self.per_run_bytes - self._used + 1)
+        data = stream.readline(size) if line else stream.read(size)
+        self._charge(len(data))
+        return data
+
+    def _read(self, rel: str, remaining: int) -> tuple[bytes, bool] | None:
+        with self._open(rel) as stream:
+            if os.fstat(stream.fileno()).st_size > self.per_call_bytes:
+                return None
+            data = self._chunk(stream, remaining + 1)
+        return data[:remaining], len(data) > remaining
+
     def read_file(self, rel: str, start_line: int = 1, max_lines: int = 400) -> str:
         if start_line < 1 or max_lines < 1 or max_lines > 400:
             raise ToolError("invalid line limits")
-        with self._budget():
-            data, _ = self._read(rel, self.per_call_bytes)
-        return "".join(
-            data.decode("utf-8", errors="replace").splitlines(keepends=True)[
-                start_line - 1 : start_line - 1 + max_lines
-            ]
-        )
+        with self._budget(), self._open(rel) as stream:
+            skipped = 0
+            while skipped < start_line - 1:
+                data = self._chunk(stream, self.per_call_bytes, line=True)
+                if not data:
+                    return ""
+                skipped += data.endswith(b"\n")
+            window = bytearray()
+            lines = 0
+            while len(window) < self.per_call_bytes and lines < max_lines:
+                remaining = self.per_call_bytes - len(window)
+                data = self._chunk(stream, remaining, line=True)
+                if not data:
+                    break
+                window.extend(data)
+                lines += data.endswith(b"\n")
+            size = os.fstat(stream.fileno()).st_size
+            truncated = stream.tell() < size and (
+                size > self.per_call_bytes or len(window) == self.per_call_bytes
+            )
+        text = window.decode("utf-8", errors="replace")
+        marker = "\n[truncated: request a later start_line or smaller window]"
+        while response_bytes(text + (marker if truncated else "")) > 32768:
+            truncated = True
+            text = text[: len(text) // 2]
+        return text + (marker if truncated else "")
 
     def grep(
         self, pattern: str, glob: str = "**/*", max_results: int = 200
@@ -147,8 +177,15 @@ class RepoReader:
             marker = ("", 0, "[truncated]")
             candidate = (path, number, line)
             encoded = json.dumps(results + [candidate, marker], ensure_ascii=False).encode()
-            if len(encoded) > self.per_call_bytes:
-                if len(json.dumps(results + [marker]).encode()) <= self.per_call_bytes:
+            if (
+                len(encoded) > self.per_call_bytes
+                or response_bytes(results + [candidate, marker]) > 32768
+            ):
+                if (
+                    len(json.dumps(results + [marker], ensure_ascii=False).encode())
+                    <= self.per_call_bytes
+                    and response_bytes(results + [marker]) <= 32768
+                ):
                     results.append(marker)
                 return False
             results.append(candidate)
@@ -174,7 +211,7 @@ class RepoReader:
                     candidates.append(rel)
         with self._budget():
             for rel in sorted(candidates):
-                read = self._read(rel, remaining, search=True)
+                read = self._read(rel, remaining)
                 if read is None:
                     if not append(rel, 0, "[skipped: file exceeds per-call byte cap]"):
                         return results
