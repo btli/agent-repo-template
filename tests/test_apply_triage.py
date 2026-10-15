@@ -250,6 +250,23 @@ def test_needs_info_threshold(probability, posted):
     assert ("Please provide versions." in bodies(plan(data, context()))) is posted
 
 
+@pytest.mark.parametrize("priority", ["null", "missing", "empty"])
+def test_needs_info_with_unknown_priority_still_posts_request(priority, tmp_path):
+    api = API()
+    data = decision()
+    if priority == "missing":
+        del data["answers"]["priority"]
+    else:
+        data["answers"]["priority"] = {"value": None if priority == "null" else "", "p": 0.95}
+    data["answers"]["needs_info"] = {"value": True, "p": 0.95}
+    data["needs_info"] = {"text": "Please provide the version and a reproducer."}
+    alerts, _ = run(data, context(api), api, tmp_path)
+    assert not alerts
+    assert set(api.labels) == {"type:bug", "area:api", "needs-info", "needs-maintainer"}
+    assert len(api.comments) == 1
+    assert data["needs_info"]["text"] in api.comments[0]["body"]
+
+
 def test_needs_info_uses_charter_checklist():
     data = decision()
     data["answers"]["needs_info"] = {"value": True, "p": 0.9}
@@ -364,11 +381,32 @@ def test_missing_closure_explanation_blocks_all_normal_writes(tmp_path):
     assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
 
 
+@pytest.mark.parametrize("route", ["normal", "priority", "security", "leak", "invalid"])
+@pytest.mark.parametrize("allowed", [True, False])
 @pytest.mark.parametrize("capped", [True, False])
-def test_cap_label_is_trusted(capped):
+def test_cap_label_is_trusted(route, allowed, capped):
+    ctx = context(capped=capped)
+    if not allowed:
+        ctx = replace(
+            ctx,
+            config=replace(
+                ctx.config,
+                labels=tuple(
+                    label for label in ctx.config.labels if label != "agent:triage-capped"
+                ),
+            ),
+        )
     data = decision()
     data["labels"].append("agent:triage-capped")
-    assert ("agent:triage-capped" in labels(plan(data, context(capped=capped)))) is capped
+    if route == "priority":
+        data["answers"]["priority"]["value"] = "P0"
+    elif route == "security":
+        data["security"] = True
+    elif route == "leak":
+        data["notes"] = [ctx.canary]
+    elif route == "invalid":
+        data = None
+    assert ("agent:triage-capped" in labels(plan(data, ctx))) is (capped and allowed)
 
 
 @pytest.mark.parametrize("area,assigned", [("api", True), ("unknown", False)])
@@ -379,6 +417,55 @@ def test_maintainer_assigns_area_owners(area, assigned, tmp_path):
     api = API()
     run(data, context(api), api, tmp_path)
     assert any(body == {"assignees": ["octocat"]} for _, _, body in api.writes) is assigned
+
+
+@pytest.mark.parametrize("route", ["priority", "needs-info"])
+@pytest.mark.parametrize(
+    "owners",
+    [("@your-org/maintainers",), ("@your-org/maintainers", "@octocat")],
+    ids=["team", "mixed"],
+)
+def test_team_owners_and_assignment_failure_preserve_comment(route, owners, tmp_path):
+    api = API(fail="assignees")
+    ctx = context(api)
+    ctx = replace(
+        ctx, config=replace(ctx.config, areas=(replace(ctx.config.areas[0], owners=owners),))
+    )
+    data = decision()
+    if route == "priority":
+        data["suggestions"]["priority"] = "P0"
+        expected = "Suggested priority: P0."
+    else:
+        data["answers"]["needs_info"] = {"value": True, "p": 0.95}
+        data["needs_info"] = {"text": "Please provide versions."}
+        data["escalate"] = {"to": "maintainer", "reason": "uncertain"}
+        expected = data["needs_info"]["text"]
+    actions = plan(data, ctx)
+    assignees = [
+        owner
+        for action in actions
+        if action.kind == "assign"
+        for owner in action.payload["assignees"]
+    ]
+    assert assignees == (["octocat"] if "@octocat" in owners else [])
+    run(data, ctx, api, tmp_path)
+    assert len(api.comments) == 1
+    assert expected in api.comments[0]["body"]
+    if assignees:
+        paths = [path for _, path, _ in api.writes]
+        assert paths.index("issues/7/comments") < paths.index("issues/7/assignees")
+        assert sum("needs-maintainer" in body.get("labels", []) for _, _, body in api.writes) == 1
+
+
+def test_area_label_requires_configured_area():
+    data = decision()
+    data["answers"]["area"] = {"value": "legacy", "p": 0.95}
+    data["labels"].append("area:legacy")
+    ctx = context()
+    ctx = replace(ctx, config=replace(ctx.config, labels=(*ctx.config.labels, "area:legacy")))
+    actions = plan(data, ctx)
+    assert "area:legacy" not in labels(actions)
+    assert "type:bug" in labels(actions)
 
 
 @pytest.mark.parametrize("authorized", [True, False])
@@ -801,10 +888,11 @@ def test_duplicate_state_rechecked_before_any_write(tmp_path):
     assert alerts
 
 
-def test_execution_error_attempts_only_maintainer_fallback(tmp_path):
-    api = API(fail="issues/7")
+@pytest.mark.parametrize("failed_read", ["issues/7", "comments"])
+def test_execution_read_error_cannot_bypass_kill_switch(failed_read, tmp_path):
+    api = API(fail=failed_read)
     alerts, _ = run(decision(), context(api), api, tmp_path)
-    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    assert not api.writes
     assert alerts
 
 
@@ -824,7 +912,10 @@ def test_duplicate_lookup_error_fails_closed(tmp_path):
     data = decision()
     data["close"] = closing()
     alerts, _ = run(data, context(api, enabled=True), api, tmp_path)
-    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    assert api.writes == [
+        ("POST", "issues/7/labels", {"labels": ["needs-maintainer"]}),
+        ("POST", "issues/7/assignees", {"assignees": ["octocat"]}),
+    ]
     assert alerts
 
 

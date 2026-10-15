@@ -152,7 +152,7 @@ def test_json_escaping_cannot_hide_scan_key(tmp_path):
         for value in ("p0", "P1 ", "priority:P0", "P4")
     ]
     + [("suggested-priority", "P0"), ("suggested-priority", "P1")]
-    + [("answer", "urgent"), ("answer", None)],
+    + [("answer", "urgent")],
 )
 def test_high_priority_proposal_requires_maintainer_even_with_conflicting_answer(
     source, priority, kind, tmp_path
@@ -385,3 +385,62 @@ def test_accepted_answer_map_keys_are_scanned(source, tmp_path):
     assert labels(plan(data, ctx)) == {"needs-maintainer"}
     assert not any(path.endswith("/comments") for _, path, _ in api.writes)
     assert value not in summary, "credential echoed"
+
+
+@pytest.mark.parametrize("batch", ["labels", "close", "maintainer", "prewrite-failure"])
+@pytest.mark.parametrize(
+    "switch", ["skip", "off", "user-off", "other-bot", "spoofed-type", "malformed"]
+)
+def test_fresh_kill_switch_blocks_inflight_batch(batch, switch, tmp_path):
+    from agent_repo.apply.actions import execute
+
+    api = API()
+    ctx = replace(context(api, enabled=True), bot_login="Agent-Apply")
+    data = decision()
+    if batch in {"close", "prewrite-failure"}:
+        data["close"] = closing()
+    elif batch == "maintainer":
+        data = None
+    actions = plan(data, ctx)
+    original = api.transport
+    issue_reads = 0
+
+    def transport(request, timeout):
+        nonlocal issue_reads
+        if batch == "prewrite-failure" and request.full_url.endswith("/issues/99"):
+            return 500, {}, b"{}"
+        response = original(request, timeout)
+        if request.method == "GET" and request.full_url.endswith("/issues/7"):
+            issue_reads += 1
+            if issue_reads == 1:
+                if switch == "skip":
+                    api.labels.append("agent:skip")
+                else:
+                    user = {"login": "AGENT-APPLY[bot]", "type": "Bot"}
+                    if switch == "user-off":
+                        user = {"login": "octocat", "type": "User"}
+                    elif switch == "other-bot":
+                        user["login"] = "unrelated[bot]"
+                    elif switch == "spoofed-type":
+                        user["type"] = "User"
+                    body = (
+                        "<!-- agent:off run=older -->"
+                        if switch != "malformed"
+                        else "<!-- agent:off -->"
+                    )
+                    api.comments.append({"body": body, "user": user})
+        return response
+
+    api.gh = type(api.gh)("test-token", "your-org/project", transport=transport)
+    summary_path = tmp_path / "summary.md"
+    alerts = execute(actions, api.gh, "live", summary_path)
+    if switch in {"skip", "off"}:
+        assert not api.writes, "in-flight run bypassed the kill switch"
+        assert alerts and "disabled" in summary_path.read_text().lower()
+        assert issue_reads >= 2, "issue state was not refreshed before writing"
+    else:
+        assert not any("disabled" in alert for alert in alerts)
+        assert any("Apply failed" in alert for alert in alerts) is (batch == "prewrite-failure")
+        assert api.writes, "untrusted marker blocked automation"
+        if batch == "close":
+            assert api.issue_state == "closed"

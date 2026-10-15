@@ -9,6 +9,7 @@ from agent_repo.charter import Charter
 from agent_repo.config import RepoConfig
 from agent_repo.event import Event
 from agent_repo.github import GitHub
+from agent_repo.markers import find_markers
 from agent_repo.schema import load_schema, validate
 
 
@@ -72,6 +73,43 @@ def _summary(path: Path, actions: list[Action], mode: str, alerts: list[str]) ->
         stream.write("\n".join(lines) + "\n")
 
 
+class _AutomationDisabled(Exception):
+    pass
+
+
+def _bot_comments(comments: list) -> set[tuple[str, str]]:
+    return {
+        (canonical_bot_login(comment["user"]["login"]), comment["body"])
+        for comment in comments
+        if isinstance(comment.get("user"), dict)
+        and comment["user"].get("type") == "Bot"
+        and canonical_bot_login(comment["user"].get("login", ""))
+    }
+
+
+def _check_enabled(actions: list[Action], gh: GitHub, number: int) -> tuple[dict, list]:
+    item = gh.request("GET", f"issues/{number}")
+    if not isinstance(item, dict):
+        raise ValueError("invalid issue response")
+    if any(label["name"].casefold() == "agent:skip" for label in item["labels"]):
+        raise _AutomationDisabled
+    bot_logins = {
+        canonical_bot_login(action.payload["bot_login"])
+        for action in actions
+        if "bot_login" in action.payload
+    }
+    if len(bot_logins) != 1 or "" in bot_logins:
+        raise ValueError("trusted bot identity required")
+    bot_login = bot_logins.pop()
+    comments = gh.paginate(f"issues/{number}/comments")
+    if any(
+        login == bot_login and any(found.role == "off" for found in find_markers(body))
+        for login, body in _bot_comments(comments)
+    ):
+        raise _AutomationDisabled
+    return item, comments
+
+
 def execute(actions: list[Action], gh: GitHub | None, mode: str, summary_path: Path) -> list[str]:
     alerts = [alert for action in actions for alert in action.payload.get("alerts", [])]
     if mode not in {"live", "dry-run"}:
@@ -81,6 +119,8 @@ def execute(actions: list[Action], gh: GitHub | None, mode: str, summary_path: P
     elif mode == "live" and actions:
         try:
             _execute_live(actions, gh)
+        except _AutomationDisabled:
+            alerts.append("Apply skipped: automation disabled for this issue.")
         except Exception:
             # Transport and payload errors must never echo credentials or model text.
             alerts.append("Apply failed: GitHub action stopped; maintainer attention required.")
@@ -89,9 +129,15 @@ def execute(actions: list[Action], gh: GitHub | None, mode: str, summary_path: P
                 number = numbers.pop()
                 if type(number) is int and number > 0:
                     try:
-                        gh.request(
-                            "POST", f"issues/{number}/labels", body={"labels": ["needs-maintainer"]}
-                        )
+                        item, _ = _check_enabled(actions, gh, number)
+                        if "needs-maintainer" not in {label["name"] for label in item["labels"]}:
+                            gh.request(
+                                "POST",
+                                f"issues/{number}/labels",
+                                body={"labels": ["needs-maintainer"]},
+                            )
+                    except _AutomationDisabled:
+                        alerts.append("Apply skipped: automation disabled for this issue.")
                     except Exception:
                         alerts.append("Apply failed: maintainer label could not be added.")
     _summary(summary_path, actions, mode, alerts)
@@ -112,20 +158,12 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
     item = gh.request("GET", path)
     if not isinstance(item, dict):
         raise ValueError("invalid issue response")
-    existing_labels = {label["name"] for label in item["labels"]}
-    existing_owners = {owner["login"] for owner in item["assignees"]}
     comments = (
         gh.paginate(f"{path}/comments")
         if any(a.kind in {"comment", "close"} for a in actions)
         else []
     )
-    completed_comments = {
-        (canonical_bot_login(comment["user"]["login"]), comment["body"])
-        for comment in comments
-        if isinstance(comment.get("user"), dict)
-        and comment["user"].get("type") == "Bot"
-        and canonical_bot_login(comment["user"].get("login", ""))
-    }
+    completed_comments = _bot_comments(comments)
     planned_comments = {
         (canonical_bot_login(action.payload.get("bot_login", "")), action.payload["body"])
         for action in actions
@@ -139,7 +177,7 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
             )
             if explanation not in completed_comments and explanation not in planned_comments:
                 raise ValueError("closure explanation required")
-    order = {"add_labels": 0, "remove_labels": 1, "assign": 2, "comment": 3, "close": 4}
+    order = {"add_labels": 0, "remove_labels": 1, "comment": 2, "assign": 3, "close": 4}
     if any(action.kind not in order for action in actions):
         raise ValueError("unsupported action")
     for action in actions:
@@ -151,6 +189,10 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
                 or "pull_request" in target
             ):
                 raise ValueError("duplicate target no longer open")
+    item, comments = _check_enabled(actions, gh, number)
+    existing_labels = {label["name"] for label in item["labels"]}
+    existing_owners = {owner["login"] for owner in item["assignees"]}
+    completed_comments = _bot_comments(comments)
     for action in sorted(actions, key=lambda action: order[action.kind]):
         payload = action.payload
         if action.kind == "add_labels":
