@@ -20,6 +20,7 @@ class API:
         self.assignees = list(assignees)
         self.comments = list(comments)
         self.fail = fail
+        self.issue_state = "open"
         self.gh = GitHub("test-token", "your-org/project", transport=self.transport)
 
     def transport(self, request, timeout):
@@ -29,6 +30,16 @@ class API:
         if self.fail and self.fail in path:
             return 500, {}, b"{}"
         if request.method != "GET":
+            if path.endswith("/labels"):
+                self.labels = list(dict.fromkeys([*self.labels, *body["labels"]]))
+            elif path.endswith("/assignees"):
+                self.assignees = list(dict.fromkeys([*self.assignees, *body["assignees"]]))
+            elif path.endswith("/comments"):
+                self.comments.append(
+                    {"body": body["body"], "user": {"login": "agent-apply[bot]", "type": "Bot"}}
+                )
+            elif request.method == "PATCH" and path == "issues/7":
+                self.issue_state = body["state"]
             return 200, {}, b"{}"
         if path.endswith("/comments"):
             value = self.comments
@@ -37,7 +48,9 @@ class API:
         else:
             value = {
                 "number": int(path.split("/")[-1]) if path.startswith("issues/") else 7,
-                "state": "open" if self.target_open else "closed",
+                "state": self.issue_state
+                if path == "issues/7"
+                else ("open" if self.target_open else "closed"),
                 "labels": [{"name": label} for label in self.labels],
                 "assignees": [{"login": owner} for owner in self.assignees],
             }
@@ -90,6 +103,7 @@ def context(api=None, *, enabled=False, capped=False, off=False):
         capped,
         github=api.gh if api else None,
         off_authorized=off,
+        bot_login="agent-apply[bot]",
     )
 
 
@@ -220,9 +234,7 @@ def test_close_with_all_guards(kind, tmp_path):
     ],
 )
 def test_close_rejects_missing_guard(guard, tmp_path):
-    api = API(
-        target_open=guard != "closed_target", fail="issues/99" if guard == "read_error" else None
-    )
+    api = API(target_open=guard != "closed_target")
     ctx = context(None if guard == "no_api" else api, enabled=guard != "disabled")
     data = decision()
     data["close"] = closing("out_of_scope" if guard == "docs" else "duplicate")
@@ -322,14 +334,14 @@ def test_live_comments_have_trusted_marker(tmp_path):
 
 
 def test_idempotent_live_state_makes_no_writes(tmp_path):
-    api = API(
-        labels=("type:bug", "area:api", "P2", "needs-maintainer"),
-        assignees=("octocat",),
-        comments=({"body": "<!-- agent:triage run=run-1 -->"},),
-    )
     data = decision()
-    data["escalate"] = {"to": "maintainer", "reason": "uncertain"}
-    run(data, context(api), api, tmp_path)
+    data["answers"]["needs_info"] = {"value": True, "p": 0.9}
+    data["needs_info"] = {"text": "Please supply versions."}
+    api = API(labels=("type:bug", "area:api", "P2", "needs-info"))
+    ctx = context(api)
+    body = next(action.payload["body"] for action in plan(data, ctx) if action.kind == "comment")
+    api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
+    run(data, ctx, api, tmp_path)
     assert api.writes == []
 
 
@@ -413,6 +425,7 @@ def test_cli_reads_default_branch_policy_and_scan_keys(monkeypatch, tmp_path):
         "GITHUB_RUN_ID": "run-1",
         "GITHUB_STEP_SUMMARY": str(summary),
         "GH_TOKEN": "test-token",
+        "AGENT_BOT_LOGIN": "agent-apply[bot]",
         "AGENT_SCAN_KEYS": "\n" + key + "\n",
         "AGENT_CANARY": secrets.token_hex(20),
     }.items():
@@ -421,6 +434,13 @@ def test_cli_reads_default_branch_policy_and_scan_keys(monkeypatch, tmp_path):
     assert not any(path.endswith("comments") for _, path, _ in api.writes)
     assert any("needs-maintainer" in (body or {}).get("labels", []) for _, _, body in api.writes)
     assert key not in summary.read_text(), "credential echoed"
+    data["needs_info"]["text"] = "Please supply versions."
+    artifact.write_text(json.dumps(data))
+    assert main([str(artifact)]) == 0
+    assert len(api.comments) == 1
+    boundary = len(api.calls)
+    assert main([str(artifact)]) == 0
+    assert not [call for call in api.calls[boundary:] if call[0] != "GET"]
 
 
 def test_cli_missing_canary_fails_without_writes(monkeypatch, tmp_path, capsys):
@@ -562,3 +582,85 @@ def test_maintainer_owner_assignment_requires_decided_area(route, apply_min):
     assert [action.payload for action in actions if action.kind == "assign"] == [
         {"number": 7, "assignees": ["octocat"]}
     ]
+
+
+def test_retry_after_comment_then_failed_close_does_not_repost(tmp_path):
+    api = API()
+    original = api.transport
+    failed = False
+
+    def transport(request, timeout):
+        nonlocal failed
+        if request.method == "PATCH" and not failed:
+            failed = True
+            api.calls.append(("PATCH", "issues/7", json.loads(request.data)))
+            return 500, {}, b"{}"
+        return original(request, timeout)
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    data = decision()
+    data["close"] = closing()
+    ctx = context(api, enabled=True)
+    alerts, _ = run(data, ctx, api, tmp_path)
+    assert alerts and api.issue_state == "open"
+    assert [path.rsplit("/", 1)[-1] for _, path, _ in api.writes[:3]] == ["labels", "comments", "7"]
+    boundary = len(api.calls)
+    alerts, _ = run(data, ctx, api, tmp_path)
+    assert not alerts and api.issue_state == "closed"
+    assert [call for call in api.calls[boundary:] if call[0] != "GET"] == [
+        ("PATCH", "issues/7", {"state": "closed", "state_reason": "not_planned"})
+    ]
+    assert len(api.comments) == 1
+    boundary = len(api.calls)
+    run(data, ctx, api, tmp_path)
+    assert not [call for call in api.calls[boundary:] if call[0] != "GET"]
+
+
+def test_close_uses_existing_trusted_explanation(tmp_path):
+    from agent_repo.apply.actions import execute
+
+    api = API()
+    data = decision()
+    data["close"] = closing()
+    actions = plan(data, context(api, enabled=True))
+    body = next(action.payload["body"] for action in actions if action.kind == "comment")
+    api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
+    actions = [action for action in actions if action.kind != "comment"]
+    alerts = execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert not alerts
+    assert api.issue_state == "closed"
+    assert not any(path.endswith("/comments") for _, path, _ in api.writes)
+
+
+@pytest.mark.parametrize("role", ["read", "triage", "none", None])
+def test_off_rejects_nonwrite_roles(role, tmp_path):
+    api = API()
+    original = api.transport
+
+    def transport(request, timeout):
+        if request.full_url.endswith("/permission"):
+            return 200, {}, json.dumps({"role_name": role} if role is not None else {}).encode()
+        return original(request, timeout)
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    ctx = context(api, off=True)
+    ctx = replace(ctx, event=replace(ctx.event, name="issue_comment", comment_body="/agent off"))
+    run(decision(), ctx, api, tmp_path)
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+
+
+@pytest.mark.parametrize("source", ["charter", "security_template"])
+def test_rendered_only_leak_is_rejected(source, tmp_path):
+    api = API()
+    ctx = context(api)
+    data = decision()
+    if source == "charter":
+        ctx = replace(ctx, charter=replace(ctx.charter, good_report=(ctx.canary,)))
+        data["answers"]["needs_info"] = {"value": True, "p": 0.9}
+    else:
+        ctx = replace(ctx, canary="Agent triage")
+        data["security"] = True
+    alerts, summary = run(data, ctx, api, tmp_path)
+    assert alerts and "alert" in summary.lower()
+    assert not any(path.endswith("/comments") for _, path, _ in api.writes)
+    assert ctx.canary not in summary, "canary echoed"

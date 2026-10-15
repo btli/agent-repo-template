@@ -52,6 +52,7 @@ def _off(ctx: ApplyContext) -> list[Action] | None:
             "comment",
             {
                 "number": ctx.event.number,
+                "bot_login": ctx.bot_login,
                 "body": f"Agent automation is off for this item.\n\n{marker('off', ctx.run_id)}",
             },
         )
@@ -87,8 +88,7 @@ def _strings(value: object):
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
-        for key, child in value.items():
-            yield key
+        for child in value.values():
             yield from _strings(child)
     elif isinstance(value, list):
         for child in value:
@@ -108,7 +108,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     area = area_answer.get("value") if area_answer.get("p", 0) >= apply_min else None
     area = area.removeprefix("area:") if isinstance(area, str) else None
     # Scan before rendering: escaping or truncation must not hide a credential.
-    if any(find_leaks(text, ctx.secrets, ctx.canary) for text in _strings(decision)):
+    if find_leaks("".join(_strings(decision)), ctx.secrets, ctx.canary):
         return _maintainer(ctx, area, ["Outbound scan alert: proposed action dropped."])
     if decision["security"]:
         actions = _maintainer(ctx, area, [])
@@ -116,7 +116,11 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         body = f"Agent triage\n\n{guidance}\n\n{marker('triage', ctx.run_id)}"
         if find_leaks(body, ctx.secrets, ctx.canary):
             return _maintainer(ctx, area, ["Outbound scan alert: rendered action dropped."])
-        actions.append(Action("comment", {"number": ctx.event.number, "body": body}))
+        actions.append(
+            Action(
+                "comment", {"number": ctx.event.number, "body": body, "bot_login": ctx.bot_login}
+            )
+        )
         return actions
     allowed = set(ctx.config.labels)
     selected: list[str] = []
@@ -213,7 +217,11 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         body += f"\n\n{marker('triage', ctx.run_id)}"
         if find_leaks(body, ctx.secrets, ctx.canary):
             return _maintainer(ctx, area, ["Outbound scan alert: rendered action dropped."])
-        actions.append(Action("comment", {"number": ctx.event.number, "body": body}))
+        actions.append(
+            Action(
+                "comment", {"number": ctx.event.number, "body": body, "bot_login": ctx.bot_login}
+            )
+        )
     if can_close:
         actions.append(
             Action(
@@ -221,6 +229,8 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
                 {
                     "number": ctx.event.number,
                     "duplicate_target": close["target"] if close["kind"] == "duplicate" else None,
+                    "comment_body": body,
+                    "bot_login": ctx.bot_login,
                 },
             )
         )
