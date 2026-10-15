@@ -146,12 +146,22 @@ class GitHub:
             request = urllib.request.Request(url, data=data, headers=headers, method=method)
         except Exception:
             raise GitHubError(0, "invalid API URL", token=self._token) from None
+        transport_error: GitHubError | None = None
         try:
             status, response_headers, response_body = self._transport(request, 30.0)
-        except GitHubError:
-            raise
+        except GitHubError as error:
+            transport_error = error
         except Exception as exc:
             raise GitHubError(0, type(exc).__name__, token=self._token) from None
+        if transport_error is not None:
+            raise GitHubError(
+                transport_error.status,
+                transport_error.message,
+                request_id=transport_error.request_id,
+                retry_after=transport_error.retry_after,
+                ratelimit_remaining=transport_error.ratelimit_remaining,
+                token=self._token,
+            ) from None
         if status < 200 or status >= 300:
             raise self._http_error(status, response_headers, response_body)
         decoded = response_body.decode("utf-8", errors="replace")

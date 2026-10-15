@@ -15,11 +15,16 @@ ALLOWED_OWNERS = {
     "omnigent-ai",
 }
 ALLOWED_BTLI_REPOSITORIES = {"agent-repo-template", "agent-repo-template-sandbox"}
-GITHUB_REPOSITORY_PATTERN = r"(?<!api\.)github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"
+GITHUB_REPOSITORY_PATTERN = r"(?<![A-Za-z0-9_.-])github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"
+GITHUB_ACTION_PATTERN = (
+    r"(?m)^\s*uses:\s+([A-Za-z0-9][A-Za-z0-9_.-]*)/([A-Za-z0-9][A-Za-z0-9_.-]*)(?=[/@\s])"
+)
 
 
 def _unexpected_github_repositories(text: str) -> list[tuple[str, str]]:
-    repositories = re.findall(GITHUB_REPOSITORY_PATTERN, text)
+    repositories = re.findall(GITHUB_REPOSITORY_PATTERN, text) + re.findall(
+        GITHUB_ACTION_PATTERN, text
+    )
     return [
         (owner, repo)
         for owner, repo in repositories
@@ -44,11 +49,13 @@ def test_lib_imports_stdlib_only():
 
 def test_no_unexpected_github_owners():
     for path in ROOT.rglob("*"):
-        if (
-            not path.is_file()
-            or ".git" in path.parts
-            or ".venv" in path.parts
-            or "__pycache__" in path.parts
+        if not path.is_file():
+            continue
+        relative_parts = path.relative_to(ROOT).parts
+        parent_parts = relative_parts[:-1]
+        if path.suffix in {".pyc", ".pyo"} or any(
+            part in {".git", ".venv", ".tox", "__pycache__", ".cache"} or part.endswith("_cache")
+            for part in parent_parts
         ):
             continue
         text = path.read_text(errors="ignore")
@@ -62,6 +69,28 @@ def test_btli_repository_allowlist_is_limited():
     assert _unexpected_github_repositories(sandbox_repository) == []
     other_repository = "/".join(("https://github.com", "btli", "other-repo"))
     assert _unexpected_github_repositories(other_repository) == [("btli", "other-repo")]
+
+
+def test_github_owner_scanner_ignores_documentation_host_paths():
+    assert _unexpected_github_repositories("https://docs.github.com/en/actions/learn") == []
+
+
+def test_github_owner_scanner_checks_uses_references():
+    assert _unexpected_github_repositories("uses: untrusted/action@0123456789abcdef") == [
+        ("untrusted", "action")
+    ]
+    assert _unexpected_github_repositories("uses: ./actions/check-config") == []
+
+
+def test_owner_scan_ignores_generated_caches(tmp_path: Path, monkeypatch):
+    sentinel = "https://" + "github.com/" + "untrusted/generated"
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    for cache_name in ("__pycache__", ".pytest_cache", ".ruff_cache", ".cache"):
+        cache = tmp_path / cache_name
+        cache.mkdir()
+        (cache / "generated.txt").write_text(sentinel)
+    (tmp_path / "generated.pyc").write_bytes(sentinel.encode())
+    test_no_unexpected_github_owners()
 
 
 def test_actions_pinned_to_sha():

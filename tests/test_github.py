@@ -1,5 +1,6 @@
 import json
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.request import Request
 
@@ -237,6 +238,64 @@ def test_sanitized_github_error_from_transport_is_preserved():
     assert caught.value.status == 0
     assert caught.value.message == "invalid redirect URL"
     assert _credential_is_absent(str(caught.value))
+
+
+def test_transport_github_error_is_redacted_without_exception_chain():
+    def transport(request: Request, timeout: float):
+        raise GitHubError(
+            403,
+            f"message contains {TOKEN}",
+            request_id=f"request-{TOKEN}",
+            retry_after=f"retry-{TOKEN}",
+            ratelimit_remaining=f"remaining-{TOKEN}",
+        )
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError) as caught:
+        api.request("GET", "/issues")
+    error = caught.value
+    assert error.status == 403
+    assert _credential_is_absent(error.message)
+    assert _credential_is_absent(error.request_id or "")
+    assert _credential_is_absent(error.retry_after or "")
+    assert _credential_is_absent(error.ratelimit_remaining or "")
+    assert _credential_is_absent(str(error))
+    assert _credential_is_absent(repr(error))
+    assert all(_credential_is_absent(repr(value)) for value in vars(error).values())
+    assert _credential_is_absent("".join(traceback.format_exception(error)))
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_transport_github_error_discards_token_bearing_cause():
+    def transport(request: Request, timeout: float):
+        try:
+            raise RuntimeError(f"cause contains {TOKEN}")
+        except RuntimeError as cause:
+            raise GitHubError(
+                401,
+                "safe message",
+                request_id="safe-id",
+                retry_after="7",
+                ratelimit_remaining="0",
+                token=TOKEN,
+            ) from cause
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError) as caught:
+        api.request("GET", "/issues")
+    error = caught.value
+    assert error.status == 401
+    assert error.message == "safe message"
+    assert error.request_id == "safe-id"
+    assert error.retry_after == "7"
+    assert error.ratelimit_remaining == "0"
+    assert _credential_is_absent(str(error))
+    assert _credential_is_absent(repr(error))
+    assert all(_credential_is_absent(repr(value)) for value in vars(error).values())
+    assert _credential_is_absent("".join(traceback.format_exception(error)))
+    assert error.__cause__ is None
+    assert error.__context__ is None
 
 
 @pytest.mark.parametrize(
