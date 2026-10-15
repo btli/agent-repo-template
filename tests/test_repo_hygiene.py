@@ -3,6 +3,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_OWNERS = {
     "your-org",
@@ -15,9 +17,12 @@ ALLOWED_OWNERS = {
     "omnigent-ai",
 }
 ALLOWED_BTLI_REPOSITORIES = {"agent-repo-template", "agent-repo-template-sandbox"}
-GITHUB_REPOSITORY_PATTERN = r"(?<![A-Za-z0-9_.-])github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"
+GITHUB_REPOSITORY_PATTERN = (
+    r"(?<![A-Za-z0-9_.-])(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"
+)
 GITHUB_ACTION_PATTERN = (
-    r"(?m)^\s*uses:\s+([A-Za-z0-9][A-Za-z0-9_.-]*)/([A-Za-z0-9][A-Za-z0-9_.-]*)(?=[/@\s])"
+    r"""(?m)^\s*(?:-\s+)?uses:\s+["']?"""
+    r"""([A-Za-z0-9][A-Za-z0-9_.-]*)/([A-Za-z0-9][A-Za-z0-9_.-]*)(?=[/@\s"'])"""
 )
 
 
@@ -73,13 +78,39 @@ def test_btli_repository_allowlist_is_limited():
 
 def test_github_owner_scanner_ignores_documentation_host_paths():
     assert _unexpected_github_repositories("https://docs.github.com/en/actions/learn") == []
+    www_repository = "https://" + "www.github.com/" + "evil/repo"
+    assert _unexpected_github_repositories(www_repository) == [("evil", "repo")]
 
 
-def test_github_owner_scanner_checks_uses_references():
-    assert _unexpected_github_repositories("uses: untrusted/action@0123456789abcdef") == [
-        ("untrusted", "action")
+def test_github_owner_scanner_checks_uses_references(tmp_path: Path, monkeypatch):
+    references = [
+        (
+            "- uses: untrusted/action@0123456789abcdef # v1.0.0",
+            "- uses: actions/checkout@0123456789abcdef # v1.0.0",
+        ),
+        (
+            "- uses: 'untrusted/action@0123456789abcdef' # v1.0.0",
+            "- uses: 'actions/checkout@0123456789abcdef' # v1.0.0",
+        ),
+        (
+            '- uses: "untrusted/action@0123456789abcdef" # v1.0.0',
+            '- uses: "actions/checkout@0123456789abcdef" # v1.0.0',
+        ),
     ]
-    assert _unexpected_github_repositories("uses: ./actions/check-config") == []
+    for index, (unexpected, allowed) in enumerate(references):
+        for name, reference in (("unexpected", unexpected), ("allowed", allowed)):
+            root = tmp_path / str(index) / name
+            workflow_dir = root / ".github" / "workflows"
+            workflow_dir.mkdir(parents=True)
+            (workflow_dir / "ci.yml").write_text(
+                f"jobs:\n  checks:\n    steps:\n      {reference}\n"
+            )
+            monkeypatch.setattr(sys.modules[__name__], "ROOT", root)
+            if name == "unexpected":
+                with pytest.raises(AssertionError, match="untrusted"):
+                    test_no_unexpected_github_owners()
+            else:
+                test_no_unexpected_github_owners()
 
 
 def test_owner_scan_ignores_generated_caches(tmp_path: Path, monkeypatch):
