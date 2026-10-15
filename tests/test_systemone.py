@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
+import threading
 import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -46,7 +49,8 @@ def _questions(request_body: dict[str, Any]) -> list[Question]:
 @pytest.mark.parametrize("provider", PROVIDERS)
 def test_build_request_uses_documented_provider_details(provider: str) -> None:
     documented = _fixture(provider)["request"]
-    cfg = ProviderConfig(provider=provider, model=documented["model"])
+    model = "system.ai.other-model" if provider == "databricks-openjev" else documented["model"]
+    cfg = ProviderConfig(provider=provider, model=model)
     request = build_request(
         cfg,
         _BASE_URLS[provider],
@@ -72,7 +76,9 @@ def test_build_request_uses_documented_provider_details(provider: str) -> None:
     else:
         assert headers["authorization"] == "Bearer test-key"
     assert headers["content-type"] == "application/json"
-    assert json.loads(request.data) == documented
+    expected = {**documented, "model": model}
+    assert json.loads(request.data) == expected
+    assert json.loads(request.data)["model"] == cfg.model
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
@@ -150,6 +156,113 @@ def test_choice_with_invalid_probability_distribution_is_none(
     assert result == {"route": None}
 
 
+@pytest.mark.parametrize(
+    ("distribution", "expected"),
+    [
+        ({"a": 0.7, "b": 0.25}, Answer(id="route", value="a", p=0.8)),
+        ({"a": 0.8, "b": 0.25}, Answer(id="route", value="a", p=0.8)),
+        ({"a": 0.7, "b": 0.249999}, None),
+        ({"a": 0.8, "b": 0.250001}, None),
+    ],
+)
+def test_choice_probability_sum_uses_inclusive_robust_bounds(
+    distribution: dict[str, float], expected: Answer | None
+) -> None:
+    answer = {"type": "choice", "choice": "a", "confidence": 0.8}
+    answer["probabilities"] = distribution
+    result = parse_response(
+        ProviderConfig(provider="jev", model="jev-latest"),
+        json.dumps({"answers": {"route": answer}}).encode(),
+        [Question(id="route", kind="choice", prompt="Choose", options={"a": "A", "b": "B"})],
+    )
+
+    assert result == {"route": expected}
+
+
+@pytest.mark.parametrize(
+    "confidence_fields",
+    [
+        {"answer_confidence": 0.99},
+        {"confidence": 0.99},
+        {},
+    ],
+)
+def test_choice_pick_must_be_a_probability_maximum(
+    confidence_fields: dict[str, float],
+) -> None:
+    answer = {
+        "type": "choice",
+        "choice": "a",
+        "probabilities": {"a": 0.1, "b": 0.9},
+        **confidence_fields,
+    }
+    result = parse_response(
+        ProviderConfig(provider="jev", model="jev-latest"),
+        json.dumps({"answers": {"route": answer}}).encode(),
+        [Question(id="route", kind="choice", prompt="Choose", options={"a": "A", "b": "B"})],
+    )
+
+    assert result == {"route": None}
+
+
+@pytest.mark.parametrize(
+    "distribution",
+    [
+        {"a": 0.5, "b": 0.5},
+        {"a": 0.4999999999999, "b": 0.5000000000001},
+    ],
+)
+def test_choice_pick_accepts_tied_probability_maxima(
+    distribution: dict[str, float],
+) -> None:
+    result = parse_response(
+        ProviderConfig(provider="jev", model="jev-latest"),
+        json.dumps(
+            {
+                "answers": {
+                    "route": {
+                        "type": "choice",
+                        "choice": "a",
+                        "probabilities": distribution,
+                    }
+                }
+            }
+        ).encode(),
+        [Question(id="route", kind="choice", prompt="Choose", options={"a": "A", "b": "B"})],
+    )
+
+    assert result["route"] == Answer(id="route", value="a", p=distribution["a"])
+
+
+@pytest.mark.parametrize(
+    "distribution",
+    [
+        {"a": 0.5},
+        {"a": 0.5, "b": 0.5, "c": 0.0},
+    ],
+)
+def test_choice_probability_keys_must_match_options(
+    distribution: dict[str, float],
+) -> None:
+    result = parse_response(
+        ProviderConfig(provider="jev", model="jev-latest"),
+        json.dumps(
+            {
+                "answers": {
+                    "route": {
+                        "type": "choice",
+                        "choice": "a",
+                        "probabilities": distribution,
+                    }
+                }
+            }
+        ).encode(),
+        [Question(id="route", kind="choice", prompt="Choose", options={"a": "A", "b": "B"})],
+    )
+
+    assert result == {"route": None}
+
+
 def test_choice_not_in_question_options_is_none() -> None:
     result = parse_response(
         ProviderConfig(provider="jev", model="jev-latest"),
@@ -176,6 +289,83 @@ def test_noul_probability_is_the_probability_of_the_chosen_value(
     assert result["is_urgent"] == Answer(id="is_urgent", value=value, p=probability)
 
 
+def test_noul_midpoint_selects_yes() -> None:
+    result = parse_response(
+        ProviderConfig(provider="jev", model="jev-latest"),
+        b'{"answers":{"check":{"type":"noul","noul":0.5}}}',
+        [Question(id="check", kind="noul", prompt="Is it true?", options=None)],
+    )
+
+    assert result["check"] == Answer(id="check", value="yes", p=0.5)
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        (
+            Question(id="check", kind="noul", prompt="Check", options=None),
+            b'{"type":"noul","noul":' + b"9" * 500 + b"}",
+        ),
+        (
+            Question(
+                id="check",
+                kind="choice",
+                prompt="Check",
+                options={"a": "A", "b": "B"},
+            ),
+            b'{"type":"choice","choice":"a","confidence":'
+            + b"9" * 500
+            + b',"probabilities":{"a":0.8,"b":0.2}}',
+        ),
+    ],
+)
+def test_ask_returns_none_for_unrepresentable_large_probabilities(
+    question: Question, answer: bytes
+) -> None:
+    config = ProviderConfig(provider="jev", model="jev-latest")
+    body = b'{"answers":{"check":' + answer + b"}}"
+
+    result = ask(
+        config,
+        _BASE_URLS["jev"],
+        "test-key",
+        "text",
+        [question],
+        transport=lambda _request, _timeout: body,
+    )
+
+    assert result == {"check": None}
+
+
+def test_ask_wraps_integer_digit_limit_as_malformed_json() -> None:
+    config, questions = _request()
+    body = (
+        b'{"credential":"credential-for-test","answers":{"check":{"type":"noul","noul":'
+        + b"9" * 5000
+        + b"}}}"
+    )
+    calls = []
+
+    def malformed(request: Any, timeout: float) -> bytes:
+        calls.append((request, timeout))
+        return body
+
+    with pytest.raises(SystemOneError, match="malformed JSON") as exc_info:
+        ask(
+            config,
+            _BASE_URLS["jev"],
+            "credential-for-test",
+            "text",
+            questions,
+            transport=malformed,
+            timeout=3.5,
+        )
+
+    assert len(calls) == 1
+    assert calls[0][1] == 3.5
+    assert "credential-for-test" not in str(exc_info.value)
+
+
 def test_gateway_rejects_a_choice_with_one_option() -> None:
     key = "test-key"
     with pytest.raises(SystemOneError) as exc_info:
@@ -199,13 +389,19 @@ def _request() -> tuple[ProviderConfig, list[Question]]:
 def test_timeout_is_wrapped_without_leaking_the_key() -> None:
     key = "credential-for-test"
     config, questions = _request()
+    calls = []
 
-    def timeout(_request: Any, _timeout: float) -> bytes:
+    def timeout(request: Any, timeout_value: float) -> bytes:
+        calls.append((request, timeout_value))
         raise TimeoutError(f"timed out for {key}")
 
     with pytest.raises(SystemOneError) as exc_info:
-        ask(config, _BASE_URLS["jev"], key, "text", questions, transport=timeout)
+        ask(config, _BASE_URLS["jev"], key, "text", questions, transport=timeout, timeout=7.25)
 
+    assert len(calls) == 1
+    assert calls[0][1] == 7.25
+    assert calls[0][0].full_url.endswith("/v1/systemone")
+    assert str(exc_info.value) == "provider request timed out"
     assert key not in str(exc_info.value)
 
 
@@ -218,27 +414,184 @@ def test_http_errors_are_not_retried_or_logged_with_the_key(status: int) -> None
     def fail_once(request: Any, _timeout: float) -> bytes:
         nonlocal calls
         calls += 1
-        raise urllib.error.HTTPError(request.full_url, status, "unavailable", None, None)
+        raise urllib.error.HTTPError(
+            request.full_url,
+            status,
+            f"unavailable for {key}",
+            {"X-Debug": key},
+            io.BytesIO(key.encode()),
+        )
 
     with pytest.raises(SystemOneError) as exc_info:
         ask(config, _BASE_URLS["jev"], key, "text", questions, transport=fail_once)
 
     assert calls == 1
     assert key not in str(exc_info.value)
+    assert exc_info.value.status == status
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_message"),
+    [
+        ("urlerror", "provider request failed"),
+        ("generic", "provider request failed"),
+    ],
+)
+def test_other_transport_errors_are_wrapped_without_leaking_key(
+    failure: str, expected_message: str
+) -> None:
+    key = "credential-for-test"
+    config, questions = _request()
+    calls = []
+
+    def fail(request: Any, timeout: float) -> bytes:
+        calls.append((request, timeout))
+        if failure == "urlerror":
+            raise urllib.error.URLError(f"connection failed for {key}")
+        raise RuntimeError(f"transport failed for {key}")
+
+    with pytest.raises(SystemOneError) as exc_info:
+        ask(config, _BASE_URLS["jev"], key, "text", questions, transport=fail, timeout=4.0)
+
+    assert len(calls) == 1
+    assert calls[0][1] == 4.0
+    assert str(exc_info.value) == expected_message
+    assert key not in str(exc_info.value)
+
+
+def test_urlerror_timeout_reason_uses_timeout_message() -> None:
+    config, questions = _request()
+    key = "credential-for-test"
+    calls = []
+
+    def timeout(request: Any, timeout_value: float) -> bytes:
+        calls.append((request, timeout_value))
+        raise urllib.error.URLError(TimeoutError(f"timed out for {key}"))
+
+    with pytest.raises(SystemOneError, match="provider request timed out") as exc_info:
+        ask(config, _BASE_URLS["jev"], key, "text", questions, transport=timeout)
+
+    assert len(calls) == 1
+    assert key not in str(exc_info.value)
+
+
+def test_successful_ask_uses_transport_and_normalizes_response() -> None:
+    config, questions = _request()
+    calls = []
+
+    def respond(request: Any, timeout_value: float) -> bytes:
+        calls.append((request, timeout_value))
+        return b'{"answers":{"check":{"type":"noul","noul":0.9}}}'
+
+    result = ask(
+        config,
+        _BASE_URLS["jev"],
+        "key",
+        "source text",
+        questions,
+        transport=respond,
+        timeout=6.0,
+    )
+
+    assert result == {"check": Answer(id="check", value="yes", p=0.9)}
+    assert len(calls) == 1
+    assert calls[0][1] == 6.0
+    assert json.loads(calls[0][0].data)["state"] == "source text"
 
 
 def test_malformed_json_is_wrapped_without_leaking_the_key() -> None:
     key = "credential-for-test"
     config, questions = _request()
+    calls = []
 
-    with pytest.raises(SystemOneError) as exc_info:
+    def malformed(request: Any, timeout: float) -> bytes:
+        calls.append((request, timeout))
+        return f'{{"credential":"{key}",invalid'.encode()
+
+    with pytest.raises(SystemOneError, match="malformed JSON") as exc_info:
         ask(
             config,
             _BASE_URLS["jev"],
             key,
             "text",
             questions,
-            transport=lambda _request, _timeout: b"{invalid",
+            transport=malformed,
+            timeout=2.5,
         )
 
+    assert len(calls) == 1
+    assert calls[0][1] == 2.5
     assert key not in str(exc_info.value)
+
+
+def test_redirect_is_rejected_without_forwarding_authorization() -> None:
+    key = "redirect-secret"
+    received_authorization: list[str | None] = []
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            received_authorization.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"answers":{"check":{"type":"noul","noul":0.99}}}')
+
+        do_GET = do_POST
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
+    target_thread = threading.Thread(target=target.serve_forever, daemon=True)
+    target_thread.start()
+    target_url = f"http://127.0.0.1:{target.server_port}/capture"
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", target_url)
+            self.end_headers()
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    source = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    source_thread = threading.Thread(target=source.serve_forever, daemon=True)
+    source_thread.start()
+    try:
+        config, questions = _request()
+        with pytest.raises(SystemOneError) as exc_info:
+            ask(config, f"http://127.0.0.1:{source.server_port}", key, "text", questions)
+    finally:
+        source.shutdown()
+        target.shutdown()
+        source.server_close()
+        target.server_close()
+        source_thread.join(timeout=2)
+        target_thread.join(timeout=2)
+
+    assert exc_info.value.status == 302
+    assert received_authorization == []
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://api.example.com",
+        "ftp://localhost",
+        "https://",
+    ],
+)
+def test_nonsecure_nonloopback_base_urls_are_rejected_before_transport(
+    base_url: str,
+) -> None:
+    config, questions = _request()
+    calls = []
+
+    def transport(request: Any, timeout: float) -> bytes:
+        calls.append((request, timeout))
+        return b'{"answers":{"check":{"type":"noul","noul":0.9}}}'
+
+    with pytest.raises(SystemOneError):
+        ask(config, base_url, "key", "text", questions, transport=transport)
+
+    assert calls == []

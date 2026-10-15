@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,10 @@ class ProviderConfig:
 
 class SystemOneError(Exception):
     """A safe, credential-free System One client error."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 # Unverified: TypeSafe's schema sets no maximum for choice criteria.
@@ -61,6 +67,7 @@ PROVIDERS: dict[str, dict[str, str | int]] = {
 }
 
 _CHOICE_SUM_TOLERANCE = 0.05
+_CHOICE_PICK_TOLERANCE = 1e-12
 
 
 def build_request(
@@ -71,6 +78,7 @@ def build_request(
     questions: list[Question],
 ) -> urllib.request.Request:
     provider = _provider(cfg)
+    _validate_base_url(base_url)
     if not questions:
         raise SystemOneError("at least one question is required")
 
@@ -124,7 +132,7 @@ def parse_response(
     _provider(cfg)
     try:
         payload = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         raise SystemOneError("provider returned malformed JSON") from None
     if not isinstance(payload, dict) or not isinstance(payload.get("answers"), dict):
         raise SystemOneError("provider returned a malformed response")
@@ -155,7 +163,7 @@ def ask(
     try:
         response = sender(request, timeout)
     except urllib.error.HTTPError as exc:
-        raise SystemOneError(f"provider returned HTTP {exc.code}") from None
+        raise SystemOneError(f"provider returned HTTP {exc.code}", status=exc.code) from None
     except (TimeoutError, urllib.error.URLError) as exc:
         if isinstance(exc, TimeoutError) or isinstance(exc.reason, TimeoutError):
             raise SystemOneError("provider request timed out") from None
@@ -170,6 +178,28 @@ def _provider(cfg: ProviderConfig) -> dict[str, str | int]:
         return PROVIDERS[cfg.provider]
     except (KeyError, TypeError):
         raise SystemOneError("unsupported provider") from None
+
+
+def _validate_base_url(base_url: str) -> None:
+    try:
+        parsed = urlsplit(base_url)
+        hostname = parsed.hostname
+    except ValueError:
+        raise SystemOneError("base URL must use HTTPS or loopback HTTP") from None
+    if parsed.scheme == "https" and hostname:
+        return
+    if (
+        parsed.scheme == "http"
+        and hostname
+        and hostname.lower()
+        in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
+    ):
+        return
+    raise SystemOneError("base URL must use HTTPS or loopback HTTP")
 
 
 def _parse_noul(question: Question, answer: dict[str, object]) -> Answer | None:
@@ -201,7 +231,14 @@ def _parse_choice(question: Question, answer: dict[str, object]) -> Answer | Non
         values = [_unit_probability(value) for value in probabilities.values()]
         if any(value is None for value in values):
             return None
-        if abs(sum(value for value in values if value is not None) - 1.0) > _CHOICE_SUM_TOLERANCE:
+        valid_values = [value for value in values if value is not None]
+        total = math.fsum(valid_values)
+        if not 1.0 - _CHOICE_SUM_TOLERANCE <= total <= 1.0 + _CHOICE_SUM_TOLERANCE:
+            return None
+        picked_probability = _unit_probability(probabilities[pick])
+        if picked_probability is None or picked_probability + _CHOICE_PICK_TOLERANCE < max(
+            valid_values
+        ):
             return None
 
     # Some decision backends expose calibrated answer confidence separately.
@@ -221,12 +258,17 @@ def _parse_choice(question: Question, answer: dict[str, object]) -> Answer | Non
 def _unit_probability(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    probability = float(value)
-    if not 0.0 <= probability <= 1.0:
+    if not 0 <= value <= 1:
         return None
+    probability = float(value)
     return probability
 
 
 def _send(request: urllib.request.Request, timeout: float) -> bytes:
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    opener = urllib.request.build_opener(NoRedirectHandler())
+    with opener.open(request, timeout=timeout) as response:
         return response.read()
