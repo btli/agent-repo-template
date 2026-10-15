@@ -130,6 +130,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     needs_maintainer = bool(decision["escalate"] or ctx.capped)
     proposed_priorities = [
         *decision["labels"],
+        *decision["suggestions"]["labels"],
         decision["suggestions"]["priority"],
         answers.get("priority", {}).get("value"),
     ]

@@ -226,6 +226,20 @@ def test_high_priority_is_suggested(priority):
     assert priority in bodies(actions)
 
 
+@pytest.mark.parametrize("priority", ["P0", "P1"])
+def test_high_priority_only_in_suggested_labels_is_suggested(priority):
+    from agent_repo.apply.actions import check_identity
+
+    data = decision()
+    data["suggestions"]["labels"] = [priority]
+    ctx = context()
+    assert not check_identity(data, ctx, "decision"), "test artifact must be valid"
+    actions = plan(data, ctx)
+    assert priority not in labels(actions)
+    assert "needs-maintainer" in labels(actions)
+    assert f"Suggested priority: {priority}." in bodies(actions)
+
+
 @pytest.mark.parametrize("probability,posted", [(0.8, True), (0.79, False)])
 def test_needs_info_threshold(probability, posted):
     data = decision()
@@ -314,11 +328,38 @@ def test_dry_run_has_no_writes_and_lists_actions(tmp_path):
 
 
 def test_live_order_labels_comment_close(tmp_path):
+    from agent_repo.apply.actions import execute
+
     api = API()
     data = decision()
     data["close"] = closing()
-    run(data, context(api, enabled=True), api, tmp_path)
+    actions = plan(data, context(api, enabled=True))
+    shuffled = [
+        next(action for action in actions if action.kind == kind)
+        for kind in ("close", "comment", "add_labels")
+    ]
+    assert not execute(shuffled, api.gh, "live", tmp_path / "summary.md")
     assert [path.rsplit("/", 1)[-1] for _, path, _ in api.writes] == ["labels", "comments", "7"]
+
+
+def test_missing_closure_explanation_blocks_all_normal_writes(tmp_path):
+    from agent_repo.apply.actions import execute
+
+    api = API(
+        comments=[
+            {"body": "Earlier comment.", "user": {"login": "agent-apply[bot]", "type": "Bot"}}
+        ]
+    )
+    data = decision()
+    data["close"] = closing()
+    actions = [
+        replace(action, payload={**action.payload, "comment_body": "Missing explanation."})
+        if action.kind == "close"
+        else action
+        for action in plan(data, context(api, enabled=True))
+    ]
+    assert execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
 
 
 @pytest.mark.parametrize("capped", [True, False])
@@ -419,27 +460,42 @@ def test_invalid_mode_never_writes(tmp_path):
     assert alerts
 
 
-def test_cli_reads_default_branch_policy_and_scan_keys(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "scenario", ["scan-key", "token-literal", "token-base64", "moved-head", "mismatched-sha"]
+)
+def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tmp_path):
     import base64
 
     from agent_repo.commands.apply import main
 
     api = API()
     key = secrets.token_hex(20)
+    token = secrets.token_urlsafe(32)
     data = decision()
     data["answers"]["needs_info"] = {"value": True, "p": 0.99}
-    data["needs_info"] = {"text": base64.b64encode(key.encode()).decode()}
+    text = {
+        "scan-key": base64.b64encode(key.encode()).decode(),
+        "token-literal": token,
+        "token-base64": base64.b64encode(token.encode()).decode(),
+        "moved-head": "Please supply versions.",
+        "mismatched-sha": "Please supply versions.",
+    }[scenario]
+    data["needs_info"] = {"text": text}
+    if scenario == "mismatched-sha":
+        data["base_sha"] = "b" * 40
+    head_sha = "b" * 40 if scenario in {"moved-head", "mismatched-sha"} else "a" * 40
     artifact = tmp_path / "decision.json"
     artifact.write_text(json.dumps(data))
     summary = tmp_path / "summary.md"
     original = api.transport
+    policy_refs = []
 
     def transport(request, timeout):
         path = urlparse(request.full_url).path
         if path.endswith("/git/ref/heads/main"):
-            value = {"object": {"sha": "a" * 40}}
+            value = {"object": {"sha": head_sha}}
         elif "/contents/.agents/" in path:
-            assert "ref=" + "a" * 40 in request.full_url
+            policy_refs.append(urlparse(request.full_url).query)
             name = path.rsplit("/", 1)[-1]
             source = (
                 Path("tests/fixtures/charter/example.md")
@@ -454,23 +510,42 @@ def test_cli_reads_default_branch_policy_and_scan_keys(monkeypatch, tmp_path):
             return original(request, timeout)
         return 200, {}, json.dumps(value).encode()
 
-    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    api.gh = GitHub(token, "your-org/project", transport=transport)
     monkeypatch.setattr("agent_repo.commands.apply.GitHub", lambda token, repo: api.gh)
     for name, value in {
         "GITHUB_EVENT_NAME": "issues",
         "GITHUB_EVENT_PATH": str(Path("tests/fixtures/events/issues.opened.json").resolve()),
         "GITHUB_RUN_ID": "run-1",
+        "GITHUB_SHA": "a" * 40,
         "GITHUB_STEP_SUMMARY": str(summary),
-        "GH_TOKEN": "test-token",
+        "GH_TOKEN": token,
         "AGENT_BOT_LOGIN": "agent-apply[bot]",
         "AGENT_SCAN_KEYS": "\n" + key + "\n",
         "AGENT_CANARY": secrets.token_hex(20),
     }.items():
         monkeypatch.setenv(name, value)
     assert main([str(artifact)]) == 0
-    assert not any(path.endswith("comments") for _, path, _ in api.writes)
-    assert any("needs-maintainer" in (body or {}).get("labels", []) for _, _, body in api.writes)
+    if scenario == "moved-head":
+        assert len(api.comments) == 1, "workflow-pinned artifact was rejected after a push"
+        assert "ALERT" not in summary.read_text()
+        boundary = len(api.calls)
+        assert main([str(artifact)]) == 0
+        assert not [call for call in api.calls[boundary:] if call[0] != "GET"]
+    else:
+        assert not api.comments, "rejected proposal posted a comment"
+        assert all(
+            method == "POST" and body == {"labels": ["needs-maintainer"]}
+            for method, _, body in api.writes
+        )
+        assert api.writes, "maintainer fallback was omitted"
+        expected_alert = "identity mismatch" if scenario == "mismatched-sha" else "Outbound scan"
+        assert expected_alert in summary.read_text()
+    assert policy_refs and all(query == "ref=" + "a" * 40 for query in policy_refs)
     assert key not in summary.read_text(), "credential echoed"
+    assert token not in summary.read_text(), "installation token echoed"
+    if scenario == "moved-head":
+        return
+    data["base_sha"] = "a" * 40
     data["needs_info"]["text"] = "Please supply versions."
     artifact.write_text(json.dumps(data))
     assert main([str(artifact)]) == 0
