@@ -57,8 +57,20 @@ def test_read_per_call_cap(tmp_path):
 
 def test_read_window_in_large_file(tmp_path):
     (tmp_path / "file").write_text("prefix\n" * 10000 + "wanted\nlast\n")
-    result = reader(tmp_path).read_file("file", start_line=10001, max_lines=1)
-    assert result.startswith("wanted\n") and "truncated" in result
+    module = importlib.import_module("agent_repo.repo_tools")
+    obj = reader(tmp_path)
+    before = obj._used
+    with pytest.raises(module.ToolError, match="per-call byte budget exceeded"):
+        obj.read_file("file", start_line=10001, max_lines=1)
+    assert obj._used - before == 65536
+
+
+def test_skipped_bytes_reduce_read_window(tmp_path):
+    (tmp_path / "file").write_text("prefix\n" + "x" * 8)
+    obj = reader(tmp_path, per_call_bytes=8)
+    result = obj.read_file("file", start_line=2)
+    assert result.startswith("x\n[truncated")
+    assert obj._used == 8
 
 
 @pytest.mark.parametrize("method", ["read_file", "grep"])

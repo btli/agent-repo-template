@@ -42,23 +42,25 @@ def merge(
         or validate(tier2, schema)
         or any(tier2[key] != decision[key] for key in ["run_id", "base_sha", "schema_version"])
     ):
-        result["escalate"] = {
+        result["escalate"] = result["escalate"] or {
             "to": "maintainer",
             "reason": "Tier-2 triage failed or returned invalid output.",
         }
         return result
     corrections = label_corrections(tier2, allowed_labels)
     if corrections is None:
-        result["escalate"] = {
+        result["escalate"] = result["escalate"] or {
             "to": "maintainer",
             "reason": "Tier-2 label corrections violate the repository taxonomy.",
         }
         return result
-    for key in ["rca", "needs_info", "escalate"]:
+    for key in ["rca", "needs_info"]:
         result[key] = copy.deepcopy(tier2[key])
-    result["labels"] = [
-        label for label in decision["labels"] if not label.startswith(("type:", "area:"))
-    ]
+    result["escalate"] = copy.deepcopy(decision["escalate"] or tier2["escalate"])
+    replaced = tuple(
+        prefix for prefix in ["type:", "area:"] if any(c.startswith(prefix) for c in corrections)
+    )
+    result["labels"] = [label for label in decision["labels"] if not label.startswith(replaced)]
     result["labels"] = list(dict.fromkeys(result["labels"] + corrections))
     if result["close"] is not None:
         vote = tier2["close"]

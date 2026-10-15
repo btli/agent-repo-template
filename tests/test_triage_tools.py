@@ -166,6 +166,19 @@ def test_tool_preserves_response_pipe_metadata(tools):
     assert result.returncode == 0 and json.loads(result.stdout)["result"] == "safe"
 
 
+@pytest.mark.parametrize("pattern", ["(a+)+$", "["])
+def test_grep_treats_patterns_literally_without_stalling(tools, pattern):
+    import time
+
+    (Path(os.environ["GITHUB_WORKSPACE"]) / "file").write_text("a" * 28 + "!\n" + pattern + "\n")
+    started = time.monotonic()
+    result = tool_process("grep_repo", pattern, "file")
+    assert time.monotonic() - started < 3
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == [["file", 2, pattern]]
+    assert "literal" in tools["grep_repo"].__doc__
+
+
 @pytest.mark.parametrize("name", ["read_repo_file", "grep_repo"])
 @pytest.mark.parametrize("content", ["x", "\x01", "é", '\\"'])
 def test_maximum_response_completes_before_pipe_read(tools, name, content):
@@ -174,7 +187,7 @@ def test_maximum_response_completes_before_pipe_read(tools, name, content):
     (root / filename).write_text(
         content * 32768 if name == "read_repo_file" else (content * 32 + "\n") * 200
     )
-    arguments = (filename,) if name == "read_repo_file" else (".", filename)
+    arguments = (filename,) if name == "read_repo_file" else (content, filename)
     result = tool_process(name, *arguments, protocol=True)
     assert result.returncode == 0
     assert len(result.stdout.encode()) <= 32768

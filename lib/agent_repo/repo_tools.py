@@ -150,16 +150,20 @@ class RepoReader:
             raise ToolError("invalid line limits")
         with self._budget(), self._open(rel) as stream:
             skipped = 0
+            remaining = self.per_call_bytes
             while skipped < start_line - 1:
-                data = self._chunk(stream, self.per_call_bytes, line=True)
+                if remaining == 0:
+                    raise ToolError("per-call byte budget exceeded")
+                data = self._chunk(stream, remaining, line=True)
+                remaining -= len(data)
                 if not data:
                     return ""
                 skipped += data.endswith(b"\n")
             window = bytearray()
             lines = 0
-            while len(window) < self.per_call_bytes and lines < max_lines:
-                remaining = self.per_call_bytes - len(window)
+            while remaining > 0 and lines < max_lines:
                 data = self._chunk(stream, remaining, line=True)
+                remaining -= len(data)
                 if not data:
                     break
                 window.extend(data)
@@ -180,10 +184,6 @@ class RepoReader:
     ) -> list[tuple[str, int, str]]:
         if max_results < 1 or max_results > 200:
             raise ToolError("invalid result limit")
-        try:
-            expression = re.compile(pattern)
-        except re.error:
-            raise ToolError("invalid search pattern") from None
         results = []
         remaining = self.per_call_bytes
 
@@ -236,7 +236,7 @@ class RepoReader:
                     for number, line in enumerate(
                         data.decode("utf-8", errors="replace").splitlines(), 1
                     ):
-                        if expression.search(line) and not append(rel, number, line):
+                        if pattern in line and not append(rel, number, line):
                             return results
                 if truncated or remaining == 0:
                     append(rel, 0, "[truncated: scan byte cap reached]")
