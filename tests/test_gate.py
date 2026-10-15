@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from agent_repo.config import RepoConfig
 from agent_repo.event import load_event
-from agent_repo.github import GitHub
+from agent_repo.github import GitHub, GitHubError
 from agent_repo.yamljson import load_yaml
 
 FIXTURES = Path("tests/fixtures/github/gate")
@@ -42,6 +42,8 @@ class FakeTransport:
             raise RuntimeError(TOKEN)
         if self.case.get("failure") == "http":
             return 503, {}, b"{}"
+        if self.case.get("fail_path") == path:
+            return 503, {}, b"{}"
         if path.endswith("/permission"):
             status = self.case.get("permission_status", 200)
             data = self.case.get("permission", {"role_name": "read", "permission": "read"})
@@ -49,10 +51,42 @@ class FakeTransport:
             status, data = 200, self.case.get("comments", [])
         elif path == "actions/runs":
             status, data = 200, {"workflow_runs": self.case.get("runs", [])}
+        elif path == "actions/runs/99":
+            status, data = (
+                200,
+                {
+                    "id": 99,
+                    "workflow_id": 77,
+                    "path": ".github/workflows/agent-triage.yml",
+                    "repository": {"id": 7, "full_name": "your-org/project"},
+                },
+            )
+        elif path == "issues/12":
+            status, data = 200, {"created_at": "2026-10-01T00:00:00Z"}
+        elif path == "actions/workflows/77/runs":
+            runs = self.case.get("runs", [])
+            if not self.case.get("unfiltered_runs"):
+                runs = [r for r in runs if r["event"] == query["event"][0]]
+            status, data = 200, {"workflow_runs": runs}
+        elif path.endswith("/jobs"):
+            run_id = path.split("/")[-2]
+            jobs = self.case.get("jobs", {}).get(
+                run_id,
+                [
+                    {"name": "propose", "status": "completed", "conclusion": "success"},
+                ],
+            )
+            status, data = 200, {"jobs": jobs}
         elif path == "actions/artifacts":
             name = query.get("name", [None])[0]
             artifacts = self.case.get("artifacts", [])
-            data = {"artifacts": [a for a in artifacts if name is None or a["name"] == name]}
+            data = {
+                "artifacts": [
+                    a
+                    for a in artifacts
+                    if (self.case.get("unfiltered_artifacts") or name is None or a["name"] == name)
+                ]
+            }
             status = 200
         elif path.startswith("pulls/"):
             default = json.loads(
@@ -64,15 +98,20 @@ class FakeTransport:
         if self.case.get("failure") == "malformed":
             data = None
         headers = {}
-        if self.case.get("pages") and path in {"actions/runs", "actions/artifacts"}:
-            key = "workflow_runs" if path == "actions/runs" else "artifacts"
+        if isinstance(data, dict) and any(
+            k in data for k in ("workflow_runs", "artifacts", "jobs")
+        ):
+            key = next(k for k in ("workflow_runs", "artifacts", "jobs") if k in data)
             items = data[key]
-            if query.get("page") != ["2"]:
-                next_url = request.full_url + "&page=2"
+            page = int(query.get("page", ["1"])[0])
+            start = (page - 1) * 100
+            data = {key: items[start : start + 100]}
+            if len(items) > start + 100:
+                next_query = dict(query, page=[str(page + 1)])
+                from urllib.parse import urlencode
+
+                next_url = parsed._replace(query=urlencode(next_query, doseq=True)).geturl()
                 headers = {"Link": f'<{next_url}>; rel="next"'}
-                data = {key: items[:1]}
-            else:
-                data = {key: items[1:]}
         return status, headers, json.dumps(data).encode()
 
 
@@ -143,7 +182,14 @@ def test_parse_command_first_nonblank_line(body, expected):
         (None, "admin", 200, "human", (), False),
         ("custom", "admin", 200, "human", (), False),
         ("admin", "admin", 404, "human", (), False),
-        ("admin", "admin", 503, "human", (), False),
+        ("read", "read", 200, "alice_corp", ("ALICE_CORP",), True),
+        ("write", "write", 200, "alice_corp", (), True),
+        ("maintain", "write", 200, "alice_corp", (), True),
+        ("admin", "admin", 200, "alice_corp", (), True),
+        ("read", "read", 200, "alice_corp", (), False),
+        ("write", "write", 404, "alice_corp", (), False),
+        ("admin", "admin", 200, "alice.corp", (), False),
+        ("admin", "admin", 200, "alice%2fcorp", (), False),
         ("read", "read", 200, "HuMaN", ("human",), True),
         ("read", "read", 200, "human", ("HUMAN",), True),
         ("admin", "admin", 200, "helper[bot]", ("helper[bot]",), False),
@@ -162,8 +208,226 @@ def test_authorize_uses_role_name_and_maintainers(
     )
     gh = GitHub(TOKEN, "your-org/project", transport=transport)
     assert authorize(gh, login, frozenset(maintainers)) is expected
-    if login == "human" and not maintainers:
-        assert transport.requests[0][0] == "collaborators/human/permission"
+    if login in {"human", "alice_corp"} and not maintainers:
+        assert transport.requests[0][0] == f"collaborators/{login}/permission"
+
+
+@pytest.mark.parametrize("status", [0, 403, 429, 503])
+def test_authorize_surfaces_api_errors(status):
+    from agent_repo.gate import authorize
+
+    gh = GitHub(TOKEN, "your-org/project", transport=FakeTransport({"permission_status": status}))
+    with pytest.raises(GitHubError) as caught:
+        authorize(gh, "alice_corp", frozenset())
+    assert caught.value.status == status
+    assert TOKEN not in str(caught.value)
+
+
+@pytest.mark.parametrize("status", [403, 429, 503])
+def test_permission_outages_report_api_error(status, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "authorized-review"))
+    case["permission_status"] = status
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert not result.run and not result.tier2_allowed
+    assert result.reason == "api-error"
+
+
+@pytest.mark.parametrize("action", ["opened", "reopened", "ready_for_review", "synchronize"])
+def test_bot_gets_agent_pr_reviews_only(action, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "agent-draft"))
+    case["payload"]["action"] = action
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert result.run
+    case["payload"]["pull_request"]["head"]["repo"]["full_name"] = "your-org/fork"
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert not result.run and result.reason == "self"
+
+
+@pytest.mark.parametrize("action", ["edited", "deleted"])
+def test_other_self_bot_events_stay_self(action, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "authorized-triage"))
+    case["payload"]["action"] = action
+    case["payload"]["sender"] = {"login": "helper[bot]", "type": "Bot"}
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert not result.run and result.reason == "self"
+
+
+def test_authorized_review_overrides_first_time_cost_gate(tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "authorized-review"))
+    case["payload"]["issue"]["author_association"] = "FIRST_TIME_CONTRIBUTOR"
+    pull = json.loads(Path("tests/fixtures/events/pull_request_target.opened.json").read_text())
+    case["pull"] = dict(pull["pull_request"], author_association="FIRST_TIME_CONTRIBUTOR")
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert result.run and result.reason == "ready"
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "disabled",
+        "self",
+        "other-bot",
+        "skip-label",
+        "no-op-edit",
+        "non-content-edit",
+        "third-party-comment",
+        "reporter-without-needs-info",
+        "unauthorized-triage",
+        "unauthorized-fix",
+        "no-fix-trigger",
+        "first-time-review",
+        "human-draft",
+    ],
+)
+def test_cheap_skips_never_read_counters(case_id, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == case_id))
+    case["runs"] = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap")["runs"])
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert result.reason == case["expected"]["reason"]
+    assert not any(path.startswith("actions/") for path, _ in transport.requests)
+
+
+@pytest.mark.parametrize(
+    "jobs",
+    [
+        [
+            {"name": "gate", "status": "completed", "conclusion": "success"},
+            {"name": "propose", "status": "completed", "conclusion": "skipped"},
+        ],
+        [{"name": "propose", "status": "queued", "conclusion": None}],
+        [],
+    ],
+)
+@pytest.mark.parametrize("edited", [False, True])
+def test_skipped_propose_cannot_cap_or_debounce(jobs, edited, tmp_path):
+    case = copy.deepcopy(
+        next(c for c in CASES if c["id"] == "debounce")
+        if edited
+        else next(c for c in CASES if c["id"] == "cycle-cap")
+    )
+    case["jobs"] = {str(run["id"]): jobs for run in case["runs"]}
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert result.run and result.reason == "ready" and not result.capped
+
+
+@pytest.mark.parametrize(
+    "status,conclusion",
+    [
+        ("completed", "success"),
+        ("completed", "failure"),
+        ("completed", "cancelled"),
+        ("in_progress", None),
+    ],
+)
+def test_started_propose_runs_still_count(status, conclusion, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
+    case["jobs"] = {
+        str(r["id"]): [
+            {"name": "propose", "status": status, "conclusion": conclusion},
+        ]
+        for r in case["runs"]
+    }
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert not result.run and result.capped
+    assert any(path.endswith("/jobs") for path, _ in transport.requests)
+
+
+def test_counter_query_is_workflow_event_and_issue_scoped(tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
+    case["runs"][0]["event"] = "issue_comment"
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert result.capped
+    queries = [query for path, query in transport.requests if path == "actions/workflows/77/runs"]
+    assert {q["event"][0] for q in queries} == {"issues", "issue_comment"}
+    assert all(q["created"] == [">=2026-10-01T00:00:00Z"] for q in queries)
+    assert not any(path == "actions/runs" for path, _ in transport.requests)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"head_repository": {"id": 8}},
+        {"repository": {"id": 8}},
+        {"workflow_id": 78},
+        {"path": ".github/workflows/untrusted.yml"},
+        {"event": "pull_request"},
+        {"created_at": "2026-09-30T23:59:59Z"},
+    ],
+)
+def test_foreign_runs_cannot_cap_issue(changed, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
+    case["unfiltered_runs"] = True
+    case["runs"] = [dict(run, **changed) for run in case["runs"]]
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert result.run and not result.capped and result.tier2_allowed
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {"repository_id": 7, "head_repository_id": 8},
+        {"repository_id": 8, "head_repository_id": 8},
+        {"repository_id": 8, "head_repository_id": 7},
+    ],
+)
+@pytest.mark.parametrize("counter", ["author-cap", "global-cap"])
+def test_foreign_artifacts_cannot_exhaust_tier2(provenance, counter, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == counter))
+    case["artifacts"] = [dict(a, workflow_run=provenance) for a in case["artifacts"]]
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert result.run and result.tier2_allowed
+
+
+def test_unfiltered_artifact_names_do_not_exhaust_tier2(tmp_path):
+    case = dict(
+        CASES[0],
+        unfiltered_artifacts=True,
+        artifacts=[
+            {
+                "name": "tier2-20261013",
+                "workflow_run": {"repository_id": 7, "head_repository_id": 7},
+            }
+        ]
+        * 25,
+    )
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert result.run and result.tier2_allowed
+
+
+@pytest.mark.parametrize("counter", ["cycle-cap", "author-cap", "global-cap"])
+def test_counter_stops_paging_at_cap(counter, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == counter))
+    if counter == "cycle-cap":
+        run = case["runs"][0]
+        case["runs"] = [dict(run, id=1000 + i) for i in range(201)]
+    else:
+        case["artifacts"] *= 101
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert result.reason == case["expected"]["reason"]
+    assert not any(query.get("page") == ["2"] for _, query in transport.requests)
+    if counter == "cycle-cap":
+        assert sum(path.endswith("/jobs") for path, _ in transport.requests) == 3
+    if counter == "global-cap":
+        assert not any(
+            q.get("name") == ["tier2-20261014-contributor"] for _, q in transport.requests
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "actions/runs/99",
+        "issues/12",
+        "actions/workflows/77/runs",
+        "actions/runs/1/jobs",
+        "actions/artifacts",
+    ],
+)
+def test_counter_api_errors_fail_closed(path, tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-boundary"))
+    case["fail_path"] = path
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert not result.run and not result.tier2_allowed and result.reason == "api-error"
 
 
 @pytest.mark.parametrize("failure", ["http", "transport", "malformed"])
@@ -188,8 +452,16 @@ def test_canary_is_fresh_and_32_hex_characters(tmp_path):
 
 @pytest.mark.parametrize("counter", ["cycle-cap", "author-cap", "global-cap"])
 def test_counters_include_paginated_metadata(counter, tmp_path):
-    case = next(c for c in CASES if c["id"] == counter)
-    result, _, _, transport = evaluate_case(dict(case, pages=True), tmp_path)
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == counter))
+    if counter == "cycle-cap":
+        other = dict(case["runs"][0], display_title="agent-triage #999")
+        case["runs"] = [dict(other, id=1000 + i) for i in range(100)] + case["runs"]
+    else:
+        other = dict(
+            case["artifacts"][0], workflow_run={"repository_id": 7, "head_repository_id": 8}
+        )
+        case["artifacts"] = [other] * 100 + case["artifacts"]
+    result, _, _, transport = evaluate_case(case, tmp_path)
     assert result.reason == case["expected"]["reason"]
     assert any(query.get("page") == ["2"] for _, query in transport.requests)
 

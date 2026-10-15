@@ -1,8 +1,10 @@
 import re
 import secrets
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
+from urllib.parse import quote
 
 from agent_repo.config import RepoConfig
 from agent_repo.event import Event
@@ -28,15 +30,17 @@ def parse_command(body: str) -> Command | None:
 
 def authorize(gh: GitHub, login: str, maintainers: frozenset[str]) -> bool:
     if login.casefold().endswith("[bot]") or not re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", login
+        r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}", login
     ):
         return False
     if login.casefold() in {name.casefold() for name in maintainers}:
         return True
     try:
-        data = gh.request("GET", f"collaborators/{login}/permission")
-    except GitHubError:
-        return False
+        data = gh.request("GET", f"collaborators/{quote(login, safe='')}/permission")
+    except GitHubError as exc:
+        if exc.status == 404:
+            return False
+        raise
     return isinstance(data, dict) and data.get("role_name") in ("admin", "maintain", "write")
 
 
@@ -97,19 +101,19 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         return result(False, "disabled")
     if not ctx.bot_login or not event.sender or not event.author or event.number <= 0:
         return result(False, "invalid-metadata")
-    if event.name == "issue_comment" and event.action != "created":
-        return result(False, "unsupported-event")
-    agent_sync = (
+    agent_review = (
         ctx.workflow == "review"
         and event.name == "pull_request_target"
-        and event.action == "synchronize"
+        and event.action in {"opened", "reopened", "ready_for_review", "synchronize"}
         and _agent_pr(event)
         and event.sender.casefold() == ctx.bot_login.casefold()
     )
-    if event.sender.casefold() == ctx.bot_login.casefold() and not agent_sync:
+    if event.sender.casefold() == ctx.bot_login.casefold() and not agent_review:
         return result(False, "self")
-    if (event.sender_is_bot or event.sender.casefold().endswith("[bot]")) and not agent_sync:
+    if (event.sender_is_bot or event.sender.casefold().endswith("[bot]")) and not agent_review:
         return result(False, "bot")
+    if event.name == "issue_comment" and event.action != "created":
+        return result(False, "unsupported-event")
     if ctx.workflow == "triage" and event.author.casefold().endswith("[bot]"):
         return result(False, "bot")
     if "agent:skip" in event.labels:
@@ -137,31 +141,13 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         ):
             return result(False, "off")
 
-    limits = ctx.config.raw["limits"]
-    if ctx.workflow == "triage":
-        if (
-            event.name == "issues"
-            and event.action == "edited"
-            and not ({"title", "body"} & set(event.edited_fields))
-        ):
-            return result(False, "no-op-edit")
-        runs = ctx.gh.paginate("actions/runs", params={"per_page": 100}, key="workflow_runs")
-        prior = [
-            _mapping(run)
-            for run in runs
-            if _mapping(run).get("display_title") == f"agent-triage #{event.number}"
-            and str(run["id"]) != ctx.run_id
-        ]
-        if len(prior) >= limits["triage_runs_per_issue"]:
-            return result(False, "cycle-cap", capped=True)
-        if event.name == "issues" and event.action == "edited" and prior:
-            times = [
-                datetime.fromisoformat(run["created_at"].replace("Z", "+00:00")) for run in prior
-            ]
-            if any(time.tzinfo is None for time in times):
-                raise ValueError("invalid timestamp")
-            if ctx.now - max(times) < timedelta(minutes=limits["edit_debounce_minutes"]):
-                return result(False, "debounce")
+    if (
+        ctx.workflow == "triage"
+        and event.name == "issues"
+        and event.action == "edited"
+        and not ({"title", "body"} & set(event.edited_fields))
+    ):
+        return result(False, "no-op-edit")
 
     if command is not None:
         if command.name != ctx.workflow and not (
@@ -212,15 +198,96 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     if ctx.workflow == "fix" and event.is_pr and not (_agent_pr(event) and event.draft):
         return result(False, "not-agent-draft")
 
+    current = _mapping(ctx.gh.request("GET", f"actions/runs/{ctx.run_id}"))
+    repository = _mapping(current["repository"])
+    if repository["full_name"].casefold() != event.repo.casefold():
+        raise ValueError("invalid repository")
+    repository_id = repository["id"]
+    limits = ctx.config.raw["limits"]
+    if ctx.workflow == "triage":
+        issue = _mapping(ctx.gh.request("GET", f"issues/{event.number}"))
+        created = _timestamp(issue["created_at"])
+        prior = 0
+        latest = None
+        if limits["triage_runs_per_issue"] <= 0:
+            return result(False, "cycle-cap", capped=True)
+        for trigger in ("issues", "issue_comment"):
+            for run in _items(
+                ctx.gh,
+                f"actions/workflows/{current['workflow_id']}/runs",
+                "workflow_runs",
+                {"event": trigger, "created": f">={issue['created_at']}"},
+            ):
+                if (
+                    str(run["id"]) == ctx.run_id
+                    or run.get("display_title") != f"agent-triage #{event.number}"
+                    or run["workflow_id"] != current["workflow_id"]
+                    or run["path"].split("@", 1)[0] != current["path"].split("@", 1)[0]
+                    or run["event"] != trigger
+                    or _mapping(run["repository"])["id"] != repository_id
+                    or _mapping(run.get("head_repository") or {}).get("id") != repository_id
+                ):
+                    continue
+                started = _timestamp(run["created_at"])
+                if started < created or not _proposed(ctx.gh, run["id"]):
+                    continue
+                prior += 1
+                latest = max(latest, started) if latest else started
+                if prior >= limits["triage_runs_per_issue"]:
+                    return result(False, "cycle-cap", capped=True)
+        if (
+            event.action == "edited"
+            and latest
+            and (ctx.now - latest < timedelta(minutes=limits["edit_debounce_minutes"]))
+        ):
+            return result(False, "debounce")
+
     day = ctx.now.astimezone(UTC).strftime("%Y%m%d")
-    counts = []
-    for name in (f"tier2-{day}", f"tier2-{day}-{event.author}"):
-        artifacts = ctx.gh.paginate(
-            "actions/artifacts", params={"name": name, "per_page": 100}, key="artifacts"
-        )
-        counts.append(sum(_mapping(artifact)["name"] == name for artifact in artifacts))
-    if counts[0] >= limits["tier2_per_day"]:
-        return result(True, "tier2-global-cap")
-    if counts[1] >= limits["tier2_per_author_per_day"]:
-        return result(True, "tier2-author-cap")
+    for name, limit, reason in (
+        (f"tier2-{day}", limits["tier2_per_day"], "tier2-global-cap"),
+        (f"tier2-{day}-{event.author}", limits["tier2_per_author_per_day"], "tier2-author-cap"),
+    ):
+        count = 0
+        if limit <= 0:
+            return result(True, reason)
+        for artifact in _items(ctx.gh, "actions/artifacts", "artifacts", {"name": name}):
+            if artifact["name"] != name:
+                continue
+            run = _mapping(artifact["workflow_run"])
+            if run["repository_id"] == repository_id and run["head_repository_id"] == repository_id:
+                count += 1
+                if count >= limit:
+                    return result(True, reason)
     return result(True, "ready", tier2=True)
+
+
+def _timestamp(value: str) -> datetime:
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        raise ValueError("invalid timestamp")
+    return timestamp
+
+
+def _items(gh: GitHub, path: str, key: str, params: dict | None = None) -> Iterator[dict]:
+    page = 1
+    while True:
+        data = _mapping(
+            gh.request("GET", path, params={**(params or {}), "per_page": 100, "page": page})
+        )
+        items = data[key]
+        if not isinstance(items, list):
+            raise ValueError("invalid metadata")
+        for item in items:
+            yield _mapping(item)
+        if len(items) < 100:
+            return
+        page += 1
+
+
+def _proposed(gh: GitHub, run_id: int) -> bool:
+    return any(
+        job["name"] == "propose"
+        and job["status"] in {"in_progress", "completed"}
+        and job["conclusion"] != "skipped"
+        for job in _items(gh, f"actions/runs/{run_id}/jobs", "jobs")
+    )
