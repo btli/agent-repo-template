@@ -1,0 +1,11 @@
+{
+  "caller.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/missing.yml"
+      }
+    }
+  }
+}

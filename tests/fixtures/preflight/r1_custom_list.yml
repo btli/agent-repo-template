@@ -1,0 +1,19 @@
+{
+  "ci.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": [
+          "linux",
+          "gpu-box"
+        ],
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      }
+    }
+  }
+}

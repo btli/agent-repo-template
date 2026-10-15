@@ -1,0 +1,42 @@
+{
+  "build.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      }
+    },
+    "name": "Build"
+  },
+  "down.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Build"
+        ],
+        "types": [
+          "completed"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      }
+    }
+  }
+}

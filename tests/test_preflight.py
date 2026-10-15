@@ -45,7 +45,7 @@ CASES = [
     ("secret_with", "secrets"),
     ("secret_run", "secrets"),
     ("github_token", None),
-    ("secret_inherit", "secrets"),
+    ("secret_inherit", "secrets,reusable_workflow"),
     ("safe_environment", None),
     ("safe_environment_object", None),
     ("safe_env_write", "permissions"),
@@ -223,3 +223,220 @@ def test_action_runs_command(tmp_path, monkeypatch):
     assert result.returncode == 1
     assert json.loads(artifact.read_text())["pass"] is False
     assert output.read_text() == "pass=false\n"
+
+
+REVIEW_CASES = [
+    ("custom_runner", [("ci.yml", "check", "runner")]),
+    ("custom_list", [("ci.yml", "check", "runner")]),
+    ("mixed_runner", [("ci.yml", "check", "runner")]),
+    ("missing_runner", [("ci.yml", "check", "runner")]),
+    ("numeric_runner", [("ci.yml", "check", "runner")]),
+    ("empty_runner", [("ci.yml", "check", "runner")]),
+    ("hosted_windows", []),
+    ("hosted_macos", []),
+    ("hosted_list", []),
+    ("event_create", [("ci.yml", "check", "secrets")]),
+    ("event_merge_group", [("ci.yml", "check", "secrets")]),
+    ("event_future_event", [("ci.yml", "check", "secrets")]),
+    ("event_schedule", []),
+    ("event_workflow_dispatch", []),
+    ("event_issues", []),
+    ("event_release", []),
+    ("event_delete", []),
+    ("event_issue_comment", []),
+    ("unsafe_environment", [("ci.yml", "check", "secrets")]),
+    ("expression_environment", [("ci.yml", "check", "secrets")]),
+    *[
+        (f"target_{name}", [("ci.yml", "check", "pull_request_target")])
+        for name in (
+            "head_ref",
+            "head_label",
+            "merge_ref",
+            "merge_sha",
+            "gh_checkout",
+            "git_fetch",
+            "head_run",
+            "title_run",
+            "body_run",
+            "alias_ref",
+            "output_ref",
+            "unknown_repository",
+            "literal_head_ref",
+        )
+    ],
+    ("target_base_ref", []),
+    ("target_base_sha", []),
+    ("target_default_ref", []),
+    ("target_implicit_base", []),
+    ("reuse_local_runner", [("callee.yml", "check", "runner")]),
+    ("reuse_local_secret", [("callee.yml", "check", "secrets")]),
+    ("reuse_ceiling", []),
+    ("reuse_downgrade", [("caller.yml", "call", "permissions")]),
+    ("reuse_remote", [("caller.yml", "call", "reusable_workflow")]),
+    ("reuse_missing", [("caller.yml", "call", "reusable_workflow")]),
+    ("reuse_nested", [("last.yml", "check", "runner")]),
+    ("reuse_cycle", [("callee.yml", "check", "runner")]),
+    (
+        "reuse_inherit",
+        [("callee.yml", "check", "permissions"), ("caller.yml", "call", "permissions")],
+    ),
+    ("reuse_scope_ceiling", [("caller.yml", "call", "permissions")]),
+    *[
+        (f"downstream_{name}", [("down.yml", "check", "workflow_run")])
+        for name in (
+            "head_sha",
+            "head_branch",
+            "gh_download",
+            "artifact_api",
+            "unknown_download",
+            "secret",
+            "write",
+        )
+    ],
+    ("chain", [("a-down.yml", "check", "workflow_run")]),
+    ("unreachable_apply", [("ci.yml", "check", "agent-apply")]),
+    (
+        "all_jobs",
+        [
+            ("ci.yml", "private", "runner"),
+            ("ci.yml", "secret", "secrets"),
+            ("ci.yml", "write", "permissions"),
+        ],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected"), REVIEW_CASES, ids=[case[0] for case in REVIEW_CASES]
+)
+def test_review_exposures(fixture, expected):
+    module = implementation()
+    workflows = load_yaml(FIXTURES / f"r1_{fixture}.yml")
+    result = module.analyze(
+        workflows, module.PreflightContext("main", safe_environments=frozenset({"release"}))
+    )
+    assert sorted((item.workflow, item.job, item.rule) for item in result) == sorted(expected)
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "bad_permission_case",
+        "bad_permission_type",
+        "bad_permission_list",
+        "empty_branches",
+        "empty_ignore",
+        "invalid_secondary_branches",
+        "bad_name",
+    ],
+)
+def test_review_invalid_workflows(fixture):
+    module = implementation()
+    with pytest.raises(ValueError):
+        module.analyze(load_yaml(FIXTURES / f"r1_{fixture}.yml"), module.PreflightContext("main"))
+
+
+@pytest.mark.parametrize(
+    "case", ["missing_local", "extra_local", "unexpected_error", "output_symlink", "output_rewrite"]
+)
+def test_review_command(case, tmp_path, monkeypatch, capsys):
+    command = importlib.import_module("agent_repo.commands.preflight")
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    shutil.copy(FIXTURES / f"r1_command_{case}.yml", workflows / "ci.yml")
+    transport = api_transport(workflows)
+    monkeypatch.setattr(GitHub, "_urlopen", staticmethod(transport))
+    if case == "missing_local":
+        (workflows / "ci.yml").unlink()
+    if case == "extra_local":
+        shutil.copy(FIXTURES / f"r1_command_{case}.yml", workflows / "extra.yml")
+    if case == "unexpected_error":
+
+        def fail_yaml(path):
+            raise RecursionError("credential-canary")
+
+        monkeypatch.setattr(command, "load_yaml", fail_yaml)
+    monkeypatch.setenv("GH_TOKEN", "credential-canary")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "your-org/project")
+    output = tmp_path / "preflight.json"
+    target = tmp_path / "target"
+    if case == "output_symlink":
+        target.write_text("preserve")
+        output.symlink_to(target)
+    if case == "output_rewrite":
+        output.write_text("old result")
+        original_read = Path.read_text
+
+        def refuse_output_read(path, *args, **kwargs):
+            if path == output:
+                raise PermissionError("credential-canary")
+            return original_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", refuse_output_read)
+    github_output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+    result = cli(
+        [
+            "preflight",
+            "--default-branch",
+            "main",
+            "--workflows-dir",
+            str(workflows),
+            "--output",
+            str(output),
+        ]
+    )
+    assert result == (0 if case == "output_rewrite" else 1)
+    captured = capsys.readouterr()
+    assert "credential-canary" not in captured.out + captured.err
+    if case == "output_symlink":
+        assert target.read_text() == "preserve"
+        assert github_output.read_text() == "pass=false\n"
+    else:
+        with output.open() as handle:
+            artifact = json.load(handle)
+        assert artifact["pass"] is (case == "output_rewrite")
+        assert github_output.read_text() == f"pass={str(case == 'output_rewrite').lower()}\n"
+        assert "credential-canary" not in json.dumps(artifact)
+
+
+def test_action_forwards_verified_settings(tmp_path, monkeypatch):
+    action_path = Path("actions/preflight/action.yml").resolve()
+    step = load_yaml(action_path)["runs"]["steps"][0]
+    binary = tmp_path / "python3"
+    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    settings = {
+        "ACTION_PATH": str(action_path.parent),
+        "DEFAULT_BRANCH": "main",
+        "WORKFLOWS_DIR": "consumer workflows",
+        "OUTPUT": "preflight.json",
+        "TOKEN_READONLY": "true",
+        "SAFE_ENVIRONMENTS": "release\nstaging",
+        "RUN_ID": "123",
+        "BASE_SHA": "c" * 40,
+    }
+    for key, value in settings.items():
+        monkeypatch.setenv(f"PREFLIGHT_{key}", value)
+    result = subprocess.run(["/bin/bash", "-e", "-c", step["run"]], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [
+        str(action_path.parent) + "/../../lib/agent_repo_cli.py",
+        "preflight",
+        "--default-branch",
+        "main",
+        "--workflows-dir",
+        "consumer workflows",
+        "--output",
+        "preflight.json",
+        "--run-id",
+        "123",
+        "--base-sha",
+        "c" * 40,
+        "--token-readonly",
+        "--safe-environment",
+        "release",
+        "--safe-environment",
+        "staging",
+    ]

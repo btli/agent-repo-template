@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": {
+      "push": null,
+      "pull_request": {
+        "branches": []
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest"
+      }
+    }
+  }
+}

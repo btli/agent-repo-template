@@ -1,0 +1,31 @@
+{
+  "ci.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      },
+      "write": {
+        "runs-on": "ubuntu-latest",
+        "permissions": {
+          "contents": "write"
+        }
+      },
+      "secret": {
+        "runs-on": "ubuntu-latest",
+        "env": {
+          "TOKEN": "${{ secrets.NPM_TOKEN }}"
+        }
+      },
+      "private": {
+        "runs-on": "internal"
+      }
+    }
+  }
+}

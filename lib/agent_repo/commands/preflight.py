@@ -8,9 +8,9 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import quote
 
-from agent_repo.github import GitHub, GitHubError
+from agent_repo.github import GitHub
 from agent_repo.preflight import PreflightContext, analyze
-from agent_repo.yamljson import YamlError, load_yaml
+from agent_repo.yamljson import load_yaml
 
 
 def _sha(value: object) -> str:
@@ -100,19 +100,29 @@ def main(argv: list[str]) -> int:
         artifact["workflow_tree_sha"] = tree_sha
         artifact["exposures"] = [asdict(item) for item in exposures]
         artifact["pass"] = not exposures
-    except (GitHubError, YamlError, ValueError, OSError, TypeError):
+    except Exception:
         print("Preflight could not verify consumer workflows.", file=sys.stderr)
         result = 1
     try:
         serialized = json.dumps(artifact, indent=2) + "\n"
-        if not args.output.exists() or args.output.read_text() != serialized:
-            args.output.write_text(serialized)
+        if args.output.is_symlink():
+            raise OSError("output must not be a symlink")
+        descriptor = os.open(
+            args.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+        )
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(serialized)
+    except Exception:
+        artifact["pass"] = False
+        print("Preflight could not write its result.", file=sys.stderr)
+        result = 1
+    try:
         output = f"pass={str(artifact['pass']).lower()}\n"
         if github_output := os.environ.get("GITHUB_OUTPUT"):
             with Path(github_output).open("a") as handle:
                 handle.write(output)
         print(output, end="")
-    except OSError:
+    except Exception:
         print("Preflight could not write its result.", file=sys.stderr)
         return 1
     return result

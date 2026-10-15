@@ -94,7 +94,9 @@ def _branches(config: object, target: str, *, glob: bool) -> bool:
         return not ("tags" in config or "tags-ignore" in config) if glob else True
     for values in (patterns, ignored):
         if values is not None and (
-            not isinstance(values, list) or not all(isinstance(item, str) for item in values)
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(item, str) for item in values)
         ):
             raise ValueError("invalid branch filters")
     covers = (
@@ -124,12 +126,27 @@ def _events(workflow: dict) -> dict:
 
 
 def _reachable(events: dict, ctx: PreflightContext) -> bool:
-    if "push" in events and _branches(events["push"], ctx.agent_ref_glob, glob=True):
-        return True
-    return any(
-        event in events and _branches(events[event], ctx.default_branch, glob=False)
-        for event in ("pull_request", "pull_request_review", "pull_request_review_comment")
-    )
+    independent = {
+        "schedule",
+        "workflow_dispatch",
+        "issues",
+        "issue_comment",
+        "release",
+        "delete",
+        "workflow_call",
+        "workflow_run",
+    }
+    reachable = False
+    for event, config in events.items():
+        if event == "push":
+            if _branches(config, ctx.agent_ref_glob, glob=True):
+                reachable = True
+        elif event in {"pull_request", "pull_request_review", "pull_request_review_comment"}:
+            if _branches(config, ctx.default_branch, glob=False):
+                reachable = True
+        elif event not in independent:
+            reachable = True
+    return reachable
 
 
 def _strings(value: object):
@@ -173,15 +190,133 @@ def _steps(job: dict) -> list:
     return steps
 
 
+def _writes(value: object, ctx: PreflightContext) -> frozenset[str]:
+    if value is None:
+        return frozenset() if ctx.token_readonly else frozenset({"*"})
+    if value == "write-all":
+        return frozenset({"*", "id-token"})
+    if value == "read-all":
+        return frozenset()
+    if not isinstance(value, dict) or any(
+        not isinstance(level, str) or level not in {"read", "write", "none"}
+        for level in value.values()
+    ):
+        raise ValueError("invalid workflow permissions")
+    return frozenset(key for key, level in value.items() if level == "write")
+
+
+def _effective(
+    job: dict, workflow: dict, ceiling: frozenset[str] | None, ctx: PreflightContext
+) -> frozenset[str]:
+    declaration = job.get("permissions", workflow.get("permissions"))
+    requested = (
+        ceiling if declaration is None and ceiling is not None else _writes(declaration, ctx)
+    )
+    if ceiling is None:
+        return requested
+    effective = (requested - {"*", "id-token"}) & (ceiling - {"*", "id-token"})
+    if "*" in requested:
+        effective |= ceiling - {"id-token"}
+    if "*" in ceiling:
+        effective |= requested - {"id-token"}
+    if "id-token" in requested and "id-token" in ceiling:
+        effective |= {"id-token"}
+    return frozenset(effective)
+
+
+def _hosted(runner: object) -> bool:
+    if isinstance(runner, list):
+        if len(runner) != 1:
+            return False
+        runner = runner[0]
+    return (
+        isinstance(runner, str)
+        and re.fullmatch(r"(?:ubuntu|windows|macos)-[A-Za-z0-9][A-Za-z0-9.-]*", runner) is not None
+    )
+
+
+def _context(value: str) -> str:
+    value = re.sub(r"\[\s*[\"']([A-Za-z_]+)[\"']\s*\]", r".\1", value)
+    return re.sub(r"\s*\.\s*", ".", value).lower()
+
+
+def _target_unsafe(steps: list, ctx: PreflightContext) -> bool:
+    for step in steps:
+        for value in _strings(step):
+            if re.search(
+                r"github\.head_ref\b|github\.event\.pull_request\.(?:head\w*|merge_commit_sha\b)"
+                r"|\b(?:refs/)?pull/|\bgh\s+pr\s+checkout\b",
+                _context(value),
+            ):
+                return True
+        if any(
+            re.search(r"github\.event\.pull_request\.(?:title|body)\b", _context(value))
+            for value in _strings(step.get("run"))
+        ):
+            return True
+        if str(step.get("uses", "")).lower().startswith("actions/checkout@"):
+            inputs = step.get("with", {})
+            if not isinstance(inputs, dict):
+                return True
+            safe_refs = {
+                ctx.default_branch,
+                f"refs/heads/{ctx.default_branch}",
+                "${{ github.sha }}",
+                "${{ github.ref }}",
+                "${{ github.ref_name }}",
+                "${{ github.base_ref }}",
+                "${{ github.event.pull_request.base.ref }}",
+                "${{ github.event.pull_request.base.sha }}",
+                "${{ github.event.repository.default_branch }}",
+            }
+            safe_repos = {
+                "${{ github.repository }}",
+                "${{ github.event.repository.full_name }}",
+                "${{ github.event.pull_request.base.repo.full_name }}",
+            }
+            for key, allowed in (("ref", safe_refs), ("repository", safe_repos)):
+                if key in inputs and (
+                    not isinstance(inputs[key], str) or inputs[key] not in allowed
+                ):
+                    return True
+    return False
+
+
+def _downstream_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
+    if writes or _secrets(job) or _secrets(workflow.get("env")):
+        return True
+    return any(
+        re.search(
+            r"github\.event\.workflow_run\.head_\w+|\bgh\s+run\s+download\b"
+            r"|/artifacts\b|actions/artifacts\b|download",
+            _context(value),
+        )
+        for value in _strings([job, workflow.get("env")])
+    )
+
+
 def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposure]:
     parsed, triggers, reachable = {}, {}, set()
+    findings = set()
     for path, workflow in sorted(workflows.items()):
         if not isinstance(workflow, dict) or not isinstance(workflow.get("jobs"), dict):
             raise ValueError("invalid workflow jobs")
+        if "name" in workflow and not isinstance(workflow["name"], str):
+            raise ValueError("invalid workflow name")
         if not all(isinstance(job, dict) for job in workflow["jobs"].values()):
             raise ValueError("invalid workflow job")
+        _writes(workflow.get("permissions"), ctx)
+        for job in workflow["jobs"].values():
+            _writes(job.get("permissions"), ctx)
         parsed[path] = workflow
         triggers[path] = _events(workflow)
+        if "push" in triggers[path] or "pull_request" in triggers[path]:
+            for name, job in workflow["jobs"].items():
+                environment = job.get("environment")
+                if isinstance(environment, dict):
+                    environment = environment.get("name")
+                if environment == "agent-apply" and _enabled(job):
+                    findings.add((path, name, "agent-apply"))
         if _reachable(triggers[path], ctx):
             reachable.add(path)
     downstream = set()
@@ -194,91 +329,84 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             for name in (parsed[path].get("name", path), f".github/workflows/{path}")
         }
         for path, events in triggers.items():
-            config = events.get("workflow_run")
-            if config is None:
+            if "workflow_run" not in events:
                 continue
+            config = events["workflow_run"]
             if not isinstance(config, dict):
                 raise ValueError("invalid workflow_run trigger")
             patterns = config.get("workflows", [])
-            if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+            if (
+                not isinstance(patterns, list)
+                or not patterns
+                or not all(isinstance(pattern, str) for pattern in patterns)
+            ):
                 raise ValueError("invalid workflow_run names")
             if path not in downstream and any(
                 fnmatch.fnmatchcase(name, pattern) for name in names for pattern in patterns
             ):
                 downstream.add(path)
                 changed = True
-    exposures = []
-    for path, workflow in parsed.items():
+    pending = [
+        (path, None, path in downstream, "pull_request_target" in triggers[path])
+        for path in sorted(reachable | downstream)
+    ]
+    seen = set()
+    while pending:
+        path, ceiling, is_downstream, is_target = pending.pop()
+        state = (path, ceiling, is_downstream, is_target)
+        if state in seen:
+            continue
+        seen.add(state)
+        workflow = parsed[path]
         for name, job in workflow["jobs"].items():
             if not _enabled(job):
                 continue
             rules = set()
             steps = _steps(job)
-            if path in downstream and any(
-                str(step.get("uses", "")).lower().startswith("actions/download-artifact@")
-                for step in steps
-            ):
-                rules.add("workflow_run")
-            if "pull_request_target" in triggers[path] and any(
-                str(step.get("uses", "")).lower().startswith("actions/checkout@")
-                and any(
-                    re.search(
-                        r"github\s*\.\s*event\s*\.\s*pull_request\s*\.\s*head\s*\.",
-                        re.sub(r"\[\s*[\"']([A-Za-z_]+)[\"']\s*\]", r".\1", value),
-                        re.IGNORECASE,
-                    )
-                    for value in _strings(step.get("with"))
-                )
-                for step in steps
-            ):
+            writes = _effective(job, workflow, ceiling, ctx)
+            if is_downstream:
+                if _downstream_unsafe(job, workflow, writes):
+                    rules.add("workflow_run")
+            else:
+                if writes - {"id-token"}:
+                    rules.add("permissions")
+                if "id-token" in writes:
+                    rules.add("id-token")
+            if is_target and _target_unsafe(steps, ctx):
                 rules.add("pull_request_target")
             environment = job.get("environment")
             if isinstance(environment, dict):
                 environment = environment.get("name")
-            if ("push" in triggers[path] or "pull_request" in triggers[path]) and (
-                environment == "agent-apply"
+            if (
+                not is_downstream
+                and environment not in ctx.safe_environments
+                and (_secrets(job) or _secrets(workflow.get("env")))
             ):
-                rules.add("agent-apply")
-            if path in reachable:
-                permissions = job.get("permissions", workflow.get("permissions"))
-                if permissions is None:
-                    if not ctx.token_readonly:
-                        rules.add("permissions")
-                elif permissions == "write-all":
-                    rules.update({"permissions", "id-token"})
-                elif isinstance(permissions, dict):
-                    if permissions.get("id-token") == "write":
-                        rules.add("id-token")
-                    if any(
-                        value == "write" for key, value in permissions.items() if key != "id-token"
-                    ):
-                        rules.add("permissions")
-                elif permissions != "read-all":
-                    raise ValueError("invalid workflow permissions")
-                if environment not in ctx.safe_environments and (
-                    _secrets(job) or _secrets(workflow.get("env"))
-                ):
-                    rules.add("secrets")
-                runner = job.get("runs-on")
-                if isinstance(runner, dict) or any(
-                    value.lower() == "self-hosted" or "${{" in value for value in _strings(runner)
-                ):
-                    rules.add("runner")
-            for rule in sorted(rules):
-                exposures.append(
-                    Exposure(
-                        path,
-                        name,
-                        rule,
-                        {
-                            "permissions": "Job may receive a writable token.",
-                            "id-token": "Job may mint an OIDC token.",
-                            "secrets": "Job may receive secrets outside a safe environment.",
-                            "runner": "Job may run on a private runner.",
-                            "workflow_run": "Job downloads artifacts from a reachable workflow.",
-                            "pull_request_target": "Job checks out pull request head code.",
-                            "agent-apply": "Push or pull request workflow declares agent-apply.",
-                        }[rule],
-                    )
+                rules.add("secrets")
+            if "uses" in job:
+                uses = job["uses"]
+                match = (
+                    re.fullmatch(r"\./\.github/workflows/([^/]+\.ya?ml)", uses)
+                    if (isinstance(uses, str))
+                    else None
                 )
-    return exposures
+                callee = match[1] if match else None
+                if callee not in parsed or "workflow_call" not in triggers[callee]:
+                    rules.add("reusable_workflow")
+                else:
+                    pending.append((callee, writes, is_downstream, is_target))
+            elif not _hosted(job.get("runs-on")):
+                rules.add("runner")
+            for rule in rules:
+                findings.add((path, name, rule))
+    details = {
+        "permissions": "Job may receive a writable token.",
+        "id-token": "Job may mint an OIDC token.",
+        "secrets": "Job may receive secrets outside a safe environment.",
+        "runner": "Job cannot be proven to run on a hosted runner.",
+        "workflow_run": "Downstream job may consume agent content or privileged credentials.",
+        "pull_request_target": "Job cannot be proven to use only trusted base code and inputs.",
+        "agent-apply": "Push or pull request workflow declares agent-apply.",
+        "reusable_workflow": "Reusable workflow cannot be verified locally.",
+    }
+    return [Exposure(path, name, rule, details[rule]) for path, name, rule in sorted(findings)]

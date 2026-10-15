@@ -1,0 +1,34 @@
+{
+  "caller.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/callee.yml"
+      }
+    }
+  },
+  "callee.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/last.yml"
+      }
+    }
+  },
+  "last.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "internal",
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      }
+    }
+  }
+}

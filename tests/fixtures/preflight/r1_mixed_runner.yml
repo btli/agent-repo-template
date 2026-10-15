@@ -1,0 +1,19 @@
+{
+  "ci.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": [
+          "ubuntu-latest",
+          "internal"
+        ],
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      }
+    }
+  }
+}
