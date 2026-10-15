@@ -86,6 +86,7 @@ def main() -> int:
             name in explicit
             or (
                 len(value) >= 4
+                and not re.fullmatch(r"true|false|null|none|yes|no|on|off|[0-9.]+", value, re.I)
                 and name.upper() != "SSH_AUTH_SOCK"
                 and re.search(
                     r"(?:^|_)(?:PAT|AUTH|KEY|TOKEN|SECRET|PASSWORD|PASS|PASSWD|CREDENTIALS?|PRIVATE|DSN)(?:_|$)",
@@ -104,15 +105,20 @@ def main() -> int:
             continue
         if url.username is not None:
             private.add(value)
-            if url.password is not None:
-                private.update(
-                    password
-                    for password in {url.password, unquote(url.password)}
-                    if len(password) >= 4
-                )
+            for part in [url.username, url.password]:
+                if part is not None:
+                    private.update(value for value in {part, unquote(part)} if len(value) >= 4)
     sensitive = set()
     for value in private | {canary, "LLM_API_KEY"}:
         raw = value.encode()
+        # Trim partial edge sextets so embedded base64 matches at each byte alignment.
+        for offset in (1, 2):
+            start = (offset * 8 + 5) // 6
+            stop = ((offset + len(raw)) * 8) // 6
+            sensitive.update(
+                encode(b"\0" * offset + raw).decode()[start:stop]
+                for encode in (base64.b64encode, base64.urlsafe_b64encode)
+            )
         sensitive.update(
             {
                 value,

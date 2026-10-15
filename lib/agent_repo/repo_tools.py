@@ -175,7 +175,11 @@ class RepoReader:
                 size > self.per_call_bytes or len(window) == self.per_call_bytes
             )
         text = window.decode("utf-8", errors="replace")
-        marker = "\n[truncated: request a later start_line or smaller window]"
+        marker = (
+            "\n[truncated: rest of this file is unreachable in this run; escalate if needed]"
+            if size > self.per_call_bytes
+            else "\n[truncated: request a later start_line or smaller window]"
+        )
         while response_bytes(text + (marker if truncated else "")) > 32768:
             truncated = True
             text = text[: len(text) // 2]
