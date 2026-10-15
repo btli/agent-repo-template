@@ -42,19 +42,24 @@ def main(argv: list[str]) -> int:
         return 2
     status = 0
     try:
-        checkout = Path(argv[1])
-        event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
-        ctx = GateContext(
-            workflow=argv[0],
-            enabled=os.environ.get("AGENTS_ENABLED") == "true",
-            bot_login=os.environ["AGENT_BOT_LOGIN"],
-            config=load_config(checkout / ".agents"),
-            gh=GitHub(os.environ["GITHUB_TOKEN"], event.repo),
-            now=datetime.now(UTC),
-            maintainers=_maintainers(checkout),
-            run_id=os.environ["GITHUB_RUN_ID"],
-        )
-        result = evaluate(event, ctx)
+        if os.environ.get("AGENTS_ENABLED") != "true":
+            result = GateResult(False, "disabled", False, False, None, secrets.token_hex(16))
+        else:
+            checkout = Path(argv[1])
+            event = load_event(
+                os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"])
+            )
+            ctx = GateContext(
+                workflow=argv[0],
+                enabled=True,
+                bot_login=os.environ["AGENT_BOT_LOGIN"],
+                config=load_config(checkout / ".agents"),
+                gh=GitHub(os.environ["GITHUB_TOKEN"], event.repo),
+                now=datetime.now(UTC),
+                maintainers=_maintainers(checkout),
+                run_id=os.environ["GITHUB_RUN_ID"],
+            )
+            result = evaluate(event, ctx)
     except (ConfigError, OSError, ValueError, KeyError, TypeError, AttributeError):
         print("Gate input could not be loaded.", file=sys.stderr)
         result = GateResult(False, "gate-error", False, False, None, secrets.token_hex(16))

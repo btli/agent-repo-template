@@ -227,9 +227,12 @@ def test_permission_outages_report_api_error(status, tmp_path):
 
 
 @pytest.mark.parametrize("action", ["opened", "reopened", "ready_for_review", "synchronize"])
-@pytest.mark.parametrize("untrusted", ["human-author", "other-bot-author", "branch", "fork"])
+@pytest.mark.parametrize(
+    "untrusted", ["human-author", "other-bot-author", "branch", "fork", "other-bot-sender"]
+)
 def test_bot_gets_agent_pr_reviews_only(action, untrusted, tmp_path):
-    case = copy.deepcopy(next(c for c in CASES if c["id"] == "agent-draft"))
+    case_id = "agent-synchronize-self" if untrusted == "other-bot-sender" else "agent-draft"
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == case_id))
     case["payload"]["action"] = action
     result, _, _, _ = evaluate_case(case, tmp_path)
     assert result.run
@@ -240,10 +243,14 @@ def test_bot_gets_agent_pr_reviews_only(action, untrusted, tmp_path):
         pull["user"] = {"login": "other[bot]", "type": "Bot"}
     elif untrusted == "branch":
         pull["head"]["ref"] = "feature/fix"
+    elif untrusted == "other-bot-sender":
+        case["payload"]["sender"] = {"login": "other[bot]", "type": "Bot"}
     else:
         pull["head"]["repo"]["full_name"] = "your-org/fork"
     result, _, _, _ = evaluate_case(case, tmp_path)
-    assert not result.run and result.reason == "self"
+    assert not result.run and result.reason == (
+        "bot" if untrusted == "other-bot-sender" else "self"
+    )
 
 
 @pytest.mark.parametrize("action", ["edited", "deleted"])
@@ -664,6 +671,19 @@ def test_cli_requires_literal_true_and_emits_all_outputs(enabled, tmp_path, monk
     }
     assert re.fullmatch(r"[0-9a-f]{32}", values["canary"])
     assert TOKEN not in output.read_text()
+
+
+def test_cli_disabled_ignores_malformed_config(tmp_path, monkeypatch, capsys):
+    from agent_repo.commands.gate import main
+
+    checkout, _, output = prepare_cli(tmp_path, monkeypatch, "false")
+    (checkout / ".agents/config.yml").write_text("invalid: [")
+    assert main(["triage", str(checkout)]) == 0
+    values = read_outputs(output)
+    assert values["reason"] == "disabled"
+    assert values["run"] == values["tier2_allowed"] == values["capped"] == "false"
+    assert re.fullmatch(r"[0-9a-f]{32}", values["canary"])
+    assert capsys.readouterr().err == ""
 
 
 def test_cli_reads_maintainers_from_default_checkout_and_preserves_args(tmp_path, monkeypatch):
