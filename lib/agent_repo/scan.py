@@ -1,5 +1,6 @@
 import base64
 import html
+import re
 import unicodedata
 from urllib.parse import unquote
 
@@ -39,37 +40,91 @@ def encodings(secret: str) -> list[str]:
     return list(dict.fromkeys(_variants(secret).values()))
 
 
-def _normalize(text: str) -> str:
-    while True:
+class _ScanLimit(ValueError):
+    pass
+
+
+def _spend(budget: list[int], amount: int) -> None:
+    budget[0] -= amount
+    if budget[0] < 0:
+        raise _ScanLimit
+
+
+def _normalize(text: str, budget: list[int]) -> str:
+    for _ in range(3):
+        if len(text) > 65536:
+            raise _ScanLimit
+        _spend(budget, len(text))
         decoded = unicodedata.normalize("NFKC", html.unescape(unquote(text)))
-        normalized = "".join(
-            char
-            for char in decoded
-            if not char.isspace()
-            and unicodedata.category(char) not in {"Cf", "Cc", "Cs", "Mn", "Me"}
-            and char not in "\u115f\u1160\u2800"
-        ).casefold()
-        if normalized == text:
-            return normalized
-        text = normalized
-
-
-def _matches(text: str, variant: str) -> bool:
-    variant = _normalize(variant)
-    width = min(16, len(variant))
-    return bool(width) and any(
-        variant[start : start + width] in text for start in range(len(variant) - width + 1)
+        if decoded == text:
+            break
+        text = decoded
+    else:
+        raise _ScanLimit
+    text = re.sub(
+        r"\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4}))",
+        lambda match: chr(int(match[1] or match[2], 16)),
+        text,
     )
+    text = unicodedata.normalize("NFKC", text)
+    if len(text) > 65536:
+        raise _ScanLimit
+    _spend(budget, len(text))
+    normalized = "".join(
+        char
+        for char in text
+        if not char.isspace()
+        and unicodedata.category(char) not in {"Cf", "Cc", "Cs", "Mn", "Me"}
+        and char not in "\u115f\u1160\u2800"
+    ).casefold()
+    if len(normalized) > 65536:
+        raise _ScanLimit
+    _spend(budget, len(normalized))
+    return normalized
+
+
+def _patterns(secret: str):
+    prefix = max(secret[:16].rfind("-"), secret[:16].rfind("_")) + 1
+    private = secret[prefix:]
+    if len(private.encode("utf-8")) < 12:
+        for kind, value in _variants(secret).items():
+            if "offset" not in kind:
+                yield kind, value
+        return
+    for kind, value in _variants(private).items():
+        if kind in {"literal", "reversed"}:
+            for start in range(len(value)):
+                end = start
+                size = 0
+                while end < len(value) and size < 12:
+                    size += len(value[end].encode("utf-8"))
+                    end += 1
+                if size >= 12:
+                    yield kind, value[start:end]
+        else:
+            width = 24 if kind.startswith("hex") else 16
+            value = value.rstrip("=")
+            for start in range(len(value) - width + 1):
+                yield kind, value[start : start + width]
 
 
 def find_leaks(text: str, secrets: list[str], canary: str) -> list[str]:
-    text = _normalize(text)
-    hits = {
-        kind
-        for secret in secrets
-        for kind, value in _variants(secret).items()
-        if _matches(text, value)
-    }
-    if any(_matches(text, value) for value in _variants(canary).values()):
-        hits.add("canary")
-    return sorted(hits)
+    # Defense in depth: bounded decoding and one separator comparison cover only known forms.
+    budget = [8_000_000]
+    try:
+        text = _normalize(text, budget)
+        compact = re.sub("[^a-z0-9]", "", text)
+        hits = set()
+        for secret, is_canary in [(secret, False) for secret in secrets] + [(canary, True)]:
+            for kind, value in _patterns(secret):
+                kind = "canary" if is_canary else kind
+                if kind in hits:
+                    continue
+                value = _normalize(value, budget)
+                alphanumeric = re.sub("[^a-z0-9]", "", value)
+                _spend(budget, len(text) + len(compact))
+                if (value and value in text) or (alphanumeric and alphanumeric in compact):
+                    hits.add(kind)
+        return sorted(hits)
+    except _ScanLimit:
+        return ["scan_budget"]

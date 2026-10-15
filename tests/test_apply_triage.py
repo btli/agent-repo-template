@@ -664,3 +664,75 @@ def test_rendered_only_leak_is_rejected(source, tmp_path):
     assert alerts and "alert" in summary.lower()
     assert not any(path.endswith("/comments") for _, path, _ in api.writes)
     assert ctx.canary not in summary, "canary echoed"
+
+
+@pytest.mark.parametrize("login", ["AGENT-APPLY[bot]", "agent-apply", "Agent-Apply"])
+@pytest.mark.parametrize("close_only", [False, True])
+def test_bot_identity_is_canonical_for_retry_and_close(login, close_only, tmp_path):
+    from agent_repo.apply.actions import execute
+
+    api = API()
+    ctx = replace(context(api, enabled=True), bot_login=login)
+    data = decision()
+    data["close"] = closing()
+    actions = plan(data, ctx)
+    body = next(action.payload["body"] for action in actions if action.kind == "comment")
+    api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
+    api.labels = list(labels(actions))
+    if close_only:
+        actions = [action for action in actions if action.kind != "comment"]
+    assert not execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert api.issue_state == "closed"
+    assert not any(path.endswith("/comments") for _, path, _ in api.writes)
+    boundary = len(api.calls)
+    assert not execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert not [call for call in api.calls[boundary:] if call[0] != "GET"]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_empty_bot_identity_cannot_explain_close(existing, tmp_path):
+    from agent_repo.apply.actions import execute
+
+    api = API()
+    ctx = replace(context(api, enabled=True), bot_login="")
+    data = decision()
+    data["close"] = closing()
+    actions = plan(data, ctx)
+    if existing:
+        body = next(action.payload["body"] for action in actions if action.kind == "comment")
+        api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
+    assert execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert not any(
+        path.endswith("/comments") or method == "PATCH" for method, path, _ in api.writes
+    )
+
+
+@pytest.mark.parametrize("login", ["", "   ", "wrong/login"])
+def test_cli_rejects_missing_or_invalid_bot_identity(login, monkeypatch, tmp_path, capsys):
+    from agent_repo.commands.apply import main
+
+    api = API()
+    ctx = context(api, enabled=True)
+    monkeypatch.setattr("agent_repo.commands.apply.GitHub", lambda token, repo: api.gh)
+    monkeypatch.setattr(
+        "agent_repo.commands.apply._policy", lambda *args: (ctx.base_sha, ctx.config, ctx.charter)
+    )
+    data = decision()
+    data["answers"]["needs_info"] = {"value": True, "p": 0.9}
+    data["needs_info"] = {"text": "Please supply versions."}
+    artifact = tmp_path / "decision.json"
+    artifact.write_text(json.dumps(data))
+    for name, value in {
+        "GITHUB_EVENT_NAME": "issues",
+        "GITHUB_EVENT_PATH": str(Path("tests/fixtures/events/issues.opened.json").resolve()),
+        "GITHUB_RUN_ID": "run-1",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "GH_TOKEN": "test-token",
+        "AGENT_CANARY": ctx.canary,
+        "AGENT_SCAN_KEYS": "\n".join(ctx.secrets),
+        "AGENT_BOT_LOGIN": login,
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert main([str(artifact)]) == 1
+    assert not api.writes
+    assert "Traceback" not in capsys.readouterr().err

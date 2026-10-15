@@ -275,3 +275,83 @@ def test_answer_selected_unlisted_type_is_dropped():
     data["answers"]["type"]["value"] = "type:x"
     data["labels"].append("type:x")
     assert "type:x" not in labels(plan(data, context()))
+
+
+@pytest.mark.parametrize("encoding", ["percent", "html", "length", "casefold"])
+def test_normalization_is_bounded_and_fails_closed(encoding, monkeypatch, tmp_path):
+    from time import perf_counter
+
+    import agent_repo.scan as scan
+
+    payload = {
+        "percent": "%" + "25" * 8000 + "41",
+        "html": "&" + "amp;" * 8000 + "#65;",
+        "length": "x" * 65537,
+        "casefold": "\u0130" * 40000,
+    }[encoding]
+    calls = 0
+    original = scan.unquote
+
+    def bounded_unquote(value):
+        nonlocal calls
+        if len(value) > 10000:
+            calls += 1
+        assert calls <= 3, "decode pass budget exceeded"
+        return original(value)
+
+    monkeypatch.setattr(scan, "unquote", bounded_unquote)
+    api = API()
+    ctx = context(api)
+    data = decision()
+    data["answers"]["extra"] = {"value": payload, "p": 0.9}
+    started = perf_counter()
+    alerts, _ = run(data, ctx, api, tmp_path)
+    assert perf_counter() - started < 1, "scan exceeded bounded runtime"
+    assert alerts, "normalization budget did not fail closed"
+    assert any(body == {"labels": ["needs-maintainer"]} for _, _, body in api.writes)
+    assert not any(
+        path.endswith("/comments") or method == "PATCH" for method, path, _ in api.writes
+    )
+
+
+@pytest.mark.parametrize(
+    "evasion", ["dash", "dot", "colon", "colon_hex", "hex_escape", "unicode_escape", "chunks"]
+)
+def test_visible_separators_and_escapes_drop_decision(evasion, tmp_path):
+    api = API()
+    key = "AbCdEf01GhIj23KlMn45OpQrStUv"
+    ctx = replace(context(api), secrets=[key])
+    values = {
+        "dash": "-".join(key),
+        "dot": ".".join(key),
+        "colon": ":".join(key),
+        "colon_hex": ":".join(f"{ord(char):02x}" for char in key),
+        "hex_escape": "".join(f"\\x{ord(char):02x}" for char in key),
+        "unicode_escape": "".join(f"\\u{ord(char):04x}" for char in key),
+        "chunks": " / ".join(key[start : start + 15] for start in range(0, len(key), 15)),
+    }
+    data = decision()
+    data["answers"]["needs_info"] = {"value": True, "p": 0.9}
+    data["needs_info"] = {"text": values[evasion]}
+    alerts, summary = run(data, ctx, api, tmp_path)
+    assert alerts, "separator or escape missed"
+    assert labels(plan(data, ctx)) == {"needs-maintainer"}
+    assert not any(path.endswith("/comments") for _, path, _ in api.writes)
+    assert key not in summary, "credential echoed"
+
+
+@pytest.mark.parametrize("source", ["key", "canary"])
+def test_accepted_answer_map_keys_are_scanned(source, tmp_path):
+    from agent_repo.apply.actions import check_identity
+
+    api = API()
+    ctx = context(api)
+    value = ctx.secrets[0] if source == "key" else ctx.canary
+    data = decision()
+    data["answers"][value] = {"value": False, "p": 0.9}
+    assert not check_identity(data, ctx, "decision"), "test artifact must be valid"
+    alerts, summary = run(data, ctx, api, tmp_path)
+    assert alerts, "accepted map key omitted from scan"
+    assert labels(plan(data, ctx)) == {"needs-maintainer"}
+    assert not any(path.endswith("/comments") for _, path, _ in api.writes)
+    assert value not in summary, "credential echoed"

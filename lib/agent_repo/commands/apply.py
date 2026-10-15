@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-from agent_repo.apply.actions import Action, ApplyContext, execute
+from agent_repo.apply.actions import Action, ApplyContext, canonical_bot_login, execute
 from agent_repo.apply.triage import plan_triage
 from agent_repo.charter import parse_charter
 from agent_repo.config import load_config
@@ -40,6 +40,9 @@ def main(argv: list[str]) -> int:
     event = None
     mode = "dry-run"
     try:
+        bot_login = canonical_bot_login(os.environ["AGENT_BOT_LOGIN"])
+        if not bot_login:
+            raise ValueError("trusted bot identity required")
         canary = os.environ["AGENT_CANARY"]
         scan_keys = [
             key.strip() for key in os.environ["AGENT_SCAN_KEYS"].splitlines() if key.strip()
@@ -69,7 +72,7 @@ def main(argv: list[str]) -> int:
             os.environ.get("AGENT_CAPPED") == "true",
             github=gh,
             off_authorized=os.environ.get("AGENT_OFF_AUTHORIZED") == "true",
-            bot_login=os.environ["AGENT_BOT_LOGIN"],
+            bot_login=bot_login,
         )
         try:
             artifact = Path(argv[0])
