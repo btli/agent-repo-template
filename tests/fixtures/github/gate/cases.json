@@ -556,7 +556,8 @@
         "created_at": "2026-10-14T11:55:00Z",
         "workflow_run": {
           "repository_id": 7,
-          "head_repository_id": 7
+          "head_repository_id": 7,
+          "id": 101
         }
       }
     ]
@@ -609,7 +610,8 @@
         "created_at": "2026-10-14T11:50:00Z",
         "workflow_run": {
           "repository_id": 7,
-          "head_repository_id": 7
+          "head_repository_id": 7,
+          "id": 101
         }
       }
     ]
@@ -657,7 +659,8 @@
         "created_at": "2026-10-14T10:00:00Z",
         "workflow_run": {
           "repository_id": 7,
-          "head_repository_id": 7
+          "head_repository_id": 7,
+          "id": 101
         }
       },
       {
@@ -667,7 +670,8 @@
         "created_at": "2026-10-14T10:00:00Z",
         "workflow_run": {
           "repository_id": 7,
-          "head_repository_id": 7
+          "head_repository_id": 7,
+          "id": 102
         }
       },
       {
@@ -677,7 +681,8 @@
         "created_at": "2026-10-14T10:00:00Z",
         "workflow_run": {
           "repository_id": 7,
-          "head_repository_id": 7
+          "head_repository_id": 7,
+          "id": 103
         }
       }
     ]
@@ -725,7 +730,8 @@
         "created_at": "2026-10-14T10:00:00Z",
         "workflow_run": {
           "repository_id": 7,
-          "head_repository_id": 7
+          "head_repository_id": 7,
+          "id": 101
         }
       },
       {
@@ -735,7 +741,8 @@
         "created_at": "2026-10-14T10:00:00Z",
         "workflow_run": {
           "repository_id": 7,
-          "head_repository_id": 7
+          "head_repository_id": 7,
+          "id": 102
         }
       }
     ]
@@ -2625,6 +2632,413 @@
       "base": {
         "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       }
+    }
+  },
+  {
+    "id": "marker-other-workflow",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "capped": false,
+      "reason": "ready"
+    },
+    "artifacts": [
+      {
+        "id": 1,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 101
+        }
+      },
+      {
+        "id": 2,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 102
+        }
+      },
+      {
+        "id": 3,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 103
+        }
+      }
+    ],
+    "run_paths": {
+      "101": ".github/workflows/unrelated.yml",
+      "102": ".github/workflows/unrelated.yml",
+      "103": ".github/workflows/unrelated.yml"
+    }
+  },
+  {
+    "id": "marker-triage-workflow",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "capped": true,
+      "reason": "cycle-cap"
+    },
+    "artifacts": [
+      {
+        "id": 1,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 101
+        }
+      },
+      {
+        "id": 2,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 102
+        }
+      },
+      {
+        "id": 3,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 103
+        }
+      }
+    ],
+    "run_paths": {
+      "101": ".github/workflows/agent-triage.yml",
+      "102": ".github/workflows/agent-triage.yml",
+      "103": ".github/workflows/agent-triage.yml"
+    }
+  },
+  {
+    "id": "expired-triage-markers",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "opened",
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "cycle-cap",
+      "tier2_allowed": false,
+      "capped": true
+    },
+    "artifacts": [
+      {
+        "id": 1,
+        "name": "agent-triage-12",
+        "expired": true,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 101
+        }
+      },
+      {
+        "id": 2,
+        "name": "agent-triage-12",
+        "expired": true,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 102
+        }
+      },
+      {
+        "id": 3,
+        "name": "agent-triage-12",
+        "expired": true,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 103
+        }
+      }
+    ]
+  },
+  {
+    "id": "debounce-old-first",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {
+        "body": {
+          "from": "Steps to reproduce"
+        }
+      },
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "debounce",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "id": 2,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 102
+        }
+      },
+      {
+        "id": 1,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 101
+        }
+      }
+    ]
+  },
+  {
+    "id": "debounce-recent-first",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {
+        "body": {
+          "from": "Steps to reproduce"
+        }
+      },
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": false,
+      "reason": "debounce",
+      "tier2_allowed": false,
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "id": 1,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 101
+        }
+      },
+      {
+        "id": 2,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T10:00:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 102
+        }
+      }
+    ]
+  },
+  {
+    "id": "other-workflow-cannot-debounce",
+    "event_name": "issues",
+    "workflow": "triage",
+    "payload": {
+      "action": "edited",
+      "changes": {
+        "body": {
+          "from": "Steps to reproduce"
+        }
+      },
+      "repository": {
+        "full_name": "your-org/project",
+        "default_branch": "main"
+      },
+      "sender": {
+        "login": "contributor",
+        "type": "User"
+      },
+      "issue": {
+        "number": 12,
+        "title": "Validation fails for empty input",
+        "body": "Steps to reproduce with another case",
+        "user": {
+          "login": "contributor"
+        },
+        "author_association": "CONTRIBUTOR",
+        "labels": [
+          {
+            "name": "type:bug"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "run": true,
+      "reason": "ready",
+      "capped": false
+    },
+    "artifacts": [
+      {
+        "id": 1,
+        "name": "agent-triage-12",
+        "expired": false,
+        "created_at": "2026-10-14T11:55:00Z",
+        "workflow_run": {
+          "repository_id": 7,
+          "head_repository_id": 7,
+          "id": 101
+        }
+      }
+    ],
+    "run_paths": {
+      "101": ".github/workflows/other.yml"
     }
   }
 ]

@@ -27,6 +27,14 @@ LIMITS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def triage_workflow_ref(monkeypatch):
+    monkeypatch.setenv(
+        "GITHUB_WORKFLOW_REF",
+        "your-org/project/.github/workflows/agent-triage.yml@refs/heads/main",
+    )
+
+
 class FakeTransport:
     def __init__(self, case):
         self.case = case
@@ -49,6 +57,8 @@ class FakeTransport:
             data = self.case.get("permission", {"role_name": "read", "permission": "read"})
         elif path.endswith("/comments"):
             status, data = 200, self.case.get("comments", [])
+            start = (int(query.get("page", ["1"])[0]) - 1) * 100
+            data = data[start : start + 100]
         elif path == "/repos/your-org/project":
             status, data = 200, {"id": 7, "full_name": "your-org/project"}
         elif path == "actions/artifacts":
@@ -64,6 +74,16 @@ class FakeTransport:
                 ]
             }
             status = 200
+        elif path.startswith("actions/runs/"):
+            run_id = path.rsplit("/", 1)[1]
+            status, data = (
+                200,
+                {
+                    "path": self.case.get("run_paths", {}).get(
+                        run_id, ".github/workflows/agent-triage.yml"
+                    )
+                },
+            )
         elif path.startswith("pulls/"):
             default = json.loads(
                 Path("tests/fixtures/events/pull_request_target.opened.json").read_text()
@@ -264,14 +284,14 @@ def test_triage_marker_cap_and_common_request_count(count, capped, tmp_path):
         if p == "actions/artifacts" and q.get("name") == ["agent-triage-12"]
     ]
     assert queries == [{"name": ["agent-triage-12"], "per_page": ["100"], "page": ["1"]}]
-    assert len(transport.requests) == (3 if capped else 5)
+    assert len(transport.requests) == (3 if capped else 5) + min(count, 3)
+    assert sum(p.startswith("actions/runs/") for p, _ in transport.requests) == min(count, 3)
 
 
 @pytest.mark.parametrize("edited", [False, True])
 @pytest.mark.parametrize(
     "changed",
     [
-        {"expired": True},
         {"workflow_run": {"repository_id": 7, "head_repository_id": 8}},
         {"workflow_run": {"repository_id": 8, "head_repository_id": 7}},
         {"name": "agent-triage-120"},
@@ -289,32 +309,99 @@ def test_invalid_triage_markers_cannot_cap_or_debounce(edited, changed, tmp_path
     assert result.run and not result.capped and result.reason == "ready"
 
 
-@pytest.mark.parametrize("count,capped", [(299, False), (300, False), (301, True), (1000, True)])
-def test_triage_marker_paging_is_bounded(count, capped, tmp_path):
+@pytest.mark.parametrize(
+    "count,overflow", [(301, False), (999, False), (1000, False), (1001, True), (2000, True)]
+)
+def test_triage_marker_paging_is_bounded(count, overflow, tmp_path):
     case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
     foreign = dict(case["artifacts"][0], workflow_run={"repository_id": 7, "head_repository_id": 8})
     case["artifacts"] = [dict(foreign, id=i) for i in range(count)]
     result, _, _, transport = evaluate_case(case, tmp_path)
-    assert result.run is not capped and result.capped is capped
-    assert result.reason == ("cycle-cap" if capped else "ready")
+    assert result.run is not overflow and not result.capped
+    assert result.reason == ("counter-overflow" if overflow else "ready")
     queries = [
         q
         for p, q in transport.requests
         if p == "actions/artifacts" and q.get("name") == ["agent-triage-12"]
     ]
-    assert [q["page"] for q in queries] == [["1"], ["2"], ["3"]]
-    assert len(transport.requests) <= 7
+    assert len(queries) == min((count + 99) // 100, 10)
+    assert [q["page"] for q in queries] == [[str(i + 1)] for i in range(len(queries))]
+    assert len(transport.requests) <= 14
+    assert not any(p.startswith("actions/runs/") for p, _ in transport.requests)
 
 
 @pytest.mark.parametrize("page", [1, 2, 3])
 def test_triage_marker_page_errors_fail_closed(page, tmp_path):
     case = copy.deepcopy(next(c for c in CASES if c["id"] == "cycle-cap"))
-    case["artifacts"] = [dict(case["artifacts"][0], expired=True)] * 300
+    case["artifacts"] = [
+        dict(case["artifacts"][0], workflow_run={"repository_id": 7, "head_repository_id": 8})
+    ] * 300
     case["fail_artifact_page"] = page
     result, _, _, transport = evaluate_case(case, tmp_path)
     assert not result.run and not result.tier2_allowed and not result.capped
     assert result.reason == "api-error"
     assert sum(p == "actions/artifacts" for p, _ in transport.requests) == page
+
+
+@pytest.mark.parametrize("stage", ["comments", "marker", "global", "author", "permission", "pull"])
+def test_shared_request_budget_fails_closed(stage, tmp_path):
+    case_id = {
+        "marker": "cycle-cap",
+        "permission": "authorized-triage",
+        "pull": "authorized-review",
+    }
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == case_id.get(stage, "content-edit")))
+    comment = {"user": {"login": "contributor"}, "body": "context"}
+    case["comments"] = [comment] * {
+        "comments": 3000,
+        "marker": 2599,
+        "permission": 2799,
+        "pull": 2799,
+    }.get(stage, 0)
+    if stage in {"global", "author"}:
+        name = "tier2-20261014" + ("-contributor" if stage == "author" else "")
+        case["artifacts"] = [
+            {"name": name, "workflow_run": {"repository_id": 7, "head_repository_id": 8}}
+        ] * 3100
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert not result.run and not result.tier2_allowed and not result.capped
+    assert result.reason == "request-budget"
+    assert len(transport.requests) == 30
+    if stage == "marker":
+        assert sum(p.startswith("actions/runs/") for p, _ in transport.requests) == 2
+    if stage == "permission":
+        assert transport.requests[-1][0] == "/repos/your-org/project"
+    if stage == "pull":
+        assert transport.requests[0][0] == "collaborators/maintainer/permission"
+        assert transport.requests[1][0] == "pulls/24"
+        assert transport.requests[-1][0] == "issues/24/comments"
+
+
+def test_marker_provenance_lookups_are_bounded(tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "marker-other-workflow"))
+    case["artifacts"] = [case["artifacts"][0]] * 100
+    result, _, _, transport = evaluate_case(case, tmp_path)
+    assert not result.run and not result.capped and not result.tier2_allowed
+    assert result.reason == "counter-overflow"
+    assert sum(p.startswith("actions/runs/") for p, _ in transport.requests) == 4
+
+
+@pytest.mark.parametrize(
+    "workflow_ref,reason",
+    [
+        ("your-org/project/.github/workflows/other.yml@refs/heads/main", "ready"),
+        ("your-org/project/.github/workflows/agent-triage.yml@refs/heads/topic@v2", "cycle-cap"),
+        ("", "invalid-metadata"),
+        ("your-org/foreign/.github/workflows/agent-triage.yml@refs/heads/main", "invalid-metadata"),
+    ],
+)
+def test_marker_provenance_uses_invoking_workflow(workflow_ref, reason, tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKFLOW_REF", workflow_ref)
+    case = next(c for c in CASES if c["id"] == "cycle-cap")
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert result.reason == reason
+    assert result.run is (reason == "ready")
+    assert result.capped is (reason == "cycle-cap")
 
 
 @pytest.mark.parametrize("case_id", ["content-edit", "reporter-needs-info", "authorized-triage"])
@@ -427,6 +514,7 @@ def test_counter_stops_paging_at_cap(counter, tmp_path):
     [
         "/repos/your-org/project",
         "actions/artifacts",
+        "actions/runs/101",
     ],
 )
 def test_counter_api_errors_fail_closed(path, tmp_path):
