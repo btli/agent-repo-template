@@ -46,3 +46,7 @@ def test_priorities_parse_p0_through_p3_and_require_each():
     assert lint_charter(text) == ["missing priority: P2"]
     with pytest.raises(ValueError, match="P2"):
         parse_charter(text)
+    empty_p2 = EXAMPLE.read_text().replace(
+        "- P2: A limited defect has a practical workaround.", "- P2:"
+    )
+    assert lint_charter(empty_p2) == ["missing priority: P2"]

@@ -104,23 +104,26 @@ def _action_owner(reference: object) -> tuple[str, str] | None:
 
 
 def _has_version_comment(text: str, reference: str) -> bool:
+    found = False
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
             continue
-        match = re.search(
+        matches = re.finditer(
             r"""(?:^|[\s,{-])["']?uses["']?\s*:\s*["']?([^,'"}\s]+)""",
             line,
         )
-        if match is None or match.group(1) != reference:
-            continue
-        suffix = line[match.end() :].lstrip()
-        if suffix[:1] in {"'", '"'}:
-            suffix = suffix[1:].lstrip()
-        if suffix.startswith("}"):
-            suffix = suffix[1:].lstrip()
-        if re.match(r"#\s+v\d+\.\d+\.\d+\b", suffix):
-            return True
-    return False
+        for match in matches:
+            if match.group(1) != reference:
+                continue
+            found = True
+            suffix = line[match.end() :].lstrip()
+            if suffix[:1] in {"'", '"'}:
+                suffix = suffix[1:].lstrip()
+            if suffix.startswith("}"):
+                suffix = suffix[1:].lstrip()
+            if re.match(r"#\s+v\d+\.\d+\.\d+\b", suffix) is None:
+                return False
+    return found
 
 
 def _valid_action_reference(reference: object, text: str) -> bool:
@@ -314,6 +317,7 @@ def test_action_sha_gate_does_not_use_a_separate_comment_for_pin(tmp_path: Path,
     pin = "0123456789abcdef0123456789abcdef01234567"
     (workflow_dir / "ci.yml").write_text(
         "jobs:\n  checks:\n    steps:\n"
+        f"      - uses: actions/checkout@{pin} # v4.2.2\n"
         f"      - uses: actions/checkout@{pin}\n"
         f"        # uses: actions/checkout@{pin} # v1.0.0\n"
     )

@@ -209,6 +209,39 @@ def test_http_error_preserves_safe_diagnostics():
     assert caught.value.ratelimit_remaining == "0"
 
 
+@pytest.mark.parametrize(
+    ("status", "expected_message"),
+    [(200, "invalid JSON response"), (500, "GitHub API request failed with status 500")],
+)
+def test_deeply_nested_response_body_raises_github_error(status: int, expected_message: str):
+    def transport(request: Request, timeout: float):
+        return status, {}, b"[" * 200000
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError) as caught:
+        api.request("GET", "/deep")
+    assert caught.value.status == status
+    assert caught.value.message == expected_message
+
+
+def test_paginate_caps_fresh_next_links():
+    requested: list[str] = []
+
+    def transport(request: Request, timeout: float):
+        requested.append(request.full_url)
+        if len(requested) > 1001:
+            raise AssertionError("pagination should stop at the page limit")
+        next_page = len(requested) + 1
+        headers = {"Link": f'<https://api.github.com/page/{next_page}>; rel="next"'}
+        return 200, headers, b"[1]"
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError, match="pagination limit") as caught:
+        api.paginate("/start")
+    assert caught.value.status == 0
+    assert len(requested) == 1000
+
+
 def test_github_error_message_is_capped_and_token_free():
     def transport(request: Request, timeout: float):
         return 403, {}, json.dumps({"message": TOKEN + " invalid " + "x" * 250}).encode()

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 Transport = Callable[[urllib.request.Request, float], tuple[int, dict[str, str], bytes]]
+MAX_PAGINATION_PAGES = 1000
 
 
 class GitHubError(Exception):
@@ -153,7 +154,7 @@ class GitHub:
         else:
             try:
                 value = json.loads(decoded)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 raise GitHubError(status, "invalid JSON response", token=self._token) from None
         return value, response_headers
 
@@ -183,7 +184,7 @@ class GitHub:
     def _http_error(self, status: int, headers: dict[str, str], body: bytes) -> GitHubError:
         try:
             payload = json.loads(body.decode("utf-8", errors="replace"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             payload = {}
         message = payload.get("message") if isinstance(payload, dict) else None
         normalized_headers = {key.lower(): value for key, value in headers.items()}
@@ -262,7 +263,11 @@ class GitHub:
         next_path = path
         next_params = params
         visited_urls: set[str] = set()
+        page_count = 0
         while next_path is not None:
+            if page_count >= MAX_PAGINATION_PAGES:
+                raise GitHubError(0, "pagination limit", token=self._token) from None
+            page_count += 1
             request_url = self._request_url(next_path, next_params)
             if request_url in visited_urls:
                 raise GitHubError(0, "pagination loop", token=self._token) from None

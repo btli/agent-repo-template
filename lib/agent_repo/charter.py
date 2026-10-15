@@ -51,7 +51,9 @@ def _items(text: str) -> tuple[str, ...]:
 
 
 def _priorities(text: str) -> dict[str, str]:
-    return dict(re.findall(r"^\s*[-*]?\s*(P[0-3])\s*:\s*(.+?)\s*$", text, re.MULTILINE))
+    return dict(
+        re.findall(r"^[ \t]*[-*]?[ \t]*(P[0-3])[ \t]*:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
+    )
 
 
 def lint_charter(text: str) -> list[str]:
