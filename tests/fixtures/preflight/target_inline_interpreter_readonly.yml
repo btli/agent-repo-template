@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": "issue_comment",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "python3 -c 'import urllib.request; urllib.request.urlopen(\"https://example.invalid/content\")'"
+          }
+        ]
+      }
+    }
+  }
+}

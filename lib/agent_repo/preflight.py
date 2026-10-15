@@ -1,8 +1,6 @@
 import fnmatch
 import re
-import shlex
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 # Verified 2026-10-15: https://docs.github.com/actions/reference/runners/github-hosted-runners
 # Verified 2026-10-15: https://docs.github.com/actions/reference/runners/larger-runners
@@ -41,6 +39,8 @@ HOSTED_RUNNERS = frozenset(
     }
 )
 TARGET_EVENTS = frozenset({"pull_request_target", "issue_comment"})
+# Deliberately minimal: only these pinned metadata actions may use target-event credentials.
+TARGET_ACTIONS = frozenset({"actions/labeler", "actions/first-interaction", "actions/stale"})
 
 
 @dataclass(frozen=True)
@@ -217,19 +217,22 @@ def _strings(value: object):
             yield from _strings(item)
 
 
-def _secrets(value: object) -> bool:
+def _secrets(value: object, *, include_token: bool = False) -> bool:
     if isinstance(value, dict):
-        return value.get("secrets") == "inherit" or any(_secrets(item) for item in value.values())
+        return value.get("secrets") == "inherit" or any(
+            _secrets(item, include_token=include_token) for item in value.values()
+        )
     elif isinstance(value, list):
-        return any(_secrets(item) for item in value)
+        return any(_secrets(item, include_token=include_token) for item in value)
     elif isinstance(value, str):
         for expression in re.findall(r"\$\{\{(.*?)\}\}", value, re.DOTALL):
-            expression = re.sub(
-                r"\bsecrets\s*(?:\.\s*GITHUB_TOKEN\b|\[\s*['\"]GITHUB_TOKEN['\"]\s*\])",
-                "",
-                expression,
-                flags=re.IGNORECASE,
-            )
+            if not include_token:
+                expression = re.sub(
+                    r"\bsecrets\s*(?:\.\s*GITHUB_TOKEN\b|\[\s*['\"]GITHUB_TOKEN['\"]\s*\])",
+                    "",
+                    expression,
+                    flags=re.IGNORECASE,
+                )
             if re.search(r"\bsecrets\b", expression, re.IGNORECASE):
                 return True
     return False
@@ -294,35 +297,6 @@ def _context(value: str) -> str:
     return re.sub(r"\s*\.\s*", ".", value).lower()
 
 
-def _checkout_input_safe(value: object, key: str, ctx: PreflightContext) -> bool:
-    if value is None or value == "":
-        return True
-    if not isinstance(value, str):
-        return False
-    if key == "ref" and value in {ctx.default_branch, f"refs/heads/{ctx.default_branch}"}:
-        return True
-    expression = re.fullmatch(r"\s*\$\{\{(.*?)\}\}\s*", value, re.DOTALL)
-    if expression is None:
-        return False
-    safe_contexts = {
-        "ref": {
-            "github.sha",
-            "github.ref",
-            "github.ref_name",
-            "github.base_ref",
-            "github.event.pull_request.base.ref",
-            "github.event.pull_request.base.sha",
-            "github.event.repository.default_branch",
-        },
-        "repository": {
-            "github.repository",
-            "github.event.repository.full_name",
-            "github.event.pull_request.base.repo.full_name",
-        },
-    }
-    return _context(expression[1]).strip() in safe_contexts[key]
-
-
 def _executable(job: dict, workflow: dict) -> list:
     return [
         workflow.get("env"),
@@ -342,199 +316,23 @@ def _executable(job: dict, workflow: dict) -> list:
     ]
 
 
-def _archive_sources(value: str) -> list[str]:
-    sources = re.findall(r"https?://[^\s'\"`<>]+|(?<![\w/])/?repos/[^\s'\"`<>]+", value)
-    return [
-        source.rstrip(");,")
-        for source in sources
-        if "codeload.github.com/" in source
-        or re.search(r"github\.com/[^/]+/[^/]+/archive/", source)
-        or re.search(r"(?:^/?|api\.github\.com/)repos/.+/(?:tarball|zipball)(?:/|$)", source)
-    ]
-
-
-def _trusted_archive(source: str, ctx: PreflightContext) -> bool:
-    if source.startswith(("repos/", "/repos/")):
-        source = "https://api.github.com/" + source.lstrip("/")
-    url = urlsplit(source)
-    if url.query or url.fragment or url.scheme != "https":
-        return False
-    repository = r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
-    ref = rf"(?:refs/heads/)?{re.escape(ctx.default_branch)}"
-    paths = {
-        "api.github.com": rf"/repos{repository}/(?:tarball|zipball)/{ref}",
-        "github.com": rf"{repository}/archive/{ref}\.(?:tar\.gz|zip)",
-        "codeload.github.com": rf"{repository}/(?:tar\.gz|zip)/{ref}",
-    }
-    pattern = paths.get(url.netloc)
-    return pattern is not None and re.fullmatch(pattern, url.path) is not None
-
-
-def _trusted_clone(args: list[str], ctx: PreflightContext) -> bool:
-    if not args or args.pop(0) != "clone":
-        return False
-    branch, positional = None, []
-    while args:
-        arg = args.pop(0)
-        if arg in {"--branch", "-b", "--depth"}:
-            if not args:
-                return False
-            value = args.pop(0)
-            if arg == "--depth":
-                if not value.isdigit():
-                    return False
-            else:
-                branch = value
-        elif arg.startswith("--branch="):
-            branch = arg.removeprefix("--branch=")
-        elif arg == "--single-branch":
-            continue
-        elif arg.startswith("-"):
-            return False
-        else:
-            positional.append(arg)
-    return (
-        branch in {ctx.default_branch, f"refs/heads/{ctx.default_branch}"}
-        and 1 <= len(positional) <= 2
-        and re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", positional[0])
-        is not None
-        and all(not re.search(r"[$`{}]", value) for value in positional)
+def _target_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
+    # Target events run on the base branch, outside agent-branch environment exclusions.
+    privileged = (
+        writes
+        or job.get("environment") is not None
+        or _secrets(_executable(job, workflow), include_token=True)
     )
-
-
-def _shell_source_unsafe(run: str, ctx: PreflightContext) -> bool:
-    lexer = shlex.shlex(run, posix=True, punctuation_chars=";&|()\n")
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
+    if not privileged:
+        return False
+    steps = _steps(job)
+    if not steps:
         return True
-    commands, words = [], []
-    for token in [*tokens, ";"]:
-        if set(token) <= set(";&|()\n"):
-            if words:
-                commands.append(words)
-            words = []
-        else:
-            words.append(token)
-    for words in commands:
-        wrappers = {"env", "command", "exec", "sudo", "if", "then", "elif", "else", "do", "!", "{"}
-        while words and ("=" in words[0] or words[0] in wrappers):
-            words.pop(0)
-        if not words:
-            continue
-        executable, args = words[0].rsplit("/", 1)[-1].lower(), words[1:]
-        if executable.startswith("-") or re.search(r"[$`]", executable):
+    for step in steps:
+        uses = step.get("uses")
+        match = re.fullmatch(r"([^@]+)@([0-9a-fA-F]{40})", uses) if isinstance(uses, str) else None
+        if "run" in step or match is None or match[1].lower() not in TARGET_ACTIONS:
             return True
-        if executable in {"eval", "source", "."}:
-            return True
-        if executable in {"bash", "sh", "zsh"} and "-c" in args:
-            index = args.index("-c") + 1
-            if index >= len(args) or _shell_source_unsafe(args[index], ctx):
-                return True
-        if executable in {"git", "git.exe"}:
-            # Shell ref resolution is opaque except for a literal default-branch clone.
-            if not args or args[0] not in {
-                "status",
-                "log",
-                "diff",
-                "show",
-                "rev-parse",
-                "ls-files",
-            }:
-                if not _trusted_clone(args, ctx):
-                    return True
-        if executable == "gh":
-            while args and args[0].startswith("-"):
-                option = args.pop(0)
-                if option not in {"--repo", "-R", "--hostname"} or not args:
-                    return True
-                args.pop(0)
-            if args[:2] in (["pr", "checkout"], ["pr", "diff"], ["repo", "clone"]):
-                return True
-            if args[:1] == ["api"] and any(
-                "/pulls" in arg or re.search(r"[$`{}]", arg) for arg in args[1:]
-            ):
-                return True
-            if args[:1] == ["api"] and any(
-                not _trusted_archive(source, ctx)
-                for arg in args[1:]
-                for source in _archive_sources(arg)
-            ):
-                return True
-        elif executable not in {"curl", "wget", "echo", "printf"} and any(
-            not _trusted_archive(source, ctx) for arg in args for source in _archive_sources(arg)
-        ):
-            return True
-        if executable not in {"curl", "wget"}:
-            continue
-        sources = []
-        while args:
-            arg = args.pop(0)
-            if arg in {"-o", "-O", "--output", "--output-document"}:
-                if not args or re.search(r"[$`{}]", args.pop(0)):
-                    return True
-            elif re.fullmatch(r"-[fsSLq]+", arg) or arg in {
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--location",
-            }:
-                continue
-            elif _trusted_archive(arg, ctx):
-                sources.append(arg)
-            else:
-                return True
-        if not sources:
-            return True
-    return False
-
-
-def _target_unsafe(job: dict, workflow: dict, ctx: PreflightContext) -> bool:
-    for value in _strings(_executable(job, workflow)):
-        if re.search(
-            r"github\.head_ref\b|github\.event\.pull_request\.(?:head\w*|merge_commit_sha\b)"
-            r"|context\.payload\.pull_request\.head\w*"
-            r"|tojson\s*\(\s*github\.event\b|\$\{?github_event_path\b",
-            _context(value),
-        ):
-            return True
-    for step in _steps(job):
-        if any(
-            re.search(r"github\.event\.pull_request\.(?:title|body)\b", _context(value))
-            for value in _strings(step.get("run"))
-        ):
-            return True
-        run = step.get("run", "")
-        if not isinstance(run, str) or _shell_source_unsafe(run, ctx):
-            return True
-        if str(step.get("uses", "")).lower().startswith("actions/github-script@"):
-            script = (step.get("with") or {}).get("script", "")
-            if not isinstance(script, str) or re.search(
-                r"\bpulls\s*[.\[]|\bexec(?:sync|file)?\b|download(?:tarball|zipball)archive",
-                _context(script),
-            ):
-                return True
-            if re.search(r"\b(?:fetch|request|download)\s*\(", script):
-                sources = _archive_sources(script)
-                if not sources or any(not _trusted_archive(source, ctx) for source in sources):
-                    return True
-        elif "uses" in step and any(
-            not _trusted_archive(source, ctx)
-            for value in _strings(step.get("with"))
-            for source in _archive_sources(value)
-        ):
-            return True
-        if str(step.get("uses", "")).lower().startswith("actions/checkout@"):
-            inputs = step.get("with")
-            if inputs is None:
-                inputs = {}
-            if not isinstance(inputs, dict):
-                return True
-            for key in ("ref", "repository"):
-                if not _checkout_input_safe(inputs.get(key), key, ctx):
-                    return True
     return False
 
 
@@ -644,7 +442,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                     rules.add("permissions")
                 if "id-token" in writes:
                     rules.add("id-token")
-            if is_target and _target_unsafe(job, workflow, ctx):
+            if is_target and _target_unsafe(job, workflow, writes):
                 rules.add("pull_request_target")
             environment = job.get("environment")
             if isinstance(environment, dict):
@@ -682,8 +480,12 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
         "secrets": "Job may receive secrets outside a safe environment.",
         "runner": "Job cannot be proven to run on a hosted runner.",
         "workflow_run": "Downstream job may consume agent content or privileged credentials.",
-        "pull_request_target": "Job cannot be proven to use only trusted base code and inputs.",
+        "pull_request_target": "Job {job!r} may expose target-event credentials. "
+        "Use the logged fix.accept_ci_exposure override to accept this exposure.",
         "agent-apply": "Push or pull request workflow declares agent-apply.",
         "reusable_workflow": "Reusable workflow cannot be verified locally.",
     }
-    return [Exposure(path, name, rule, details[rule]) for path, name, rule in sorted(findings)]
+    return [
+        Exposure(path, name, rule, details[rule].format(job=name))
+        for path, name, rule in sorted(findings)
+    ]

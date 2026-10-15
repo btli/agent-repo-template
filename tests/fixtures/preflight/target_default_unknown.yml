@@ -1,0 +1,15 @@
+{
+  "ci.yml": {
+    "on": "issue_comment",
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  }
+}

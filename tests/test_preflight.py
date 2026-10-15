@@ -62,10 +62,6 @@ CASES = [
     ("dynamic_secret", "secrets"),
     ("unreachable_secret", None),
     ("agent_apply", "agent-apply"),
-    ("pr_target_head", "pull_request_target"),
-    ("pr_target_ref", "pull_request_target"),
-    ("pr_target_base", None),
-    ("pr_target_bracket", "pull_request_target"),
     ("pr_plus_filter", "secrets"),
     ("pr_optional_filter", "secrets"),
     ("pr_slash_ignore", "secrets"),
@@ -243,31 +239,9 @@ SCENARIO_CASES = [
     ("event_issues", []),
     ("event_release", []),
     ("event_delete", []),
-    ("event_issue_comment", []),
+    ("event_issue_comment", [("ci.yml", "check", "pull_request_target")]),
     ("unsafe_environment", [("ci.yml", "check", "secrets")]),
     ("expression_environment", [("ci.yml", "check", "secrets")]),
-    *[
-        (f"target_{name}", [("ci.yml", "check", "pull_request_target")])
-        for name in (
-            "head_ref",
-            "head_label",
-            "merge_ref",
-            "merge_sha",
-            "gh_checkout",
-            "git_fetch",
-            "head_run",
-            "title_run",
-            "body_run",
-            "alias_ref",
-            "output_ref",
-            "unknown_repository",
-            "literal_head_ref",
-        )
-    ],
-    ("target_base_ref", []),
-    ("target_base_sha", []),
-    ("target_default_ref", []),
-    ("target_implicit_base", []),
     ("reuse_local_runner", [("callee.yml", "check", "runner")]),
     ("reuse_local_secret", [("callee.yml", "check", "secrets")]),
     ("reuse_ceiling", []),
@@ -284,18 +258,13 @@ SCENARIO_CASES = [
         [("callee.yml", "check", "permissions"), ("caller.yml", "call", "permissions")],
     ),
     ("reuse_scope_ceiling", [("caller.yml", "call", "permissions")]),
-    *[
-        (f"downstream_{name}", [("down.yml", "check", "workflow_run")])
-        for name in (
-            "head_sha",
-            "head_branch",
-            "gh_download",
-            "artifact_api",
-            "unknown_download",
-            "secret",
-            "write",
-        )
-    ],
+    ("downstream_head_sha", [("down.yml", "check", "workflow_run")]),
+    ("downstream_head_branch", [("down.yml", "check", "workflow_run")]),
+    ("downstream_gh_download", [("down.yml", "check", "workflow_run")]),
+    ("downstream_artifact_api", [("down.yml", "check", "workflow_run")]),
+    ("downstream_unknown_download", [("down.yml", "check", "workflow_run")]),
+    ("downstream_secret", [("down.yml", "check", "workflow_run")]),
+    ("downstream_write", [("down.yml", "check", "workflow_run")]),
     ("chain", [("a-down.yml", "check", "workflow_run")]),
     ("unreachable_apply", [("ci.yml", "check", "agent-apply")]),
     (
@@ -306,10 +275,6 @@ SCENARIO_CASES = [
             ("ci.yml", "write", "permissions"),
         ],
     ),
-]
-
-
-SCENARIO_CASES += [
     ("private_ubuntu_gpu", [("ci.yml", "check", "runner")]),
     ("private_ubuntu_gpu_list", [("ci.yml", "check", "runner")]),
     ("private_ubuntu_internal", [("ci.yml", "check", "runner")]),
@@ -348,25 +313,6 @@ SCENARIO_CASES += [
     ("published_macos_26_xlarge", []),
     ("published_xcode_27", []),
     ("published_xcode_27_xlarge", []),
-    ("target_job_env", [("ci.yml", "check", "pull_request_target")]),
-    ("target_workflow_env", [("ci.yml", "check", "pull_request_target")]),
-    ("target_job_defaults", [("ci.yml", "check", "pull_request_target")]),
-    ("target_workflow_defaults", [("ci.yml", "check", "pull_request_target")]),
-    ("target_github_script", [("ci.yml", "check", "pull_request_target")]),
-    ("target_json_payload", [("ci.yml", "check", "pull_request_target")]),
-    ("target_tarball", [("ci.yml", "check", "pull_request_target")]),
-    ("target_zipball", [("ci.yml", "check", "pull_request_target")]),
-    ("comment_head_checkout", [("ci.yml", "check", "pull_request_target")]),
-    ("base_labeler_read", []),
-    ("base_labeler_write", []),
-    ("checkout_null_with", []),
-    ("checkout_empty_ref", []),
-    ("checkout_null_ref", []),
-    ("checkout_empty_repository", []),
-    ("checkout_null_repository", []),
-    ("checkout_bracket_base", []),
-    ("checkout_whitespace_base", []),
-    ("checkout_bracket_repository", []),
     ("artifact_plain", []),
     ("artifact_display_name", []),
     ("artifact_echo_downloads", []),
@@ -399,12 +345,11 @@ SCENARIO_CASES += [
     ("completion_status", [("ci.yml", "check", "secrets")]),
     ("completion_deployment_status", [("ci.yml", "check", "secrets")]),
     ("disabled_apply", []),
-]
-
-
-SCENARIO_CASES += [
-    ("comment_base_only", []),
-    ("target_and_push", [("ci.yml", "check", "permissions")]),
+    ("comment_base_only", [("ci.yml", "check", "pull_request_target")]),
+    (
+        "target_and_push",
+        [("ci.yml", "check", "permissions"), ("ci.yml", "check", "pull_request_target")],
+    ),
 ]
 
 
@@ -545,67 +490,6 @@ def test_action_forwards_verified_settings(tmp_path, monkeypatch):
 
 
 SOURCE_CASES = [
-    ("content_api_head", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_api_head_base", [], "agent/fix-*"),
-    ("content_event_file", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_event_file_base", [], "agent/fix-*"),
-    ("content_script_api_exec", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_script_api_exec_base", [], "agent/fix-*"),
-    ("content_whole_event_json", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_whole_event_json_base", [], "agent/fix-*"),
-    ("content_git_fetch", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_checkout", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_switch", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_reset", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_clone", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_worktree", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_pull", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_merge", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_global_option", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_clone_base", [], "agent/fix-*"),
-    ("content_git_clone_unknown_ref", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_clone_mixed", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_git_clone_bad_source", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_pr_diff", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_pr_checkout", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_repo_clone", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_event_file_braces", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_api_tar_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_api_tar_base", [], "agent/fix-*"),
-    ("archive_api_tar_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_api_zip_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_api_zip_base", [], "agent/fix-*"),
-    ("archive_api_zip_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_browser_tar_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_browser_tar_base", [], "agent/fix-*"),
-    ("archive_browser_tar_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_browser_zip_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_browser_zip_base", [], "agent/fix-*"),
-    ("archive_browser_zip_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_codeload_tar_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_codeload_tar_base", [], "agent/fix-*"),
-    ("archive_codeload_tar_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_codeload_zip_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_codeload_zip_base", [], "agent/fix-*"),
-    ("archive_codeload_zip_unknown", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_gh_api_agent", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_gh_api_base", [], "agent/fix-*"),
-    ("archive_gh_api_default", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_script_download", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_target_reusable", [("callee.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_target_reusable_base", [], "agent/fix-*"),
-    ("content_target_labeler", [], "agent/fix-*"),
-    ("content_target_notification", [], "agent/fix-*"),
-    ("content_target_display", [], "agent/fix-*"),
-    ("content_target_display_control", [], "agent/fix-*"),
-    ("content_target_job_display", [], "agent/fix-*"),
-    ("content_comment_reusable", [("callee.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_comment_reusable_base", [], "agent/fix-*"),
-    ("content_comment_labeler", [], "agent/fix-*"),
-    ("content_comment_notification", [], "agent/fix-*"),
-    ("content_comment_display", [], "agent/fix-*"),
-    ("content_comment_display_control", [], "agent/fix-*"),
-    ("content_comment_job_display", [], "agent/fix-*"),
     ("branch_custom_agent", [("a-final.yml", "check", "workflow_run")], "bots/fix-*"),
     ("branch_custom_excluded", [], "bots/fix-*"),
     ("branch_ignore_exact_agent", [], "agent/fix-*"),
@@ -620,39 +504,6 @@ SOURCE_CASES = [
 ]
 
 
-SOURCE_CASES += [
-    ("archive_unknown_transport", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_mixed_downloads", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_mixed_arguments", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_readonly_git", [], "agent/fix-*"),
-]
-
-
-SOURCE_CASES += [
-    ("content_quoted_git", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("archive_quoted_curl", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_shell_wrapper", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_command_text", [], "agent/fix-*"),
-]
-
-
-SOURCE_CASES += [
-    ("content_conditional_git", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_env_git", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_gh_global_option", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-    ("content_env_readonly", [], "agent/fix-*"),
-    ("content_conditional_readonly", [], "agent/fix-*"),
-]
-
-
-SOURCE_CASES += [
-    ("archive_notification_head", [], "agent/fix-*"),
-    ("archive_printed_head", [], "agent/fix-*"),
-    ("archive_script_notification", [], "agent/fix-*"),
-    ("archive_action_head", [("ci.yml", "check", "pull_request_target")], "agent/fix-*"),
-]
-
-
 @pytest.mark.parametrize(
     ("fixture", "expected", "agent_ref_glob"), SOURCE_CASES, ids=[case[0] for case in SOURCE_CASES]
 )
@@ -663,3 +514,102 @@ def test_source_provenance(fixture, expected, agent_ref_glob):
     assert [(item.workflow, item.job, item.rule) for item in result] == [
         tuple(item) for item in expected
     ]
+
+
+TARGET_CASES = [
+    ("target_opaque_action_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_opaque_action_readonly", [], False),
+    ("target_local_action_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_local_action_readonly", [], False),
+    ("target_timeout_wrapper_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_timeout_wrapper_readonly", [], False),
+    ("target_nice_wrapper_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_nice_wrapper_readonly", [], False),
+    ("target_xargs_wrapper_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_xargs_wrapper_readonly", [], False),
+    ("target_python_shell_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_python_shell_readonly", [], False),
+    ("target_powershell_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_powershell_readonly", [], False),
+    ("target_inline_interpreter_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_inline_interpreter_readonly", [], False),
+    ("target_container_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_container_readonly", [], False),
+    ("target_contents_api_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_contents_api_readonly", [], False),
+    ("target_tree_api_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_tree_api_readonly", [], False),
+    ("target_reaction_api_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_reaction_api_readonly", [], False),
+    ("target_git_authorship_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_git_authorship_readonly", [], False),
+    ("target_github_script_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_github_script_readonly", [], False),
+    ("target_labeler_pull_request_target", [], False),
+    ("target_labeler_issue_comment", [], False),
+    ("target_first_interaction_pull_request_target", [], False),
+    ("target_first_interaction_issue_comment", [], False),
+    ("target_stale_pull_request_target", [], False),
+    ("target_stale_issue_comment", [], False),
+    ("target_tagged_action", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_short_pin", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_long_pin", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_nonhex_pin", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_action_subpath", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_different_owner", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_name_suffix", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_mixed_actions", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_mixed_run", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_run_and_uses", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_empty_steps", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_unknown_step", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_all_allowlisted", [], False),
+    ("target_case_insensitive_pin", [], False),
+    ("target_write_run", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_oidc_run", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_workflow_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_token_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_bracket_token_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_dynamic_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_with_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_run_secret", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_staging_environment", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_expression_environment", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_protected_environment", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_allowlisted_environment", [], False),
+    ("target_read_all_run", [], False),
+    ("target_default_unknown", [("ci.yml", "check", "pull_request_target")], False),
+    ("target_default_readonly", [], True),
+    ("target_display_metadata", [], False),
+    (
+        "target_reusable_pull_request_target_secret",
+        [("callee.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_reusable_pull_request_target_ceiling", [], False),
+    (
+        "target_reusable_issue_comment_secret",
+        [("callee.yml", "check", "pull_request_target")],
+        False,
+    ),
+    ("target_reusable_issue_comment_ceiling", [], False),
+    ("target_reusable_caller_secret", [("caller.yml", "call", "pull_request_target")], False),
+    ("target_reusable_caller_write", [("caller.yml", "call", "pull_request_target")], False),
+]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected", "token_readonly"), TARGET_CASES, ids=[case[0] for case in TARGET_CASES]
+)
+def test_target_event_privileges(fixture, expected, token_readonly):
+    module = implementation()
+    result = module.analyze(
+        load_yaml(FIXTURES / f"{fixture}.yml"),
+        module.PreflightContext(
+            "main", token_readonly=token_readonly, safe_environments=frozenset({"release"})
+        ),
+    )
+    assert [(item.workflow, item.job, item.rule) for item in result] == expected
+    for item in result:
+        assert item.job in item.detail
+        assert "fix.accept_ci_exposure" in item.detail

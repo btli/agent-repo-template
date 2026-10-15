@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo pull/12/head | xargs -I{} sh -c 'git fetch origin {} && git checkout FETCH_HEAD'"
+          }
+        ]
+      }
+    }
+  }
+}
