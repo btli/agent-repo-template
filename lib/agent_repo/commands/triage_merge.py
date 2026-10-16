@@ -30,7 +30,7 @@ def label_corrections(tier2: dict, allowed_labels: set[str] | None) -> list[str]
 
 
 def merge(
-    decision: dict, tier2: dict | None, error: str | None, *, allowed_labels: set[str] | None
+    decision: dict, tier2: dict | None, error: str | None, *, allowed_labels: set[str] | None = None
 ) -> dict:
     schema = load_schema("decision")
     if validate(decision, schema):
@@ -49,6 +49,15 @@ def merge(
             "reason": "Tier-2 triage failed or returned invalid output.",
         }
         return result
+    if allowed_labels is None:
+        unchanged = True
+        for prefix in ("type:", "area:"):
+            proposed = {label for label in tier2["labels"] if label.startswith(prefix)}
+            current = {label for label in decision["labels"] if label.startswith(prefix)}
+            if proposed and proposed != current:
+                unchanged = False
+        if unchanged:
+            allowed_labels = set(decision["labels"])
     corrections = label_corrections(tier2, allowed_labels)
     if corrections is None:
         result["escalate"] = result["escalate"] or {
