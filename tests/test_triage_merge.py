@@ -198,19 +198,66 @@ def test_label_corrections_are_deduplicated(decision):
     ]
 
 
-def test_missing_taxonomy_escalates(decision):
+@pytest.mark.parametrize("explicit_none", [False, True], ids=["three-arguments", "explicit-none"])
+@pytest.mark.parametrize(
+    "labels,extra_area,changed",
+    [
+        pytest.param(None, False, False, id="same-labels"),
+        pytest.param([], False, False, id="no-corrections"),
+        pytest.param(["priority:P0", "new"], False, False, id="other-labels"),
+        pytest.param(["type:bug"], False, False, id="same-type-only"),
+        pytest.param(["area:core"], False, False, id="same-area-only"),
+        pytest.param(["area:core", "type:bug", "area:core"], False, False, id="deduplicated"),
+        pytest.param(["type:question", "area:core"], False, True, id="type-correction"),
+        pytest.param(["type:bug", "area:ui"], False, True, id="area-correction"),
+        pytest.param(["type:question", "area:ui"], False, True, id="both-corrections"),
+        pytest.param(["area:unknown"], False, True, id="unknown-area-correction"),
+        pytest.param(["type:invented"], False, True, id="unknown-type"),
+        pytest.param(["area:invented"], False, True, id="unknown-area"),
+        pytest.param(["type:bug", "type:question"], False, True, id="multiple-types"),
+        pytest.param(["area:core"], True, True, id="area-removal"),
+        pytest.param(["area:ui", "area:core"], True, False, id="same-multiple-areas"),
+    ],
+)
+def test_missing_taxonomy_escalates(decision, labels, extra_area, changed, explicit_none):
     command = importlib.import_module("agent_repo.commands.triage_merge")
-    with pytest.raises(TypeError, match="allowed_labels"):
-        command.merge(decision, decision, None)
+    if extra_area:
+        decision["labels"].append("area:ui")
+    original = copy.deepcopy(decision)
+    tier2 = copy.deepcopy(decision)
+    tier2["tier"] = 2
+    if labels is not None:
+        tier2["labels"] = labels
+    tier2["rca"] = {
+        "hypothesis": "Likely parser.",
+        "locations": [{"path": "src.py", "line": 2}],
+        "confidence": "low",
+        "confirm_with": "Run repro.",
+    }
+    tier2["needs_info"] = {"text": "Which version?"}
+    tier2["close"]["tier2_agrees"] = True
+    incoming = copy.deepcopy(tier2)
+    options = {"allowed_labels": None} if explicit_none else {}
+    result = command.merge(decision, tier2, None, **options)
+    assert validate(result, load_schema("decision")) == []
+    assert result["answers"] == original["answers"]
+    if changed:
+        assert result["labels"] == original["labels"]
+        assert result["escalate"] == {
+            "to": "maintainer",
+            "reason": "Tier-2 label corrections violate the repository taxonomy.",
+        }
+        assert result["close"]["tier2_agrees"] is False
+    else:
+        assert result == merge(decision, tier2, None)
+        assert result["escalate"] is None
+        assert result["rca"] == tier2["rca"]
+        assert result["needs_info"] == tier2["needs_info"]
+        assert result["close"]["tier2_agrees"] is True
     with pytest.raises(TypeError):
-        command.merge(decision, decision, None, {"type:bug", "area:core"})
-    assert (
-        command.merge(decision, decision, None, allowed_labels={"type:bug", "area:core"})[
-            "escalate"
-        ]
-        is None
-    )
-    assert merge(decision, decision, None, allowed_labels=None)["escalate"]["to"] == "maintainer"
+        command.merge(decision, tier2, None, {"type:bug", "area:core"})
+    assert decision == original
+    assert tier2 == incoming
 
 
 @pytest.fixture
