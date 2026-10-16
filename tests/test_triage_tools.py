@@ -99,7 +99,7 @@ except Exception as error:
             "print(json.dumps(result))",
             "serialized=result if isinstance(result,str) else json.dumps(result)\n "
             "os.write(int(os.environ['_AP_RESPONSE_FD']), "
-            "json.dumps({'result':serialized}).encode())",
+            "json.dumps({'result':serialized}).encode()+b'\\n')",
         )
     try:
         run = subprocess.run(
@@ -190,7 +190,8 @@ def test_maximum_response_completes_before_pipe_read(tools, name, content):
     arguments = (filename,) if name == "read_repo_file" else (content, filename)
     result = tool_process(name, *arguments, protocol=True)
     assert result.returncode == 0
-    assert len(result.stdout.encode()) <= 32768
+    assert len(result.stdout.encode()) <= 16384
+    assert result.stdout.endswith("\n")
     assert (
         "truncated" in json.loads(result.stdout)["result"]
         or "skipped" in json.loads(result.stdout)["result"]
