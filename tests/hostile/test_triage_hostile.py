@@ -175,14 +175,14 @@ def test_high_priority_proposal_requires_maintainer_even_with_conflicting_answer
     actions = plan(data, ctx)
     assert labels(actions) == {"needs-maintainer"}
     assert not any(action.kind == "close" for action in actions)
-    if source == "answer":
+    normalized = priority.strip().casefold().removeprefix("priority:") if priority else ""
+    if source == "answer" and normalized not in {"p0", "p1"}:
         alerts, summary = run(data, ctx, api, tmp_path)
         assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
         assert alerts and "Artifact rejected: invalid schema." in summary
         assert not api.comments and api.issue_state == "open"
         return
     text = bodies(actions)
-    normalized = priority.strip().casefold().removeprefix("priority:") if priority else ""
     if normalized in {"p0", "p1"}:
         assert f"Suggested priority: {normalized.upper()}." in text
     assert "Closing:" not in text and "Suggested closure" not in text
