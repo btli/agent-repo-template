@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "gh api repos/your-org/project/issues/12/comments -f body='https://github.com/your-org/project/pull/12'"
+          }
+        ]
+      }
+    }
+  }
+}

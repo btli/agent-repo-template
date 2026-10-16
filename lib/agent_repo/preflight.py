@@ -39,7 +39,17 @@ HOSTED_RUNNERS = frozenset(
     }
 )
 TARGET_EVENTS = frozenset(
-    {"pull_request_target", "issue_comment", "issues", "discussion", "discussion_comment"}
+    {
+        "pull_request_target",
+        "issue_comment",
+        "issues",
+        "discussion",
+        "discussion_comment",
+        "repository_dispatch",
+        "label",
+        "milestone",
+        "release",
+    }
 )
 AGENT_REF_EVENTS = frozenset(
     {
@@ -183,13 +193,9 @@ def _reachable_refs(events: dict, ctx: PreflightContext) -> set[str | None]:
     independent = {
         "schedule",
         "workflow_dispatch",
-        "release",
         "delete",
         "workflow_call",
         "workflow_run",
-        "repository_dispatch",
-        "label",
-        "milestone",
         "gollum",
         "page_build",
         "watch",
@@ -231,6 +237,25 @@ def _strings(value: object):
             yield from _strings(item)
 
 
+def _expressions(value: str):
+    start = value.find("${{")
+    while start != -1:
+        begin = index = start + 3
+        quoted = False
+        while index < len(value):
+            if value[index] == "'":
+                if quoted and value[index : index + 2] == "''":
+                    index += 2
+                    continue
+                quoted = not quoted
+            elif not quoted and value[index : index + 2] == "}}":
+                break
+            index += 1
+        # An unfinished expression includes the remaining scalar for fail-closed scans.
+        yield value[begin:index]
+        start = value.find("${{", index + 2)
+
+
 def _secrets(
     value: object, *, include_token: bool = False, grants: frozenset[str] | None = None
 ) -> bool:
@@ -241,7 +266,7 @@ def _secrets(
     elif isinstance(value, list):
         return any(_secrets(item, include_token=include_token, grants=grants) for item in value)
     elif isinstance(value, str):
-        for expression in re.findall(r"\$\{\{(.*?)\}\}", value, re.DOTALL):
+        for expression in _expressions(value):
             if not include_token:
                 expression = re.sub(
                     r"\bsecrets\s*(?:\.\s*GITHUB_TOKEN\b|\[\s*['\"]GITHUB_TOKEN['\"]\s*\])",
@@ -338,6 +363,8 @@ def _executable(job: dict, workflow: dict) -> list:
         job.get("with"),
         job.get("container"),
         job.get("services"),
+        job.get("strategy"),
+        [other.get("outputs") for other in workflow["jobs"].values()],
         {"secrets": job.get("secrets")},
         [
             {
@@ -350,21 +377,29 @@ def _executable(job: dict, workflow: dict) -> list:
     ]
 
 
+def _head_reference(value: str) -> bool:
+    contexts = []
+    for expression in _expressions(value):
+        contexts.append(_context(expression))
+        value = value.replace("${{" + expression + "}}", "ref")
+    contexts.append(_context(value))
+    return any(
+        re.search(
+            r"github\.(?:event\.pull_request\.(?:head\b|merge_commit_sha\b)|head_ref\b)"
+            r"|(?:refs/)?pull/[^\s/]+/(?:head|merge)\b|\bgh\s+pr\s+checkout\b",
+            context,
+        )
+        for context in contexts
+    )
+
+
 def _target_unsafe(
     job: dict,
     workflow: dict,
     writes: frozenset[str],
     grants: frozenset[str] | None,
-    head_check: bool,
 ) -> bool:
-    if head_check and any(
-        re.search(
-            r"github\.(?:event\.pull_request\.(?:head\b|merge_commit_sha\b)|head_ref\b)"
-            r"|refs/pull/|\bgh\s+pr\s+checkout\b",
-            _context(value),
-        )
-        for value in _strings(_executable(job, workflow))
-    ):
+    if any(_head_reference(value) for value in _strings(_executable(job, workflow))):
         return True
     # Target events run on the base branch, outside agent-branch environment exclusions.
     privileged = writes or _job_secrets(job, workflow, grants)
@@ -511,9 +546,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                     rules.add("permissions")
                 if "id-token" in writes:
                     rules.add("id-token")
-            if is_target and _target_unsafe(
-                job, workflow, writes, grants, "pull_request_target" in events
-            ):
+            if is_target and _target_unsafe(job, workflow, writes, grants):
                 rules.add("pull_request_target")
             environment = job.get("environment")
             if isinstance(environment, dict):
