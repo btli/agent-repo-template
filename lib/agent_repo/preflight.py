@@ -358,8 +358,12 @@ def _target_unsafe(
     head_check: bool,
 ) -> bool:
     if head_check and any(
-        re.search(r"github\.(?:event\.pull_request\.head\b|head_ref\b)", _context(value))
-        for value in _strings(_executable(job, workflow)[-1])
+        re.search(
+            r"github\.(?:event\.pull_request\.(?:head\b|merge_commit_sha\b)|head_ref\b)"
+            r"|refs/pull/|\bgh\s+pr\s+checkout\b",
+            _context(value),
+        )
+        for value in _strings(_executable(job, workflow))
     ):
         return True
     # Target events run on the base branch, outside agent-branch environment exclusions.

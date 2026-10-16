@@ -1,0 +1,22 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "run": "git fetch origin $REF && git checkout $REF && make"
+          }
+        ],
+        "env": {
+          "REF": "${{ github.event.pull_request.head.sha }}"
+        }
+      }
+    }
+  }
+}

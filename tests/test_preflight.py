@@ -19,6 +19,8 @@ def implementation():
 
 
 CASES = [
+    ("uppercase_secret_context", "secrets"),
+    ("push_partial_negation", "secrets"),
     ("push_unfiltered", "secrets"),
     ("push_all", "secrets"),
     ("push_agent", "secrets"),
@@ -225,6 +227,17 @@ def test_action_runs_command(tmp_path, monkeypatch):
 
 
 SCENARIO_CASES = [
+    ("target_head_workflow_env_alias", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_job_env_alias", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_job_env_run", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_caller_input", [("caller.yml", "call", "pull_request_target")]),
+    ("target_pull_merge_ref", [("ci.yml", "check", "pull_request_target")]),
+    ("target_merge_commit_sha", [("ci.yml", "check", "pull_request_target")]),
+    ("target_gh_pr_checkout", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_workflow_defaults", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_job_defaults", [("ci.yml", "check", "pull_request_target")]),
+    ("target_pr_number_only", []),
+    ("target_event_number_only", []),
     ("reusable_mixed_token_input", [("callee.yml", "check", "secrets")]),
     ("target_head_condition", [("ci.yml", "check", "pull_request_target")]),
     ("target_head_privileged_allowlisted", [("ci.yml", "check", "pull_request_target")]),
@@ -437,8 +450,14 @@ SCENARIO_CASES = [
     ("workflow_name_brackets", [("down.yml", "check", "workflow_run")]),
     ("workflow_name_casefold", [("down.yml", "check", "workflow_run")]),
     ("workflow_name_glob", [("down.yml", "check", "workflow_run")]),
-    ("target_pull_request_target_self_hosted", [("ci.yml", "check", "runner")]),
-    ("target_pull_request_target_runner_group", [("ci.yml", "check", "runner")]),
+    (
+        "target_pull_request_target_self_hosted",
+        [("ci.yml", "check", "pull_request_target"), ("ci.yml", "check", "runner")],
+    ),
+    (
+        "target_pull_request_target_runner_group",
+        [("ci.yml", "check", "pull_request_target"), ("ci.yml", "check", "runner")],
+    ),
     ("target_issue_comment_self_hosted", [("ci.yml", "check", "runner")]),
     ("target_issue_comment_runner_group", [("ci.yml", "check", "runner")]),
     ("pull_request_review_ignored_filter", [("ci.yml", "check", "permissions")]),
