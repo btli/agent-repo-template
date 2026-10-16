@@ -46,19 +46,57 @@ def test_agent_tool_call_limit():
     from agent_repo.yamljson import load_yaml
 
     config = load_yaml(Path("agents/triage/config.yaml"))
-    policy = config["guardrails"]["policies"]["tool_budget"]["function"]
-    assert policy["path"] == "omnigent.policies.builtins.safety.max_tool_calls_per_session"
-    assert policy["arguments"]["limit"] == 40
+    assert config["spec_version"] == 1
+    assert config["executor"] == {"type": "omnigent", "config": {"harness": "claude-sdk"}}
+    assert config["async"] is False
+    assert config["timers"] is False
+    assert config["skills"] == "none"
+    assert "os_env" not in config
+    assert not Path("agents/triage/skills").exists()
+    assert config["instructions"] == "prompt.md"
+    policies = config["guardrails"]["policies"]
+    assert list(policies) == ["allowlist_repo_tools", "tool_budget"]
+    assert policies == {
+        "allowlist_repo_tools": {
+            "type": "function",
+            "on": ["tool_call"],
+            "function": {
+                "path": "agent_repo.policies.allow_only",
+                "arguments": {"allowed": ["read_repo_file", "grep_repo"]},
+            },
+        },
+        "tool_budget": {
+            "type": "function",
+            "on": ["tool_call"],
+            "function": {
+                "path": "omnigent.policies.builtins.safety.max_tool_calls_per_session",
+                "arguments": {"limit": 40},
+            },
+        },
+    }
 
 
 @pytest.mark.parametrize("name", ["read_repo_file", "grep_repo"])
 def test_wrappers_require_shared_budget(tools, monkeypatch, name):
-    from agent_repo.repo_tools import ToolError
+    from agent_repo import repo_tools
 
     (Path(os.environ["GITHUB_WORKSPACE"]) / "file").write_text("safe")
+    budget = os.environ["AGENT_REPO_BUDGET_FILE"]
+    paths = []
+
+    def record_path(*args):
+        paths.append(args)
+        return Path(*args)
+
+    monkeypatch.setattr(repo_tools, "Path", record_path)
     monkeypatch.delenv("AGENT_REPO_BUDGET_FILE")
-    with pytest.raises(ToolError, match="^repository tool failed$"):
-        tools[name]("file" if name == "read_repo_file" else "safe")
+    argument = "file" if name == "read_repo_file" else "safe"
+    with pytest.raises(repo_tools.ToolError, match="^repository tool failed$"):
+        tools[name](argument)
+    assert paths == []
+    monkeypatch.setenv("AGENT_REPO_BUDGET_FILE", budget)
+    assert tools[name](argument) == ("safe" if name == "read_repo_file" else [("file", 1, "safe")])
+    assert paths
 
 
 def test_wrapper_rejects_existing_outside_root(tools):
