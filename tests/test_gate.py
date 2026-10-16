@@ -688,6 +688,7 @@ def test_cli_reads_maintainers_from_default_checkout_and_preserves_args(tmp_path
     assert gate.main(["fix", str(checkout)]) == 0
     values = read_outputs(output)
     assert values["run"] == "true"
+    assert values["tier2_allowed"] == "true"
     assert values["command"] == "fix"
     assert values["command_args"] == "handle the None case"
     assert TOKEN not in output.read_text()
