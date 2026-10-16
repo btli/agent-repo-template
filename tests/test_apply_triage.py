@@ -626,6 +626,8 @@ def test_invalid_mode_never_writes(tmp_path):
         "mismatched-sha",
         "deep-json",
         "memory-json",
+        "oversized-json",
+        "planner-error",
         "event-pull_request",
         "event-pull_request_target",
         "event-workflow_run",
@@ -658,13 +660,18 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
     artifact.write_text(
         "[" * 200_000 + "]" * 200_000 if scenario == "deep-json" else json.dumps(data)
     )
-    if scenario == "memory-json":
+    if scenario == "oversized-json":
+        artifact.write_text(json.dumps(data) + " " * 1_000_001)
+    if scenario in {"memory-json", "oversized-json"}:
         original_loads = json.loads
         artifact_text = artifact.read_text()
+        artifact_parse_calls = []
 
         def loads(text, *args, **kwargs):
             if text == artifact_text:
-                raise MemoryError
+                artifact_parse_calls.append(True)
+                if scenario == "memory-json":
+                    raise MemoryError
             return original_loads(text, *args, **kwargs)
 
         monkeypatch.setattr("agent_repo.commands.apply.json.loads", loads)
@@ -715,12 +722,23 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
         "AGENT_CANARY": secrets.token_hex(20),
     }.items():
         monkeypatch.setenv(name, value)
+    if scenario == "planner-error":
+
+        def fail_plan(*args):
+            raise RuntimeError("planner unavailable")
+
+        monkeypatch.setattr("agent_repo.commands.apply.plan_triage", fail_plan)
     if scenario.startswith("event-"):
         assert main([str(artifact)]) == 1
         assert not api.calls, "unsupported event reached the GitHub API"
         return
-    assert main([str(artifact)]) == 0
-    if scenario == "moved-head":
+    assert main([str(artifact)]) == (1 if scenario == "planner-error" else 0)
+    if scenario == "oversized-json":
+        assert not artifact_parse_calls, "oversized artifact reached JSON parsing"
+    if scenario == "planner-error":
+        assert api.writes == [("POST", "issues/12/labels", {"labels": ["needs-maintainer"]})]
+        assert "Apply failed: trusted inputs unavailable." in summary.read_text()
+    elif scenario == "moved-head":
         assert len(api.comments) == 1, "workflow-pinned artifact was rejected after a push"
         assert "ALERT" not in summary.read_text()
         boundary = len(api.calls)
@@ -735,7 +753,7 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
         assert api.writes, "maintainer fallback was omitted"
         expected_alert = (
             "invalid schema"
-            if scenario in {"deep-json", "memory-json"}
+            if scenario in {"deep-json", "memory-json", "oversized-json"}
             else "identity mismatch"
             if scenario == "mismatched-sha"
             else "Outbound scan"
@@ -744,9 +762,9 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
     assert policy_refs and all(query == "ref=" + "a" * 40 for query in policy_refs)
     assert key not in summary.read_text(), "credential echoed"
     assert token not in summary.read_text(), "installation token echoed"
-    if scenario == "moved-head":
+    if scenario in {"moved-head", "planner-error"}:
         return
-    if scenario == "memory-json":
+    if scenario in {"memory-json", "oversized-json"}:
         monkeypatch.setattr("agent_repo.commands.apply.json.loads", original_loads)
     data["base_sha"] = "a" * 40
     data["needs_info"]["text"] = "Please supply versions."
@@ -873,19 +891,30 @@ def test_labels_not_requested_are_not_added():
     assert not labels(plan(data, context())) & {"type:bug", "area:api", "P2"}
 
 
-def test_duplicate_state_rechecked_before_any_write(tmp_path):
+@pytest.mark.parametrize("target", ["closed", "pull_request"])
+def test_duplicate_state_rechecked_before_any_write(target, tmp_path):
     from agent_repo.apply.actions import execute
 
     api = API()
     data = decision()
     data["close"] = closing()
     actions = plan(data, context(api, enabled=True))
-    api.target_open = False
+    if target == "closed":
+        api.target_open = False
+    else:
+        original = api.transport
+
+        def transport(request, timeout):
+            status, headers, body = original(request, timeout)
+            if request.full_url.endswith("/issues/99"):
+                value = json.loads(body)
+                value["pull_request"] = {}
+                body = json.dumps(value).encode()
+            return status, headers, body
+
+        api.gh = GitHub("test-token", "your-org/project", transport=transport)
     alerts = execute(actions, api.gh, "live", tmp_path / "summary.md")
-    assert all(
-        path.endswith("labels") and body == {"labels": ["needs-maintainer"]}
-        for _, path, body in api.writes
-    )
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
     assert alerts
 
 
