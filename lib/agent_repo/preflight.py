@@ -38,7 +38,16 @@ HOSTED_RUNNERS = frozenset(
         "xcode-27-xlarge",
     }
 )
-TARGET_EVENTS = frozenset(
+SAFE_EVENTS = frozenset(
+    {
+        # GitHub "Events that trigger workflows", schedule: cron runs only on the default branch.
+        "schedule",
+        # GitHub REST "Create a workflow dispatch event": API tokens require Actions write.
+        "workflow_dispatch",
+    }
+)
+# Other target events retain unknown branch provenance for downstream filtering.
+DEFAULT_REF_EVENTS = frozenset(
     {
         "pull_request_target",
         "issue_comment",
@@ -49,6 +58,7 @@ TARGET_EVENTS = frozenset(
         "label",
         "milestone",
         "release",
+        "delete",
     }
 )
 AGENT_REF_EVENTS = frozenset(
@@ -57,7 +67,6 @@ AGENT_REF_EVENTS = frozenset(
         "pull_request",
         "pull_request_review",
         "pull_request_review_comment",
-        "create",
         "merge_group",
     }
 )
@@ -189,25 +198,11 @@ def _events(workflow: dict) -> dict:
     raise ValueError("invalid workflow triggers")
 
 
+def _target_events(events: dict) -> set[str]:
+    return events.keys() - SAFE_EVENTS - AGENT_REF_EVENTS - {"workflow_call", "workflow_run"}
+
+
 def _reachable_refs(events: dict, ctx: PreflightContext) -> set[str | None]:
-    independent = {
-        "schedule",
-        "workflow_dispatch",
-        "delete",
-        "workflow_call",
-        "workflow_run",
-        "gollum",
-        "page_build",
-        "watch",
-        "fork",
-        "public",
-        "registry_package",
-        "project",
-        "project_card",
-        "project_column",
-        "branch_protection_rule",
-    }
-    # Merge/check/status/deployment events can follow agent work and remain reachable.
     refs = set()
     for event, config in events.items():
         if event == "push":
@@ -221,8 +216,6 @@ def _reachable_refs(events: dict, ctx: PreflightContext) -> set[str | None]:
             refs.update({ctx.agent_ref_glob, None})
         elif event == "merge_group":
             refs.add("gh-readonly-queue/**")
-        elif event not in independent and event not in TARGET_EVENTS:
-            refs.add(None)
     return refs
 
 
@@ -386,11 +379,18 @@ def _head_reference(value: str) -> bool:
     return any(
         re.search(
             r"github\.(?:event\.pull_request\.(?:head\b|merge_commit_sha\b)|head_ref\b)"
-            r"|(?:refs/)?pull/[^\s/]+/(?:head|merge)\b|\bgh\s+pr\s+checkout\b",
+            r"|(?:refs/)?pull/[^\s/]+/(?:head|merge)\b|\bgh\s+pr\s+checkout\b"
+            r"|\bpulls/|\.head\.(?:sha|ref)\b",
             context,
         )
         for context in contexts
     )
+
+
+def _safe_action(step: dict) -> bool:
+    uses = step.get("uses")
+    match = re.fullmatch(r"([^@]+)@([0-9a-fA-F]{40})", uses) if isinstance(uses, str) else None
+    return "run" not in step and match is not None and match[1].lower() in TARGET_ACTIONS
 
 
 def _target_unsafe(
@@ -408,45 +408,17 @@ def _target_unsafe(
     steps = _steps(job)
     if not steps or "container" in job or "services" in job:
         return True
-    for step in steps:
-        uses = step.get("uses")
-        match = re.fullmatch(r"([^@]+)@([0-9a-fA-F]{40})", uses) if isinstance(uses, str) else None
-        if "run" in step or match is None or match[1].lower() not in TARGET_ACTIONS:
-            return True
-    return False
+    return any(not _safe_action(step) for step in steps)
 
 
 def _downstream_unsafe(
     job: dict, workflow: dict, writes: frozenset[str], grants: frozenset[str] | None
 ) -> bool:
-    steps = _steps(job)
-    executable = _executable(job, workflow)
-    if writes or _job_secrets(job, workflow, grants):
-        return True
-    if any(
-        re.search(r"github\.event\.workflow_run\.(head_\w+|pull_requests\b)", _context(value))
-        for value in _strings(executable)
-    ):
-        return True
-    for step in steps:
-        if any(
-            re.search(r"downloadArtifact|listWorkflowRunArtifacts|/artifacts", value)
-            for value in _strings(step.get("with"))
-        ):
-            return True
-        uses = step.get("uses", "")
-        if isinstance(uses, str) and "download" in uses.split("@")[0].lower():
-            return True
-        run = step.get("run", "")
-        if not isinstance(run, str):
-            return True
-        if re.search(r"\bgh\s+run\s+download\b", run):
-            return True
-        if re.search(r"\b(?:gh\s+api|curl|wget)\b", run) and re.search(
-            r"actions/(?:runs/[^/\s]+/)?artifacts\b", run
-        ):
-            return True
-    return False
+    return bool(
+        writes
+        or _job_secrets(job, workflow, grants)
+        or any(not _safe_action(step) for step in _steps(job))
+    )
 
 
 def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposure]:
@@ -479,8 +451,10 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
         if "pull_request" in triggers[path]:
             refs[path].add(None)
         # Read-only target jobs can still produce artifacts containing PR code.
-        if TARGET_EVENTS.intersection(triggers[path]):
-            refs[path].add(ctx.default_branch)
+        refs[path].update(
+            ctx.default_branch if event in DEFAULT_REF_EVENTS else None
+            for event in _target_events(triggers[path])
+        )
     downstream = set()
     changed = True
     while changed:
@@ -512,12 +486,12 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 downstream.add(path)
                 refs[path].add(ctx.default_branch)
                 changed = True
-    targets = {path for path in parsed if TARGET_EVENTS.intersection(triggers[path])}
+    targets = {path for path in parsed if _target_events(triggers[path])}
 
     def visit(
         path, events, is_reachable, is_downstream, agent_ref_only, active, ceiling=None, grants=None
     ):
-        is_target = bool(TARGET_EVENTS.intersection(events))
+        is_target = bool(_target_events(events))
         workflow = parsed[path]
         for name, job in workflow["jobs"].items():
             if not _enabled(job):
