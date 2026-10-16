@@ -609,6 +609,7 @@ def test_context_taxonomy_uses_shared_loader_and_unknown(action, tmp_path):
         "HEX",
         "percent",
         "reverse",
+        "json_escaped",
     ],
 )
 def test_derived_credentials_and_canary_cannot_escape(
@@ -618,7 +619,11 @@ def test_derived_credentials_and_canary_cannot_escape(
     import os
     from urllib.parse import quote
 
-    credential = "ab?ÿ" if subject == "key" else "canary?/ÿ"
+    credential = (
+        'ab"cd\\ef12'
+        if encoding == "json_escaped"
+        else ("ab?ÿ" if subject == "key" else "canary?/ÿ")
+    )
     if subject == "key":
         monkeypatch.setenv("ROLE_KEY", credential)
     else:
@@ -639,9 +644,10 @@ def test_derived_credentials_and_canary_cannot_escape(
         "HEX": raw.hex().upper(),
         "percent": quote(credential, safe=""),
         "reverse": credential[::-1],
+        "json_escaped": credential,
     }
     leak = forms[encoding]
-    if source == "tier1" or encoding == "literal_key_name":
+    if source == "tier1" or encoding in {"literal_key_name", "json_escaped"}:
         decision = copy.deepcopy(action["decision"])
         decision["notes"] = [leak]
         Path(os.environ["DECISION_FILE"]).write_text(json.dumps(decision))
@@ -649,7 +655,7 @@ def test_derived_credentials_and_canary_cannot_escape(
         action.update(source=source, leak=lambda _: leak)
     assert action["module"].main() == 1
     assert action["calls"]
-    if encoding == "literal_key_name":
+    if encoding in {"literal_key_name", "json_escaped"}:
         assert not action["output"].exists()
     text = action["output"].read_text() if action["output"].exists() else ""
     if text:
@@ -776,25 +782,53 @@ def test_runaway_output_is_bounded_and_child_killed(action, monkeypatch, capsys,
     )
     real_popen = subprocess.Popen
     children = []
+    pid_file = action["output"].with_name("grandchild.pid")
 
     def flood(*args, **kwargs):
         if Path(args[0][0]).name == "yq":
             return real_popen(*args, **kwargs)
         fd = 1 if stream == "stdout" else 2
-        code = f"import os,time; os.write({fd}, b'x' * (4 * 1024 * 1024)); time.sleep(10)"
-        if stream == "timeout":
-            code = "import time; time.sleep(10)"
+        grandchild = (
+            "import os,time; from pathlib import Path; "
+            f"Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(60)"
+        )
+        code = (
+            "import os,subprocess,sys,time; from pathlib import Path\n"
+            f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+            f"while not Path({str(pid_file)!r}).exists(): time.sleep(0.005)\n"
+        )
+        if stream != "timeout":
+            code += f"os.write({fd}, b'x' * (4 * 1024 * 1024))\n"
+        code += "time.sleep(60)"
         child = real_popen([sys.executable, "-c", code], **kwargs)
         children.append(child)
         return child
 
     monkeypatch.setattr(module.subprocess, "Popen", flood)
     start = time.monotonic()
-    assert module.main() == 1
-    assert time.monotonic() - start < 5
-    assert len(children) == 1 and children[0].returncode is not None
-    with pytest.raises(ProcessLookupError):
-        os.killpg(children[0].pid, 0)
+    try:
+        assert module.main() == 1
+        assert time.monotonic() - start < 5
+        assert len(children) == 1 and children[0].returncode is not None
+        grandchild_pid = int(pid_file.read_text())
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(grandchild_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        with pytest.raises(ProcessLookupError):
+            os.kill(grandchild_pid, 0)
+        with pytest.raises(ProcessLookupError):
+            os.killpg(children[0].pid, 0)
+    finally:
+        for child in children:
+            try:
+                os.killpg(child.pid, 9)
+            except ProcessLookupError:
+                pass
+            child.wait()
     data = json.loads(action["output"].read_text())
     assert data["escalate"]["to"] == "maintainer"
     assert data["rca"] is None

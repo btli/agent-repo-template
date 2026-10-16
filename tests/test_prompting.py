@@ -106,6 +106,7 @@ def test_setup_config_has_env_reference_and_no_key(tmp_path, kind, url, base):
         pytest.param({"GATEWAY_KIND": "credential-value"}, id="kind"),
         pytest.param({"GATEWAY_URL": "http://gateway.example"}, id="http"),
         pytest.param({"GATEWAY_URL": "https://user:pw@gateway.example"}, id="userinfo"),
+        pytest.param({"GATEWAY_URL": "https://:pw@gateway.example"}, id="password-only-userinfo"),
         pytest.param({"GATEWAY_URL": "https://gateway.example?x=1"}, id="query"),
     ],
 )
@@ -185,3 +186,19 @@ def test_gateway_model_families(tmp_path, model, accepted):
         )
     else:
         assert not path.exists()
+
+
+def test_setup_install_requires_hashes():
+    import shlex
+    from pathlib import Path
+
+    from agent_repo.yamljson import load_yaml
+
+    action = load_yaml(Path("actions/setup/action.yml"))
+    install = next(
+        step
+        for step in action["runs"]["steps"]
+        if step.get("name") == "Install hash-locked omnigent"
+    )
+    command = shlex.split(install["run"].replace("\\\n", ""))
+    assert "--require-hashes" in command
