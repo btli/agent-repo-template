@@ -112,7 +112,12 @@ def _can_close(close: dict, ctx: ApplyContext) -> bool:
         or ctx.github is None
     ):
         return False
-    item = ctx.github.request("GET", f"issues/{target}")
+    try:
+        item = ctx.github.request("GET", f"issues/{target}")
+    except GitHubError as exc:
+        if exc.status in {404, 410}:
+            return False
+        raise
     if not isinstance(item, dict) or item.get("state") not in {"open", "closed"}:
         raise ValueError("invalid duplicate response")
     return item["state"] == "open" and "pull_request" not in item
