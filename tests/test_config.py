@@ -45,6 +45,16 @@ def test_unknown_key_names_the_key(tmp_path: Path):
         load_config(target)
 
 
+def test_duplicate_mode_key_rejects_config(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "config.yml"
+    path.write_text(path.read_text() + "\nmode:\n  triage: live\n  review: live\n  fix: live\n")
+    with pytest.raises(ConfigError, match="duplicate key mode") as caught:
+        load_config(target)
+    assert str(path) in str(caught.value)
+    assert "live" not in str(caught.value)
+
+
 def test_apply_min_must_be_numeric_in_range(tmp_path: Path):
     target = copy_agents(tmp_path)
     path = target / "config.yml"

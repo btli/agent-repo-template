@@ -20,6 +20,23 @@ def test_invalid_yaml_raises_yaml_error(tmp_path: Path):
         load_yaml(path)
 
 
+@pytest.mark.parametrize(
+    ("content", "duplicate"),
+    [
+        ("repeat: first\nrepeat: second\n", "repeat"),
+        ("outer:\n  repeat: first\n  repeat: second\n", "repeat"),
+    ],
+)
+def test_duplicate_yaml_keys_raise_yaml_error(tmp_path: Path, content: str, duplicate: str):
+    path = tmp_path / "duplicate.yml"
+    path.write_text(content)
+    with pytest.raises(YamlError, match=f"duplicate key {duplicate}") as caught:
+        load_yaml(path)
+    assert str(path) in str(caught.value)
+    assert "first" not in str(caught.value)
+    assert "second" not in str(caught.value)
+
+
 def test_missing_yq_mentions_v4(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     path = tmp_path / "valid.yml"
     path.write_text("value: true\n")

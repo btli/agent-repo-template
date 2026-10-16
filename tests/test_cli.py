@@ -46,3 +46,20 @@ def test_check_config_rejects_bad_config(tmp_path: Path, capsys: pytest.CaptureF
     (target / "config.yml").write_text("version: 1\nunknown: true\n")
     assert main(["check_config", str(target)]) == 1
     assert "unknown" in capsys.readouterr().err
+
+
+def test_check_config_rejects_duplicate_mode_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    target = tmp_path / ".agents"
+    target.mkdir()
+    for path in Path("tests/fixtures/agents").iterdir():
+        (target / path.name).write_bytes(path.read_bytes())
+    config = target / "config.yml"
+    config.write_text(config.read_text() + "\nmode:\n  triage: live\n  review: live\n  fix: live\n")
+
+    assert main(["check_config", str(target)]) == 1
+    error = capsys.readouterr().err
+    assert "duplicate key mode" in error
+    assert str(config) in error
+    assert "live" not in error

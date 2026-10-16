@@ -41,7 +41,16 @@ def load_yaml(path: Path) -> object:
         raise YamlError(f"cannot read YAML file: {path}") from exc
     if result.returncode != 0:
         raise YamlError(f"invalid YAML: {path}")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        mapping: dict[str, object] = {}
+        for key, value in pairs:
+            if key in mapping:
+                raise YamlError(f"duplicate key {key}: {path}")
+            mapping[key] = value
+        return mapping
+
     try:
-        return json.loads(result.stdout)
+        return json.loads(result.stdout, object_pairs_hook=reject_duplicate_keys)
     except json.JSONDecodeError as exc:
         raise YamlError(f"invalid YAML: {path}") from exc
