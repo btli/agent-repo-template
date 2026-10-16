@@ -279,6 +279,7 @@ def test_close_with_all_guards(kind, tmp_path):
     ctx = context(api, enabled=True)
     data = decision()
     data["close"] = closing(kind)
+    data["close"]["p"] = ctx.config.raw["thresholds"]["close_min"]
     run(data, ctx, api, tmp_path)
     assert api.writes[-1] == (
         "PATCH",
@@ -905,6 +906,29 @@ def test_security_cannot_close_or_apply_normal_labels():
     assert labels(actions) == {"needs-maintainer"}
     assert not any(action.kind == "close" for action in actions)
     assert "SECURITY.md" in bodies(actions)
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_missing_duplicate_target_preserves_labels_and_suggestion(status, tmp_path):
+    api = API()
+
+    def transport(request, timeout):
+        response = api.transport(request, timeout)
+        if request.method == "GET" and request.full_url.endswith("/issues/99"):
+            return status, {}, b"{}"
+        return response
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    data = decision()
+    data["close"] = closing()
+    alerts, _ = run(data, context(api, enabled=True), api, tmp_path)
+    assert not alerts
+    assert set(api.labels) == {"type:bug", "area:api", "P2", "needs-maintainer"}
+    assert api.assignees == ["octocat"]
+    assert len(api.comments) == 1
+    assert "Suggested closure requires maintainer confirmation." in api.comments[0]["body"]
+    assert api.issue_state == "open"
+    assert all(method == "POST" and path.startswith("issues/7/") for method, path, _ in api.writes)
 
 
 def test_duplicate_lookup_error_fails_closed(tmp_path):
