@@ -89,6 +89,39 @@ def test_paginate_follows_next_link_for_three_pages():
     ]
 
 
+def test_paginate_combines_keyed_items_from_two_object_pages():
+    seen: list[str] = []
+    responses = {
+        "https://api.github.com/repos/your-org/project/issues?state=open": (
+            {"Link": '<https://api.github.com/page/2>; rel="next"'},
+            {"items": [1]},
+        ),
+        "https://api.github.com/page/2": ({}, {"items": [2, 3]}),
+    }
+
+    def transport(request: Request, timeout: float):
+        seen.append(request.full_url)
+        headers, payload = responses[request.full_url]
+        return 200, headers, json.dumps(payload).encode()
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    assert api.paginate("issues", {"state": "open"}, key="items") == [1, 2, 3]
+    assert seen == list(responses)
+
+
+def test_write_request_sends_json_content_type_and_body():
+    captured: list[Request] = []
+
+    def transport(request: Request, timeout: float):
+        captured.append(request)
+        return 200, {}, b"{}"
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    api.request("POST", "issues", body={"title": "Example"})
+    assert captured[0].get_header("Content-type") == "application/json"
+    assert captured[0].data == b'{"title": "Example"}'
+
+
 @pytest.mark.parametrize(
     "link",
     [

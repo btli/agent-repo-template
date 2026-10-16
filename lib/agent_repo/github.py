@@ -255,8 +255,6 @@ class GitHub:
                 relation = value.strip()
                 if len(relation) >= 2 and relation[0] == relation[-1] == '"':
                     relation = relation[1:-1]
-                elif len(relation) >= 2 and relation[0] == relation[-1] == "'":
-                    relation = relation[1:-1]
                 if any(token.lower() == "next" for token in relation.split()):
                     return match.group(1)
         return None

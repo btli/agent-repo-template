@@ -14,12 +14,22 @@ def copy_agents(tmp_path: Path) -> Path:
     return target
 
 
-def test_fixture_config_loads_and_has_default_modes():
-    config = load_config(FIXTURE)
+def test_fixture_config_loads_and_preserves_each_mode(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "config.yml"
+    path.write_text(
+        path.read_text().replace(
+            "  triage: dry-run\n  review: dry-run\n  fix: dry-run",
+            "  triage: live\n  review: dry-run\n  fix: live",
+        )
+    )
+    config = load_config(target)
     assert config.areas
     assert [area.owners for area in config.areas] == [("@your-org/maintainers",)]
     assert config.labels
-    assert config.mode_for("fix") == "dry-run"
+    assert config.mode_for("triage") == "live"
+    assert config.mode_for("review") == "dry-run"
+    assert config.mode_for("fix") == "live"
 
 
 def test_unknown_key_names_the_key(tmp_path: Path):
