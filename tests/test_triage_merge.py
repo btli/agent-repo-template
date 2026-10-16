@@ -94,12 +94,13 @@ def test_failed_tier2_clears_inherited_close_agreement(decision, failure):
     assert decision == original
 
 
-def test_matching_close_vote_and_info_request(decision):
+@pytest.mark.parametrize("agrees", [True, False])
+def test_matching_close_vote_and_info_request(decision, agrees):
     tier2 = copy.deepcopy(decision)
-    tier2["close"]["tier2_agrees"] = True
+    tier2["close"]["tier2_agrees"] = agrees
     tier2["needs_info"] = {"text": "Which version?"}
     result = merge(decision, tier2, None)
-    assert result["close"]["tier2_agrees"] is True
+    assert result["close"]["tier2_agrees"] is agrees
     assert result["needs_info"] == {"text": "Which version?"}
     assert validate(result, load_schema("decision")) == []
 
@@ -446,6 +447,30 @@ def test_invalid_taxonomy_fails_closed(action, context):
     assert json.loads(action["output"].read_text())["escalate"]["to"] == "maintainer"
 
 
+@pytest.mark.parametrize("guard", ["runner_temp", "taxonomy", "run_id"])
+def test_unsafe_context_escalates_before_spawning(action, monkeypatch, guard):
+    import os
+
+    if guard == "runner_temp":
+        temp = Path(os.environ["GITHUB_WORKSPACE"]) / "runner"
+        temp.mkdir()
+        monkeypatch.setenv("RUNNER_TEMP", str(temp))
+    elif guard == "taxonomy":
+        path = Path(os.environ["CONTEXT_FILE"])
+        context = json.loads(path.read_text())
+        labels = json.loads(context["labels"])
+        labels["labels"].append("credential-value")
+        context["labels"] = json.dumps(labels)
+        path.write_text(json.dumps(context))
+    else:
+        action["decision"]["run_id"] = "credential-value"
+        Path(os.environ["DECISION_FILE"]).write_text(json.dumps(action["decision"]))
+    assert action["module"].main() == 1
+    assert not action["calls"]
+    if action["output"].exists():
+        assert json.loads(action["output"].read_text())["escalate"]["to"] == "maintainer"
+
+
 @pytest.mark.parametrize(
     "name",
     ["TOKENIZERS_PARALLELISM", "SSH_AUTH_SOCK", "KEYBOARD_LAYOUT", "SECRETARY", "PASSWORDLESS"],
@@ -573,6 +598,7 @@ def test_context_taxonomy_uses_shared_loader_and_unknown(action, tmp_path):
 @pytest.mark.parametrize(
     "encoding",
     [
+        "literal_key_name",
         "base64",
         "base64_unpadded",
         "base64_bearer",
@@ -602,6 +628,7 @@ def test_derived_credentials_and_canary_cannot_escape(
         )
     raw = credential.encode()
     forms = {
+        "literal_key_name": "LLM_API_KEY",
         "base64": base64.b64encode(raw).decode(),
         "base64_unpadded": base64.b64encode(raw).decode().rstrip("="),
         "base64_bearer": base64.b64encode(b"Bearer " + raw).decode(),
@@ -614,14 +641,16 @@ def test_derived_credentials_and_canary_cannot_escape(
         "reverse": credential[::-1],
     }
     leak = forms[encoding]
-    if source == "tier1":
+    if source == "tier1" or encoding == "literal_key_name":
         decision = copy.deepcopy(action["decision"])
         decision["notes"] = [leak]
         Path(os.environ["DECISION_FILE"]).write_text(json.dumps(decision))
-    else:
+    if source != "tier1":
         action.update(source=source, leak=lambda _: leak)
     assert action["module"].main() == 1
     assert action["calls"]
+    if encoding == "literal_key_name":
+        assert not action["output"].exists()
     text = action["output"].read_text() if action["output"].exists() else ""
     if text:
         assert json.loads(text)["escalate"]["to"] == "maintainer"
@@ -710,6 +739,23 @@ def test_explicit_short_credentials_still_fail_closed(action, monkeypatch, name)
     assert action["module"].main() == 1
     assert not action["calls"]
     assert not action["output"].exists()
+
+
+def test_real_runner_preserves_success_and_output(action):
+    import sys
+
+    result = action["real_runner"](
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('success'); print('diagnostic', file=sys.stderr)",
+        ],
+        env={},
+        timeout=3,
+    )
+    assert result.returncode == 0
+    assert result.stdout == b"success\n"
+    assert result.stderr == b"diagnostic\n"
 
 
 @pytest.mark.parametrize("stream", ["stdout", "stderr", "timeout"])

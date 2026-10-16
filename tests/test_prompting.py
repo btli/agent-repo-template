@@ -100,21 +100,32 @@ def test_setup_config_has_env_reference_and_no_key(tmp_path, kind, url, base):
     assert path.stat().st_mtime_ns == before
 
 
-def test_setup_invalid_input_is_sanitized(tmp_path):
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"GATEWAY_KIND": "credential-value"}, id="kind"),
+        pytest.param({"GATEWAY_URL": "http://gateway.example"}, id="http"),
+        pytest.param({"GATEWAY_URL": "https://user:pw@gateway.example"}, id="userinfo"),
+        pytest.param({"GATEWAY_URL": "https://gateway.example?x=1"}, id="query"),
+    ],
+)
+def test_setup_invalid_input_is_sanitized(tmp_path, overrides):
     import os
     import subprocess
     import sys
 
+    env = dict(
+        os.environ,
+        HOME=str(tmp_path),
+        GATEWAY_KIND="databricks",
+        GATEWAY_URL="https://gateway.example",
+        MODEL="claude-sonnet-4-6",
+        API_KEY_ENV="LLM_API_KEY",
+    )
+    env.update(overrides)
     result = subprocess.run(
         [sys.executable, "actions/setup/configure.py"],
-        env=dict(
-            os.environ,
-            HOME=str(tmp_path),
-            GATEWAY_KIND="credential-value",
-            GATEWAY_URL="https://gateway.example",
-            MODEL="claude-sonnet-4-6",
-            API_KEY_ENV="LLM_API_KEY",
-        ),
+        env=env,
         capture_output=True,
         text=True,
     )

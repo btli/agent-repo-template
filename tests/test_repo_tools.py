@@ -141,7 +141,7 @@ def test_default_glob_searches_template_with_large_lockfiles():
 
 @pytest.mark.parametrize("kwargs", [{}, {"per_call_bytes": 1000000}])
 def test_scan_cap_is_65536_separate_from_response_cap(tmp_path, kwargs):
-    (tmp_path / "a").write_text("x" * 20000 + "needle\n")
+    (tmp_path / "a").write_text("x\n" * 10000 + "needle\n")
     obj = reader(tmp_path, **kwargs)
     assert obj.per_call_bytes == 65536
     assert obj.grep("needle")[0][2].endswith("needle")
@@ -176,11 +176,11 @@ def test_grep_unicode_is_bounded_after_serialization(tmp_path):
     lines = ["é" * 500] * 20
     (tmp_path / "a").write_text("\n".join(lines) + "\n")
     unbounded = [("a", number, line) for number, line in enumerate(lines, 1)]
-    assert module.response_bytes(unbounded) > 32768
+    assert module.response_bytes(unbounded) > 16384
     result = reader(tmp_path).grep("é")
     assert ("a", 1, lines[0]) in result
     assert any("truncated" in line for _, _, line in result)
-    assert module.response_bytes(result) <= 32768
+    assert module.response_bytes(result) <= 16384
 
 
 def test_grep_serialized_output_stays_within_call_cap(tmp_path):

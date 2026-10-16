@@ -11,6 +11,9 @@ from pathlib import Path
 
 from agent_repo.policies import agent_environment
 
+# Reserve room for the runner stdout prefix within a 16 KiB pipe.
+MAX_RESPONSE_BYTES = 16000
+
 
 class ToolError(Exception):
     """A repository read was refused or exceeded its budget."""
@@ -28,9 +31,9 @@ def fixed_tool_errors(function):
 
 
 def response_bytes(result) -> int:
-    """Bound both the runtime JSON-string fallback and its outer response envelope."""
+    """Count the JSON-string fallback, outer response envelope and trailing newline."""
     serialized = result if isinstance(result, str) else json.dumps(result)
-    return len(json.dumps({"result": serialized}).encode())
+    return len(json.dumps({"result": serialized}).encode()) + 1
 
 
 class RepoReader:
@@ -180,7 +183,7 @@ class RepoReader:
             if size > self.per_call_bytes
             else "\n[truncated: request a later start_line or smaller window]"
         )
-        while response_bytes(text + (marker if truncated else "")) > 32768:
+        while response_bytes(text + (marker if truncated else "")) > MAX_RESPONSE_BYTES:
             truncated = True
             text = text[: len(text) // 2]
         return text + (marker if truncated else "")
@@ -199,12 +202,12 @@ class RepoReader:
             encoded = json.dumps(results + [candidate, marker], ensure_ascii=False).encode()
             if (
                 len(encoded) > self.per_call_bytes
-                or response_bytes(results + [candidate, marker]) > 32768
+                or response_bytes(results + [candidate, marker]) > MAX_RESPONSE_BYTES
             ):
                 if (
                     len(json.dumps(results + [marker], ensure_ascii=False).encode())
                     <= self.per_call_bytes
-                    and response_bytes(results + [marker]) <= 32768
+                    and response_bytes(results + [marker]) <= MAX_RESPONSE_BYTES
                 ):
                     results.append(marker)
                 return False
