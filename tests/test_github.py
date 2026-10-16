@@ -553,6 +553,89 @@ def test_post_redirect_error_preserves_status_and_hides_token():
     assert received == ["/repos/your-org/project/issues"]
 
 
+@pytest.mark.parametrize("method", ["POST", "PATCH", "PUT", "DELETE"])
+@pytest.mark.parametrize("status", [301, 302, 303])
+def test_write_redirects_are_refused(method: str, status: int):
+    target_requests: list[str] = []
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def _record(self):
+            target_requests.append(self.command)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"[]")
+
+        def do_GET(self):
+            self._record()
+
+        def do_POST(self):
+            self._record()
+
+        def do_PATCH(self):
+            self._record()
+
+        def do_PUT(self):
+            self._record()
+
+        def do_DELETE(self):
+            self._record()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    target = HTTPServer(("127.0.0.1", 0), TargetHandler)
+    target_thread = threading.Thread(target=target.serve_forever)
+    target_thread.start()
+    target_url = f"http://127.0.0.1:{target.server_port}/landed"
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def _redirect(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.send_response(int(self.path.rsplit("/", 1)[-1]))
+            self.send_header("Location", target_url)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_POST(self):
+            self._redirect()
+
+        def do_PATCH(self):
+            self._redirect()
+
+        def do_PUT(self):
+            self._redirect()
+
+        def do_DELETE(self):
+            self._redirect()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    source = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+    source_thread = threading.Thread(target=source.serve_forever)
+    source_thread.start()
+    try:
+        api = GitHub(
+            TOKEN,
+            "your-org/project",
+            api_url=f"http://127.0.0.1:{source.server_port}",
+        )
+        with pytest.raises(GitHubError) as caught:
+            api.request(method, f"issues/{status}", body={"key": "value"})
+        assert caught.value.status == status
+        assert caught.value.message == "refused redirect for write request"
+        assert _credential_is_absent(str(caught.value))
+        assert _credential_is_absent(repr(caught.value))
+        assert target_requests == []
+    finally:
+        source.shutdown()
+        source.server_close()
+        source_thread.join()
+        target.shutdown()
+        target.server_close()
+        target_thread.join()
+
+
 def test_same_origin_redirect_keeps_authorization():
     from agent_repo.github import _SafeRedirectHandler
 

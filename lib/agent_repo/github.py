@@ -62,6 +62,8 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         headers: Any,
         new_url: str,
     ) -> urllib.request.Request | None:
+        if request.get_method() not in ("GET", "HEAD"):
+            raise GitHubError(code, "refused redirect for write request", token=self._token)
         redirected = super().redirect_request(request, response, code, message, headers, new_url)
         if redirected is None:
             return None

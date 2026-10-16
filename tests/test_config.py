@@ -15,6 +15,11 @@ def copy_agents(tmp_path: Path) -> Path:
 
 
 def test_fixture_config_loads_and_preserves_each_mode(tmp_path: Path):
+    fixture_config = load_config(FIXTURE)
+    assert fixture_config.mode_for("triage") == "dry-run"
+    assert fixture_config.mode_for("review") == "dry-run"
+    assert fixture_config.mode_for("fix") == "dry-run"
+
     target = copy_agents(tmp_path)
     path = target / "config.yml"
     path.write_text(
