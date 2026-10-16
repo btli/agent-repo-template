@@ -718,12 +718,28 @@ def test_cli_rejects_invalid_arguments(args, capsys):
     assert "usage:" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("enabled", ["false", ""])
+def test_composite_action_input_defaults_use_runner_contexts():
+    action = load_yaml(Path("actions/gate/action.yml"))
+    # actions/runner src/Runner.Worker/action_yaml.json defines input-default-context.
+    allowed = {"github", "strategy", "matrix", "job", "runner", "hashFiles"}
+    for name, definition in action["inputs"].items():
+        for expression in re.findall(r"\$\{\{(.*?)\}\}", str(definition.get("default", "")), re.S):
+            expression = re.sub(r"'(?:[^']|'')*'", "", expression)
+            identifiers = set(re.findall(r"(?<![\w.-])\b([A-Za-z_]\w*)", expression))
+            assert identifiers - {"true", "false", "null"} <= allowed, (name, expression)
+
+
+@pytest.mark.parametrize("enabled", ["false", "", None])
 def test_composite_action_executes_gate_and_exposes_outputs(enabled, tmp_path, monkeypatch):
-    checkout, _, _ = prepare_cli(tmp_path, monkeypatch, enabled)
+    checkout, _, _ = prepare_cli(tmp_path, monkeypatch, enabled or "")
+    if enabled is None:
+        monkeypatch.delenv("AGENTS_ENABLED")
     shutil.rmtree(checkout)
     action_path = Path("actions/gate").resolve()
     action = load_yaml(action_path / "action.yml")
+    for name in ("enabled", "bot-login"):
+        assert action["inputs"][name].get("required") is True
+        assert "default" not in action["inputs"][name]
     checkout_step = next(step for step in action["runs"]["steps"] if "uses" in step)
     assert checkout_step.get("if") == "inputs.enabled == 'true'"
     step = next(step for step in action["runs"]["steps"] if step.get("id") == "gate")

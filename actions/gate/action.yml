@@ -6,10 +6,10 @@ inputs:
     required: true
   enabled:
     description: Only the literal true enables agents.
-    default: ${{ vars.AGENTS_ENABLED }}
+    required: true
   bot-login:
     description: GitHub App bot login.
-    default: ${{ vars.AGENT_BOT_LOGIN }}
+    required: true
   token:
     description: Read-only repository token with Actions, issues and PR read access.
     default: ${{ github.token }}
