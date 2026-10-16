@@ -9,8 +9,10 @@ def test_close_reference_cannot_redirect_write(tmp_path):
     api = API()
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     run(data, context(api, enabled=True), api, tmp_path)
     assert api.writes and all(path.startswith("issues/7") for _, path, _ in api.writes)
+    assert api.issue_state == "closed"
 
 
 @pytest.mark.parametrize("label", ["agent:fix", "agent:closed", "agent:skip"])
@@ -260,6 +262,7 @@ def test_forged_or_unrelated_marker_cannot_suppress_close_explanation(author, bo
     api = API()
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     ctx = context(api, enabled=True)
     explanation = next(
         action.payload["body"] for action in plan(data, ctx) if action.kind == "comment"
@@ -286,7 +289,8 @@ def test_forged_or_unrelated_marker_cannot_suppress_close_explanation(author, bo
     comments = [body["body"] for method, path, body in writes if path.endswith("/comments")]
     assert comments == [explanation]
     assert "reopen" in comments[0].lower() and "issues/99" in comments[0]
-    assert writes[-1][0] == "PATCH" and writes[-1][1] == "issues/7"
+    assert writes[-2][0] == "PATCH" and writes[-2][1] == "issues/7"
+    assert writes[-1] == ("POST", "issues/7/labels", {"labels": ["agent:closed"]})
     assert (
         next(i for i, call in enumerate(writes) if call[1].endswith("/comments")) < len(writes) - 1
     )
@@ -298,6 +302,7 @@ def test_close_without_explanation_cannot_execute(tmp_path):
     api = API()
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = [
         action for action in plan(data, context(api, enabled=True)) if action.kind != "comment"
     ]
@@ -405,6 +410,7 @@ def test_fresh_kill_switch_blocks_inflight_batch(batch, switch, tmp_path):
     data = decision()
     if batch in {"close", "prewrite-failure"}:
         data["close"] = closing()
+        data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     elif batch == "maintainer":
         data = None
     actions = plan(data, ctx)

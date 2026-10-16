@@ -213,6 +213,7 @@ def test_clean_production_secret_set_posts_comment(maximum, tmp_path, record_pro
         ("type", ("bug", "type:bug"), "type:bug"),
         ("area", ("api", "area:api"), "area:api"),
         ("priority", ("p2", "priority: P2"), "P2"),
+        ("needs_info", (True,), "needs-info"),
     ],
 )
 @pytest.mark.parametrize("probability,allowed", [(0.8, True), (0.79, False)])
@@ -223,6 +224,7 @@ def test_labels_require_answer_threshold(answer, values, label, probability, all
         actions = plan(data, context())
         assert not any(action.payload.get("alerts") for action in actions)
         assert (label in labels(actions)) is allowed
+        assert ("needs-maintainer" in labels(actions)) is (not allowed)
 
 
 @pytest.mark.parametrize("priority", ["P0", "P1"])
@@ -329,12 +331,13 @@ def test_close_with_all_guards(kind, prose, tmp_path):
     ) in body
     assert f"Reference: <{link}>" in body
     assert body.endswith("<!-- agent:triage run=run-1 -->")
-    assert api.writes[-1] == (
+    assert api.writes[-2] == (
         "PATCH",
         "issues/7",
         {"state": "closed", "state_reason": "not_planned"},
     )
-    assert any("agent:closed" in (body or {}).get("labels", []) for _, _, body in api.writes)
+    assert api.writes[-1] == ("POST", "issues/7/labels", {"labels": ["agent:closed"]})
+    assert all("agent:closed" not in body.get("labels", []) for _, _, body in api.writes[:-1])
     assert any("reopen" in (body or {}).get("body", "").lower() for _, _, body in api.writes)
 
 
@@ -350,6 +353,9 @@ def test_close_with_all_guards(kind, prose, tmp_path):
         "self",
         "docs",
         "target_pr",
+        "missing_answer",
+        "none_answer",
+        "different_answer",
     ],
 )
 def test_close_rejects_missing_guard(guard, tmp_path):
@@ -357,6 +363,7 @@ def test_close_rejects_missing_guard(guard, tmp_path):
     ctx = context(None if guard == "no_api" else api, enabled=guard != "disabled")
     data = decision()
     data["close"] = closing("out_of_scope" if guard == "docs" else "duplicate")
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     if guard == "confidence":
         data["close"]["p"] = 0.91
     if guard == "lexical":
@@ -365,6 +372,13 @@ def test_close_rejects_missing_guard(guard, tmp_path):
         data["close"]["tier2_agrees"] = False
     if guard == "self":
         data["close"]["target"] = 7
+        data["answers"]["duplicate_of"]["value"] = "#7"
+    if guard == "missing_answer":
+        del data["answers"]["duplicate_of"]
+    if guard == "none_answer":
+        data["answers"]["duplicate_of"]["value"] = "none"
+    if guard == "different_answer":
+        data["answers"]["duplicate_of"]["value"] = "#100"
     if guard == "docs":
         data["close"]["docs_ref"] = "https://example.org/unlisted"
     if guard == "target_pr":
@@ -384,12 +398,18 @@ def test_close_rejects_missing_guard(guard, tmp_path):
     assert "agent:closed" not in labels(actions)
     assert "needs-maintainer" in labels(actions)
     assert "suggest" in bodies(actions).lower()
+    alerts, _ = run(data, ctx, api, tmp_path)
+    assert not alerts
+    assert api.issue_state == "open"
+    assert api.comments and "Suggested closure" in api.comments[0]["body"]
+    assert "needs-maintainer" in api.labels and "agent:closed" not in api.labels
 
 
 def test_dry_run_has_no_writes_and_lists_actions(tmp_path):
     api = API()
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     _, summary = run(data, context(api, enabled=True), api, tmp_path, "dry-run")
     assert api.writes == []
     assert all(kind in summary for kind in ("add_labels", "comment", "close"))
@@ -401,13 +421,21 @@ def test_live_order_labels_comment_close(tmp_path):
     api = API()
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, context(api, enabled=True))
     shuffled = [
         next(action for action in actions if action.kind == kind)
         for kind in ("close", "comment", "add_labels")
     ]
     assert not execute(shuffled, api.gh, "live", tmp_path / "summary.md")
-    assert [path.rsplit("/", 1)[-1] for _, path, _ in api.writes] == ["labels", "comments", "7"]
+    assert [path.rsplit("/", 1)[-1] for _, path, _ in api.writes] == [
+        "labels",
+        "comments",
+        "7",
+        "labels",
+    ]
+    assert "agent:closed" not in api.writes[0][2]["labels"]
+    assert api.writes[-1][2] == {"labels": ["agent:closed"]}
 
 
 def test_missing_closure_explanation_blocks_all_normal_writes(tmp_path):
@@ -420,6 +448,7 @@ def test_missing_closure_explanation_blocks_all_normal_writes(tmp_path):
     )
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = [
         replace(action, payload={**action.payload, "comment_body": "Missing explanation."})
         if action.kind == "close"
@@ -640,28 +669,30 @@ def test_invalid_artifact_only_maintainer(bad, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "question,value",
+    "question,value,with_close",
     [
-        (question, value)
+        (question, value, True)
         for question in ("type", "area", "priority", "docs_ref", "duplicate_of")
         for value in (True, 1, None, "unlisted")
     ]
     + [
-        (question, value)
+        (question, value, True)
         for question in ("needs_info", "out_of_scope", "security_sensitive")
         for value in ("yes", 1, None)
     ]
-    + [("priority", "")]
-    + [("duplicate_of", value) for value in ("#100", 7, "7", "#0", "none")],
+    + [("priority", "", True)]
+    + [("duplicate_of", value, True) for value in (7, "7", "#0")]
+    + [("duplicate_of", value, False) for value in ("99", "#0", "#x", "")],
 )
-def test_malformed_answer_cannot_authorize_close(question, value, tmp_path):
+def test_malformed_answer_cannot_authorize_close(question, value, with_close, tmp_path):
     from agent_repo.apply.actions import check_identity
 
     api = API()
     ctx = context(api, enabled=True)
     data = decision()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     data["answers"][question] = {"value": value, "p": 0.9}
-    data["close"] = closing()
+    data["close"] = closing() if with_close else None
     assert not check_identity(data, ctx, "decision"), "generic schema should accept this value"
     alerts, summary = run(data, ctx, api, tmp_path)
     assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
@@ -704,6 +735,7 @@ def test_mixed_targets_never_write(tmp_path):
     api = API()
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, context(api, enabled=True))
     actions = [
         replace(action, payload={**action.payload, "number": 8})
@@ -997,10 +1029,29 @@ def test_composite_actions_do_not_use_python_module_or_command_mode(command):
             )
 
 
-def test_label_absent_from_allowlist_is_dropped():
-    ctx = context()
-    ctx = replace(ctx, config=replace(ctx.config, labels=("needs-maintainer",)))
-    assert not labels(plan(decision(), ctx)) & {"type:bug", "area:api", "P2"}
+@pytest.mark.parametrize("omitted", [("area:api", "P2"), ("agent:closed",)])
+def test_label_absent_from_allowlist_is_dropped(omitted):
+    api = API()
+    ctx = context(api, enabled=True)
+    ctx = replace(
+        ctx,
+        config=replace(
+            ctx.config, labels=tuple(label for label in ctx.config.labels if label not in omitted)
+        ),
+    )
+    data = decision()
+    if "agent:closed" in omitted:
+        data["close"] = closing()
+        data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
+    actions = plan(data, ctx)
+    assert not any(action.payload.get("alerts") for action in actions)
+    assert not labels(actions) & set(omitted)
+    assert not any(action.kind == "close" for action in actions)
+    if data["close"] is None:
+        assert labels(actions) == {"type:bug"}
+    else:
+        assert "needs-maintainer" in labels(actions)
+        assert "Suggested closure" in bodies(actions)
 
 
 def test_labels_not_requested_are_not_added():
@@ -1016,6 +1067,7 @@ def test_duplicate_state_rechecked_before_any_write(target, tmp_path):
     api = API()
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, context(api, enabled=True))
     if target == "closed":
         api.target_open = False
@@ -1044,15 +1096,30 @@ def test_execution_read_error_cannot_bypass_kill_switch(failed_read, tmp_path):
     assert alerts
 
 
-def test_security_cannot_close_or_apply_normal_labels():
+@pytest.mark.parametrize(
+    "security,sensitive", [(False, False), (True, False), (False, True), (True, True)]
+)
+@pytest.mark.parametrize("probability", [0, 0.99])
+def test_security_cannot_close_or_apply_normal_labels(security, sensitive, probability, tmp_path):
     api = API()
     data = decision()
-    data["security"] = True
+    data["security"] = security
+    data["answers"]["security_sensitive"] = {"value": sensitive, "p": probability}
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, context(api, enabled=True))
-    assert labels(actions) == {"needs-maintainer"}
-    assert not any(action.kind == "close" for action in actions)
-    assert "SECURITY.md" in bodies(actions)
+    signal = security or sensitive
+    if signal:
+        assert labels(actions) == {"needs-maintainer"}
+        assert "SECURITY.md" in bodies(actions)
+    else:
+        assert labels(actions) == {"type:bug", "area:api", "P2", "agent:closed"}
+        assert "SECURITY.md" not in bodies(actions)
+    assert any(action.kind == "close" for action in actions) is (not signal)
+    alerts, _ = run(data, context(api, enabled=True), api, tmp_path)
+    assert not alerts
+    assert (api.issue_state == "closed") is (not signal)
+    assert ("agent:closed" in api.labels) is (not signal)
 
 
 @pytest.mark.parametrize("status", [404, 410])
@@ -1068,6 +1135,7 @@ def test_missing_duplicate_target_preserves_labels_and_suggestion(status, tmp_pa
     api.gh = GitHub("test-token", "your-org/project", transport=transport)
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     alerts, _ = run(data, context(api, enabled=True), api, tmp_path)
     assert not alerts
     assert set(api.labels) == {"type:bug", "area:api", "P2", "needs-maintainer"}
@@ -1082,6 +1150,7 @@ def test_duplicate_lookup_error_fails_closed(tmp_path):
     api = API(fail="issues/99")
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     alerts, _ = run(data, context(api, enabled=True), api, tmp_path)
     assert api.writes == [
         ("POST", "issues/7/labels", {"labels": ["needs-maintainer"]}),
@@ -1105,6 +1174,7 @@ def test_duplicate_comment_contains_clickable_trusted_link():
     ctx = context(api, enabled=True)
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     text = bodies(plan(data, ctx))
     assert "<https://github.com/your-org/project/issues/99>" in text
     assert text.index("<https://") > text.rindex("```")
@@ -1118,6 +1188,7 @@ def test_summary_describes_actions_without_model_text(mode, kind, tmp_path):
     api = API()
     data = decision()
     data["close"] = closing(kind)
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     data["escalate"] = {"to": "maintainer", "reason": "uncertain"}
     data["rca"] = {
         "hypothesis": "MODEL_DIAGNOSTIC",
@@ -1167,32 +1238,46 @@ def test_maintainer_owner_assignment_requires_decided_area(route, apply_min):
     ]
 
 
-def test_retry_after_comment_then_failed_close_does_not_repost(tmp_path):
+@pytest.mark.parametrize("failure", ["close", "closed-label"])
+def test_retry_after_comment_then_failed_close_does_not_repost(failure, tmp_path):
     api = API()
     original = api.transport
     failed = False
 
     def transport(request, timeout):
         nonlocal failed
-        if request.method == "PATCH" and not failed:
+        body = json.loads(request.data) if request.data else None
+        is_close = request.method == "PATCH"
+        is_closed_label = request.method == "POST" and body == {"labels": ["agent:closed"]}
+        if not failed and (is_close if failure == "close" else is_closed_label):
             failed = True
-            api.calls.append(("PATCH", "issues/7", json.loads(request.data)))
+            api.calls.append(
+                (request.method, urlparse(request.full_url).path.split("/project/")[1], body)
+            )
             return 500, {}, b"{}"
         return original(request, timeout)
 
     api.gh = GitHub("test-token", "your-org/project", transport=transport)
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     ctx = context(api, enabled=True)
     alerts, _ = run(data, ctx, api, tmp_path)
-    assert alerts and api.issue_state == "open"
+    assert alerts and api.issue_state == ("open" if failure == "close" else "closed")
+    assert "needs-maintainer" in api.labels and "agent:closed" not in api.labels
+    if failure == "close":
+        assert not any("agent:closed" in body.get("labels", []) for _, _, body in api.writes)
     assert [path.rsplit("/", 1)[-1] for _, path, _ in api.writes[:3]] == ["labels", "comments", "7"]
     boundary = len(api.calls)
     alerts, _ = run(data, ctx, api, tmp_path)
     assert not alerts and api.issue_state == "closed"
-    assert [call for call in api.calls[boundary:] if call[0] != "GET"] == [
-        ("PATCH", "issues/7", {"state": "closed", "state_reason": "not_planned"})
-    ]
+    expected = [("POST", "issues/7/labels", {"labels": ["agent:closed"]})]
+    if failure == "close":
+        expected.insert(
+            0, ("PATCH", "issues/7", {"state": "closed", "state_reason": "not_planned"})
+        )
+    assert [call for call in api.calls[boundary:] if call[0] != "GET"] == expected
+    assert "agent:closed" in api.labels
     assert len(api.comments) == 1
     boundary = len(api.calls)
     run(data, ctx, api, tmp_path)
@@ -1205,6 +1290,7 @@ def test_close_uses_existing_trusted_explanation(tmp_path):
     api = API()
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, context(api, enabled=True))
     body = next(action.payload["body"] for action in actions if action.kind == "comment")
     api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
@@ -1258,6 +1344,7 @@ def test_bot_identity_is_canonical_for_retry_and_close(login, close_only, tmp_pa
     ctx = replace(context(api, enabled=True), bot_login=login)
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, ctx)
     body = next(action.payload["body"] for action in actions if action.kind == "comment")
     api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
@@ -1280,6 +1367,7 @@ def test_empty_bot_identity_cannot_explain_close(existing, tmp_path):
     ctx = replace(context(api, enabled=True), bot_login="")
     data = decision()
     data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, ctx)
     if existing:
         body = next(action.payload["body"] for action in actions if action.kind == "comment")
