@@ -57,6 +57,7 @@ def test_const_and_enum_use_json_type_equality():
 
 def test_bool_is_not_an_integer():
     assert validate(True, {"type": "integer"})
+    assert validate(True, {"type": "number"}) == ["$: type"]
 
 
 def test_union_type_accepts_none():
@@ -72,6 +73,42 @@ def test_array_string_and_number_boundaries():
     assert validate(1, {"type": "number", "minimum": 2})
     assert validate(2, {"type": "number", "maximum": 2}) == []
     assert validate(3, {"type": "number", "maximum": 2})
+
+
+def test_minimum_string_length_boundary():
+    schema = {"type": "string", "minLength": 1}
+    assert validate("x", schema) == []
+    assert validate("", schema) == ["$: minLength"]
+
+
+def test_minimum_array_items_boundary():
+    schema = {"type": "array", "minItems": 1}
+    assert validate(["x"], schema) == []
+    assert validate([], schema) == ["$: minItems"]
+
+
+def test_review_schema_allows_thirty_findings_and_rejects_thirty_one():
+    schema = load_schema("review")
+
+    def artifact_with_findings(count):
+        return {
+            "schema_version": "1",
+            "run_id": "review-1",
+            "base_sha": "a" * 40,
+            "head_sha": "b" * 40,
+            "summary": "",
+            "findings": [
+                {"severity": "low", "path": "src/file.py", "line": 1, "body": "finding"}
+                for _ in range(count)
+            ],
+            "scope_ok": True,
+            "tests_missing": False,
+            "docs_needed": False,
+            "escalate": None,
+        }
+
+    assert validate(artifact_with_findings(30), schema) == []
+    assert "$.findings: maxItems" in validate(artifact_with_findings(31), schema)
 
 
 def test_non_finite_number_is_rejected_in_complete_decision_artifact():

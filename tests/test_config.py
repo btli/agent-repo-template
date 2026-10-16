@@ -56,6 +56,14 @@ def test_apply_min_rejects_nan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         config.load_config(target)
 
 
+def test_area_sensitive_must_be_boolean(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "areas.yml"
+    path.write_text(path.read_text().replace("sensitive: true", "sensitive: 'yes'"))
+    with pytest.raises(ConfigError, match="sensitive must be boolean"):
+        load_config(target)
+
+
 def test_version_boolean_is_not_integer_one(tmp_path: Path):
     target = copy_agents(tmp_path)
     path = target / "config.yml"
@@ -82,6 +90,22 @@ def test_area_sensitive_defaults_to_false(tmp_path: Path):
 def test_areas_reject_unknown_top_level_key(tmp_path: Path):
     target = copy_agents(tmp_path)
     path = target / "areas.yml"
+    path.write_text(path.read_text() + "unexpected: true\n")
+    with pytest.raises(ConfigError, match="unexpected key"):
+        load_config(target)
+
+
+def test_labels_must_be_strings(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "labels.yml"
+    path.write_text(path.read_text() + "  - 1\n")
+    with pytest.raises(ConfigError, match="labels must be strings"):
+        load_config(target)
+
+
+def test_labels_reject_unknown_top_level_key(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "labels.yml"
     path.write_text(path.read_text() + "unexpected: true\n")
     with pytest.raises(ConfigError, match="unexpected key"):
         load_config(target)

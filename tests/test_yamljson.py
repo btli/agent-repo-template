@@ -28,6 +28,19 @@ def test_missing_yq_mentions_v4(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         load_yaml(path)
 
 
+def test_yq_v3_is_rejected_with_v4_requirement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    path = tmp_path / "valid.yml"
+    path.write_text("value: true\n")
+    monkeypatch.setattr(yamljson.shutil, "which", lambda _: "/usr/bin/yq")
+    monkeypatch.setattr(
+        yamljson.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="yq version 3.4.1", stderr=""),
+    )
+    with pytest.raises(YamlError, match="yq v4"):
+        load_yaml(path)
+
+
 def test_path_starting_with_dash_is_read_as_a_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     path = tmp_path / "-x.yml"
     path.write_text("value: safe\n")

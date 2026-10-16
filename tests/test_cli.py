@@ -21,6 +21,18 @@ def test_command_module_without_main_exits_two(monkeypatch: pytest.MonkeyPatch):
     assert main(["no_main"]) == 2
 
 
+def test_nested_missing_command_dependency_is_not_reported_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def import_command(name: str):
+        assert name == "agent_repo.commands.broken_import"
+        raise ModuleNotFoundError("No module named 'nested_dependency'", name="nested_dependency")
+
+    monkeypatch.setattr("agent_repo.cli.importlib.import_module", import_command)
+    with pytest.raises(ModuleNotFoundError, match="nested_dependency"):
+        main(["broken_import"])
+
+
 def test_check_config_accepts_fixture(capsys: pytest.CaptureFixture[str]):
     assert main(["check_config", "tests/fixtures/agents"]) == 0
     assert "valid" in capsys.readouterr().out.lower()
