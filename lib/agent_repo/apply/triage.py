@@ -93,7 +93,7 @@ def _off(ctx: ApplyContext) -> list[Action] | None:
     ]
 
 
-def _can_close(close: dict, ctx: ApplyContext) -> bool:
+def _can_close(close: dict, ctx: ApplyContext, duplicate_of: object) -> bool:
     thresholds = ctx.config.raw["thresholds"]
     if (
         not ctx.config.raw["close"]["enabled"]
@@ -105,7 +105,8 @@ def _can_close(close: dict, ctx: ApplyContext) -> bool:
         return close["docs_ref"] in {doc.url for doc in ctx.charter.docs_index}
     target = close["target"]
     if (
-        type(target) is not int
+        duplicate_of != f"#{target}"
+        or type(target) is not int
         or target == ctx.event.number
         or close["lexical"] is None
         or close["lexical"] < thresholds["close_lexical_min"]
@@ -172,14 +173,7 @@ def _valid_answers(decision: dict, ctx: ApplyContext) -> bool:
         elif question in {"needs_info", "out_of_scope", "security_sensitive"}:
             if type(value) is not bool:
                 return False
-    close = decision["close"]
-    duplicate = answers.get("duplicate_of")
-    return (
-        close is None
-        or close["kind"] != "duplicate"
-        or duplicate is None
-        or duplicate["value"] == f"#{close['target']}"
-    )
+    return True
 
 
 def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
@@ -205,7 +199,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         "".join(decision["answers"]), ctx.secrets, ctx.canary
     ):
         return _maintainer(ctx, area, ["Outbound scan alert: proposed action dropped."])
-    if decision["security"]:
+    if decision["security"] or answers.get("security_sensitive", {}).get("value") is True:
         actions = _maintainer(ctx, area, [])
         guidance = fenced("Please use SECURITY.md for the private security reporting process.", 200)
         body = f"Agent triage\n\n{guidance}\n\n{marker('triage', ctx.run_id)}"
@@ -294,7 +288,11 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         )
     close = decision["close"]
     try:
-        can_close = close is not None and "agent:closed" in allowed and _can_close(close, ctx)
+        can_close = (
+            close is not None
+            and "agent:closed" in allowed
+            and _can_close(close, ctx, answers.get("duplicate_of", {}).get("value"))
+        )
     except Exception:
         return _maintainer(ctx, area, ["Apply failed: duplicate lookup unavailable."])
     closure = ""

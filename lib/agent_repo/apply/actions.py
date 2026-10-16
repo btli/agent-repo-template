@@ -193,10 +193,18 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
     existing_labels = {label["name"] for label in item["labels"]}
     existing_owners = {owner["login"] for owner in item["assignees"]}
     completed_comments = _bot_comments(comments)
+    closed_label_planned = any(
+        action.kind == "add_labels" and "agent:closed" in action.payload["labels"]
+        for action in actions
+    )
     for action in sorted(actions, key=lambda action: order[action.kind]):
         payload = action.payload
         if action.kind == "add_labels":
-            missing = [label for label in payload["labels"] if label not in existing_labels]
+            missing = [
+                label
+                for label in payload["labels"]
+                if label != "agent:closed" and label not in existing_labels
+            ]
             if missing:
                 gh.request("POST", f"{path}/labels", body={"labels": missing})
                 existing_labels.update(missing)
@@ -215,11 +223,19 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
             if identity not in completed_comments:
                 gh.request("POST", f"{path}/comments", body={"body": payload["body"]})
                 completed_comments.add(identity)
-        elif action.kind == "close" and item.get("state") == "open":
+        elif action.kind == "close":
             if (
                 canonical_bot_login(payload.get("bot_login", "")),
                 payload.get("comment_body"),
             ) not in completed_comments:
                 raise ValueError("closure explanation not posted")
-            gh.request("PATCH", path, body={"state": "closed", "state_reason": "not_planned"})
-            item["state"] = "closed"
+            if item.get("state") == "open":
+                gh.request("PATCH", path, body={"state": "closed", "state_reason": "not_planned"})
+                item["state"] = "closed"
+            if (
+                item.get("state") == "closed"
+                and closed_label_planned
+                and "agent:closed" not in existing_labels
+            ):
+                gh.request("POST", f"{path}/labels", body={"labels": ["agent:closed"]})
+                existing_labels.add("agent:closed")
