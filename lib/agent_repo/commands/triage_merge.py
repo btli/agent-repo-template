@@ -30,7 +30,7 @@ def label_corrections(tier2: dict, allowed_labels: set[str] | None) -> list[str]
 
 
 def merge(
-    decision: dict, tier2: dict | None, error: str | None, *, allowed_labels: set[str] | None = None
+    decision: dict, tier2: dict | None, error: str | None, *, allowed_labels: set[str] | None
 ) -> dict:
     schema = load_schema("decision")
     if validate(decision, schema):

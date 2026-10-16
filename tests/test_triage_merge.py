@@ -199,6 +199,17 @@ def test_label_corrections_are_deduplicated(decision):
 
 
 def test_missing_taxonomy_escalates(decision):
+    command = importlib.import_module("agent_repo.commands.triage_merge")
+    with pytest.raises(TypeError, match="allowed_labels"):
+        command.merge(decision, decision, None)
+    with pytest.raises(TypeError):
+        command.merge(decision, decision, None, {"type:bug", "area:core"})
+    assert (
+        command.merge(decision, decision, None, allowed_labels={"type:bug", "area:core"})[
+            "escalate"
+        ]
+        is None
+    )
     assert merge(decision, decision, None, allowed_labels=None)["escalate"]["to"] == "maintainer"
 
 
