@@ -250,14 +250,10 @@ def test_needs_info_threshold(probability, posted):
     assert ("Please provide versions." in bodies(plan(data, context()))) is posted
 
 
-@pytest.mark.parametrize("priority", ["null", "missing", "empty"])
-def test_needs_info_with_unknown_priority_still_posts_request(priority, tmp_path):
+def test_needs_info_with_unknown_priority_still_posts_request(tmp_path):
     api = API()
     data = decision()
-    if priority == "missing":
-        del data["answers"]["priority"]
-    else:
-        data["answers"]["priority"] = {"value": None if priority == "null" else "", "p": 0.95}
+    del data["answers"]["priority"]
     data["answers"]["needs_info"] = {"value": True, "p": 0.95}
     data["needs_info"] = {"text": "Please provide the version and a reproducer."}
     alerts, _ = run(data, context(api), api, tmp_path)
@@ -273,14 +269,58 @@ def test_needs_info_uses_charter_checklist():
     assert "Steps to reproduce" in bodies(plan(data, context()))
 
 
+@pytest.mark.parametrize("prose", ["small", "maximum", "backticks"])
 @pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
-def test_close_with_all_guards(kind, tmp_path):
+def test_close_with_all_guards(kind, prose, tmp_path):
+    from agent_repo.apply.actions import check_identity
+
     api = API()
     ctx = context(api, enabled=True)
     data = decision()
     data["close"] = closing(kind)
     data["close"]["p"] = ctx.config.raw["thresholds"]["close_min"]
-    run(data, ctx, api, tmp_path)
+    data["answers"].update(
+        {
+            "out_of_scope": {"value": kind == "out_of_scope", "p": 0.9},
+            "docs_ref": {
+                "value": "none" if prose == "small" else "https://example.org/guide",
+                "p": 0.9,
+            },
+            "duplicate_of": {"value": "none", "p": 0.9},
+            "security_sensitive": {"value": False, "p": 0.9},
+        }
+    )
+    if prose != "small":
+        data["answers"]["needs_info"]["value"] = True
+        data["needs_info"] = {"text": ("Please provide your version. " * 100)[:2000]}
+        data["rca"] = {
+            "hypothesis": ("The observed behavior suggests a failure. " * 200)[:4000],
+            "locations": [
+                {"path": "src/" + "component/" * 32 + f"handler{i}.py", "line": 1}
+                for i in range(10)
+            ],
+            "confidence": "high",
+            "confirm_with": ("Inspect the implementation and confirm. " * 100)[:1000],
+        }
+        if prose == "backticks":
+            data["rca"]["hypothesis"] = "`" * 4000
+    assert not check_identity(data, ctx, "decision"), "test artifact must be valid"
+    alerts, _ = run(data, ctx, api, tmp_path)
+    assert not alerts
+    assert len(api.comments) == 1
+    body = api.comments[0]["body"]
+    assert len(body) <= 10000
+    reference = "Duplicate of #99" if kind == "duplicate" else "https://example.org/guide"
+    link = (
+        "https://github.com/your-org/project/issues/99"
+        if kind == "duplicate"
+        else "https://example.org/guide"
+    )
+    assert (
+        f"Closing: {reference}. If this is incorrect, ask a maintainer to reopen this issue."
+    ) in body
+    assert f"Reference: <{link}>" in body
+    assert body.endswith("<!-- agent:triage run=run-1 -->")
     assert api.writes[-1] == (
         "PATCH",
         "issues/7",
@@ -466,7 +506,11 @@ def test_area_label_requires_configured_area():
     ctx = replace(ctx, config=replace(ctx.config, labels=(*ctx.config.labels, "area:legacy")))
     actions = plan(data, ctx)
     assert "area:legacy" not in labels(actions)
-    assert "type:bug" in labels(actions)
+    assert labels(actions) == {"needs-maintainer"}
+    assert any(
+        "Artifact rejected: invalid schema." in action.payload.get("alerts", [])
+        for action in actions
+    )
 
 
 @pytest.mark.parametrize("authorized", [True, False])
@@ -587,6 +631,35 @@ def test_invalid_artifact_only_maintainer(bad, tmp_path):
     assert "reject" in summary.lower()
 
 
+@pytest.mark.parametrize(
+    "question,value",
+    [
+        (question, value)
+        for question in ("type", "area", "priority", "docs_ref", "duplicate_of")
+        for value in (True, 1, None, "unlisted")
+    ]
+    + [
+        (question, value)
+        for question in ("needs_info", "out_of_scope", "security_sensitive")
+        for value in ("yes", 1, None)
+    ]
+    + [("priority", "")],
+)
+def test_malformed_answer_cannot_authorize_close(question, value, tmp_path):
+    from agent_repo.apply.actions import check_identity
+
+    api = API()
+    ctx = context(api, enabled=True)
+    data = decision()
+    data["answers"][question] = {"value": value, "p": 0.9}
+    data["close"] = closing()
+    assert not check_identity(data, ctx, "decision"), "generic schema should accept this value"
+    alerts, summary = run(data, ctx, api, tmp_path)
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    assert alerts and "Artifact rejected: invalid schema." in summary
+    assert not api.comments and api.issue_state == "open"
+
+
 def test_nonfinite_probability_rejected(tmp_path):
     api = API()
     data = decision()
@@ -616,6 +689,24 @@ def test_invalid_mode_never_writes(tmp_path):
     assert alerts
 
 
+def test_mixed_targets_never_write(tmp_path):
+    from agent_repo.apply.actions import execute
+
+    api = API()
+    data = decision()
+    data["close"] = closing()
+    actions = plan(data, context(api, enabled=True))
+    actions = [
+        replace(action, payload={**action.payload, "number": 8})
+        if action.kind == "close"
+        else action
+        for action in actions
+    ]
+    alerts = execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert not api.writes
+    assert any(alert.startswith("Apply failed") for alert in alerts)
+
+
 @pytest.mark.parametrize(
     "scenario",
     [
@@ -628,6 +719,10 @@ def test_invalid_mode_never_writes(tmp_path):
         "memory-json",
         "oversized-json",
         "planner-error",
+        "labels-error",
+        "empty-scan-keys",
+        "whitespace-scan-keys",
+        "empty-canary",
         "event-pull_request",
         "event-pull_request_target",
         "event-workflow_run",
@@ -641,10 +736,12 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
 
     from agent_repo.commands.apply import main
 
-    api = API()
+    api = API(fail="labels" if scenario == "labels-error" else None)
     key = secrets.token_hex(20)
     token = secrets.token_urlsafe(32)
     data = decision()
+    data["answers"]["area"]["value"] = "core"
+    data["labels"] = ["area:core" if label == "area:api" else label for label in data["labels"]]
     data["answers"]["needs_info"] = {"value": True, "p": 0.99}
     text = {
         "scan-key": base64.b64encode(key.encode()).decode(),
@@ -718,10 +815,19 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
         "GITHUB_STEP_SUMMARY": str(summary),
         "GH_TOKEN": token,
         "AGENT_BOT_LOGIN": "agent-apply[bot]",
-        "AGENT_SCAN_KEYS": "\n" + key + "\n",
-        "AGENT_CANARY": secrets.token_hex(20),
+        "AGENT_SCAN_KEYS": {
+            "empty-scan-keys": "",
+            "whitespace-scan-keys": "\n  \n",
+        }.get(scenario, "\n" + key + "\n"),
+        "AGENT_CANARY": "" if scenario == "empty-canary" else secrets.token_hex(20),
     }.items():
         monkeypatch.setenv(name, value)
+    if scenario in {"empty-scan-keys", "whitespace-scan-keys", "empty-canary"}:
+        assert main([str(artifact)]) == 1
+        assert not api.calls, "empty scan configuration reached the GitHub API"
+        assert "Apply failed" in summary.read_text()
+        assert key not in summary.read_text() and token not in summary.read_text()
+        return
     if scenario == "planner-error":
 
         def fail_plan(*args):
@@ -732,12 +838,15 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
         assert main([str(artifact)]) == 1
         assert not api.calls, "unsupported event reached the GitHub API"
         return
-    assert main([str(artifact)]) == (1 if scenario == "planner-error" else 0)
+    assert main([str(artifact)]) == (1 if scenario in {"planner-error", "labels-error"} else 0)
     if scenario == "oversized-json":
         assert not artifact_parse_calls, "oversized artifact reached JSON parsing"
     if scenario == "planner-error":
         assert api.writes == [("POST", "issues/12/labels", {"labels": ["needs-maintainer"]})]
         assert "Apply failed: trusted inputs unavailable." in summary.read_text()
+    elif scenario == "labels-error":
+        assert api.writes and all(path.endswith("/labels") for _, path, _ in api.writes)
+        assert "Apply failed: GitHub action stopped" in summary.read_text()
     elif scenario == "moved-head":
         assert len(api.comments) == 1, "workflow-pinned artifact was rejected after a push"
         assert "ALERT" not in summary.read_text()
@@ -762,7 +871,7 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
     assert policy_refs and all(query == "ref=" + "a" * 40 for query in policy_refs)
     assert key not in summary.read_text(), "credential echoed"
     assert token not in summary.read_text(), "installation token echoed"
-    if scenario in {"moved-head", "planner-error"}:
+    if scenario in {"moved-head", "planner-error", "labels-error"}:
         return
     if scenario in {"memory-json", "oversized-json"}:
         monkeypatch.setattr("agent_repo.commands.apply.json.loads", original_loads)

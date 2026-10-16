@@ -18,10 +18,11 @@ import pytest
         "reversed",
     ],
 )
-def test_every_encoding_is_detected(kind):
+@pytest.mark.parametrize("remainder", [0, 1, 2])
+def test_every_encoding_is_detected(kind, remainder):
     from agent_repo.scan import encodings, find_leaks
 
-    key = secrets.token_urlsafe(25) + "?~"
+    key = secrets.token_urlsafe(25) + "?~" + "x" * remainder
     variants = {
         "literal": key,
         "base64": base64.b64encode(key.encode()).decode(),
