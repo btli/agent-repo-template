@@ -75,6 +75,87 @@ def test_array_string_and_number_boundaries():
     assert validate(3, {"type": "number", "maximum": 2})
 
 
+def test_array_items_are_validated_individually():
+    assert validate(["a", 1], {"type": "array", "items": {"type": "string"}}) == ["$[1]: type"]
+
+
+def test_complete_fix_artifact_rejects_unsafe_test_id():
+    artifact = {
+        "schema_version": "1",
+        "run_id": "fix-1",
+        "base_sha": "a" * 40,
+        "status": "patch",
+        "rca": "",
+        "tests": ["x; rm -rf /"],
+        "risk": "low",
+        "summary": "",
+        "attempted": "",
+        "escalate": None,
+    }
+    assert "$.tests[0]: pattern" in validate(artifact, load_schema("fix"))
+
+
+def test_complete_decision_artifact_enforces_note_length():
+    artifact = {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "tier": 1,
+        "answers": {},
+        "labels": [],
+        "suggestions": {"priority": None, "labels": []},
+        "needs_info": None,
+        "rca": None,
+        "close": None,
+        "escalate": None,
+        "security": False,
+        "notes": ["x" * 501],
+    }
+    assert "$.notes[0]: maxLength" in validate(artifact, load_schema("decision"))
+
+
+def test_decision_and_review_artifacts_validate_base_sha_patterns():
+    artifacts = [
+        (
+            load_schema("decision"),
+            {
+                "schema_version": "1",
+                "run_id": "run-1",
+                "base_sha": "a" * 40,
+                "tier": 1,
+                "answers": {},
+                "labels": [],
+                "suggestions": {"priority": None, "labels": []},
+                "needs_info": None,
+                "rca": None,
+                "close": None,
+                "escalate": None,
+                "security": False,
+                "notes": [],
+            },
+        ),
+        (
+            load_schema("review"),
+            {
+                "schema_version": "1",
+                "run_id": "review-1",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+                "summary": "",
+                "findings": [],
+                "scope_ok": True,
+                "tests_missing": False,
+                "docs_needed": False,
+                "escalate": None,
+            },
+        ),
+    ]
+    for schema, artifact in artifacts:
+        for invalid_sha in ("A" * 40, "a" * 39):
+            artifact["base_sha"] = invalid_sha
+            assert "$.base_sha: pattern" in validate(artifact, schema)
+
+
 def test_minimum_string_length_boundary():
     schema = {"type": "string", "minLength": 1}
     assert validate("x", schema) == []

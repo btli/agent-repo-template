@@ -287,6 +287,9 @@ def test_transport_exception_excludes_token():
     assert caught.value.message == "RuntimeError"
     credential_absent = _credential_is_absent(str(caught.value))
     assert credential_absent, "credential leaked in error text"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert _credential_is_absent("".join(traceback.format_exception(caught.value)))
 
 
 def test_sanitized_github_error_from_transport_is_preserved():

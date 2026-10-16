@@ -129,12 +129,15 @@ class GitHub:
         except Exception:
             raise GitHubError(0, "invalid API URL", token=self._token) from None
         transport_error: GitHubError | None = None
+        transport_exception_type: str | None = None
         try:
             status, response_headers, response_body = self._transport(request, 30.0)
         except GitHubError as error:
             transport_error = error
         except Exception as exc:
-            raise GitHubError(0, type(exc).__name__, token=self._token) from None
+            transport_exception_type = type(exc).__name__
+        if transport_exception_type is not None:
+            raise GitHubError(0, transport_exception_type, token=self._token) from None
         if transport_error is not None:
             raise GitHubError(
                 transport_error.status,

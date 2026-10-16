@@ -17,6 +17,7 @@ def copy_agents(tmp_path: Path) -> Path:
 def test_fixture_config_loads_and_has_default_modes():
     config = load_config(FIXTURE)
     assert config.areas
+    assert [area.owners for area in config.areas] == [("@your-org/maintainers",)]
     assert config.labels
     assert config.mode_for("fix") == "dry-run"
 
@@ -34,6 +35,14 @@ def test_apply_min_must_be_numeric_in_range(tmp_path: Path):
     path = target / "config.yml"
     path.write_text(path.read_text().replace("apply_min: 0.8", "apply_min: 1.5"))
     with pytest.raises(ConfigError):
+        load_config(target)
+
+
+def test_limits_reject_zero_fix_max_turns(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "config.yml"
+    path.write_text(path.read_text().replace("fix_max_turns: 40", "fix_max_turns: 0"))
+    with pytest.raises(ConfigError, match=r"limits\.fix_max_turns: minimum"):
         load_config(target)
 
 
@@ -92,6 +101,16 @@ def test_areas_reject_unknown_top_level_key(tmp_path: Path):
     path = target / "areas.yml"
     path.write_text(path.read_text() + "unexpected: true\n")
     with pytest.raises(ConfigError, match="unexpected key"):
+        load_config(target)
+
+
+def test_area_rejects_unknown_item_key(tmp_path: Path):
+    target = copy_agents(tmp_path)
+    path = target / "areas.yml"
+    path.write_text(
+        path.read_text().replace("    sensitive: true", "    sensitive: true\n    extra: 1")
+    )
+    with pytest.raises(ConfigError, match="extra"):
         load_config(target)
 
 

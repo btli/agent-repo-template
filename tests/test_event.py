@@ -225,6 +225,14 @@ def test_pull_request_without_payload_raises_value_error(tmp_path: Path):
         load_event("pull_request_target", path)
 
 
+def test_pull_request_draft_state_is_preserved(tmp_path: Path):
+    payload = json.loads((EVENTS / "pull_request_target.opened.json").read_text())
+    payload["pull_request"]["draft"] = True
+    path = tmp_path / "draft-pr.json"
+    path.write_text(json.dumps(payload))
+    assert load_event("pull_request_target", path).draft is True
+
+
 def test_issue_without_payload_raises_value_error(tmp_path: Path):
     payload = json.loads((EVENTS / "issues.opened.json").read_text())
     payload.pop("issue")

@@ -42,6 +42,8 @@ def test_out_of_scope_doc_link_is_extracted():
 def test_priorities_parse_p0_through_p3_and_require_each():
     charter = parse_charter(EXAMPLE.read_text())
     assert tuple(charter.priorities) == ("P0", "P1", "P2", "P3")
+    with_extra_priority = EXAMPLE.read_text().replace("## Priorities", "## Priorities\n- P4: x")
+    assert set(parse_charter(with_extra_priority).priorities) == {"P0", "P1", "P2", "P3"}
     text = EXAMPLE.read_text().replace("P2:", "P8:")
     assert lint_charter(text) == ["missing priority: P2"]
     with pytest.raises(ValueError, match="P2"):
