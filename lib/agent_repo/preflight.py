@@ -371,6 +371,8 @@ def _executable(job: dict, workflow: dict) -> list:
 
 
 def _head_reference(value: str) -> bool:
+    if re.search(r"\bGITHUB_HEAD_REF\b", value):
+        return True
     contexts = []
     for expression in _expressions(value):
         contexts.append(_context(expression))
@@ -488,9 +490,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 changed = True
     targets = {path for path in parsed if _target_events(triggers[path])}
 
-    def visit(
-        path, events, is_reachable, is_downstream, agent_ref_only, active, ceiling=None, grants=None
-    ):
+    def visit(path, events, is_reachable, is_downstream, active, ceiling=None, grants=None):
         is_target = bool(_target_events(events))
         workflow = parsed[path]
         for name, job in workflow["jobs"].items():
@@ -528,7 +528,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             if (
                 is_reachable
                 and not is_downstream
-                and (environment not in ctx.safe_environments or not agent_ref_only)
+                and environment not in ctx.safe_environments
                 and _job_secrets(job, workflow, grants)
             ):
                 rules.add("secrets")
@@ -555,7 +555,6 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                         events,
                         is_reachable,
                         is_downstream,
-                        agent_ref_only,
                         (*active, callee),
                         writes,
                         _callee_grants(job, grants),
@@ -566,12 +565,7 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 findings.add((path, name, rule))
 
     for path in sorted(reachable | downstream | targets):
-        agent_ref_only = all(
-            event in AGENT_REF_EVENTS
-            for event, config in triggers[path].items()
-            if _reachable_refs({event: config}, ctx)
-        )
-        visit(path, triggers[path], path in reachable, path in downstream, agent_ref_only, (path,))
+        visit(path, triggers[path], path in reachable, path in downstream, (path,))
     details = {
         "permissions": "Job may receive a writable token.",
         "id-token": "Job may mint an OIDC token.",

@@ -228,6 +228,8 @@ def test_action_runs_command(tmp_path, monkeypatch):
 
 
 SCENARIO_CASES = [
+    ("target_github_head_ref_env", [("a.yml", "check", "pull_request_target")]),
+    ("target_github_base_ref_env", []),
     ("downstream_python_urllib", [("consumer.yml", "check", "workflow_run")]),
     ("target_delete_secret", [("ci.yml", "check", "pull_request_target")]),
     ("target_create_privileged", [("ci.yml", "check", "pull_request_target")]),
