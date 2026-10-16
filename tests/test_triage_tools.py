@@ -42,6 +42,25 @@ def test_wrappers_read_and_grep_repo(tools):
     assert tools["grep_repo"]("needle") == [("file", 2, "needle")]
 
 
+def test_agent_tool_call_limit():
+    from agent_repo.yamljson import load_yaml
+
+    config = load_yaml(Path("agents/triage/config.yaml"))
+    policy = config["guardrails"]["policies"]["tool_budget"]["function"]
+    assert policy["path"] == "omnigent.policies.builtins.safety.max_tool_calls_per_session"
+    assert policy["arguments"]["limit"] == 40
+
+
+@pytest.mark.parametrize("name", ["read_repo_file", "grep_repo"])
+def test_wrappers_require_shared_budget(tools, monkeypatch, name):
+    from agent_repo.repo_tools import ToolError
+
+    (Path(os.environ["GITHUB_WORKSPACE"]) / "file").write_text("safe")
+    monkeypatch.delenv("AGENT_REPO_BUDGET_FILE")
+    with pytest.raises(ToolError, match="^repository tool failed$"):
+        tools[name]("file" if name == "read_repo_file" else "safe")
+
+
 def test_wrapper_rejects_existing_outside_root(tools):
     root = Path(os.environ["GITHUB_WORKSPACE"])
     (root.parent / "outside").write_text("protected-sentinel")
