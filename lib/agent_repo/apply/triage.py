@@ -140,6 +140,26 @@ def _priority(value: object) -> str:
     )
 
 
+def _valid_answers(answers: dict, ctx: ApplyContext) -> bool:
+    choices = {
+        "type": {label for label in ctx.config.labels if label.startswith("type:")},
+        "area": {area.name for area in ctx.config.areas} | {"unknown"},
+        "priority": set(ctx.charter.priorities),
+        "docs_ref": {doc.url for doc in ctx.charter.docs_index} | {"none"},
+        # This context has no trusted duplicate candidates; never accept a model-supplied set.
+        "duplicate_of": {"none"},
+    }
+    for question, answer in answers.items():
+        value = answer["value"]
+        if question in choices:
+            if not isinstance(value, str) or value not in choices[question]:
+                return False
+        elif question in {"needs_info", "out_of_scope", "security_sensitive"}:
+            if type(value) is not bool:
+                return False
+    return True
+
+
 def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     off = _off(ctx)
     if off is not None:
@@ -148,6 +168,8 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     if errors:
         return _maintainer(ctx, None, errors)
     answers = decision["answers"]
+    if not _valid_answers(answers, ctx):
+        return _maintainer(ctx, None, ["Artifact rejected: invalid schema."])
     apply_min = ctx.config.raw["thresholds"]["apply_min"]
     area_answer = answers.get("area", {})
     area = area_answer.get("value") if area_answer.get("p", 0) >= apply_min else None
@@ -250,6 +272,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         can_close = close is not None and "agent:closed" in allowed and _can_close(close, ctx)
     except Exception:
         return _maintainer(ctx, area, ["Apply failed: duplicate lookup unavailable."])
+    closure = ""
     if close is not None:
         if can_close:
             reference = (
@@ -257,9 +280,14 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
                 if close["kind"] == "duplicate"
                 else close["docs_ref"]
             )
-            text.append(
-                f"Closing: {reference}. If this is incorrect, "
-                "ask a maintainer to reopen this issue."
+            link = (
+                f"https://github.com/{ctx.event.repo}/issues/{close['target']}"
+                if close["kind"] == "duplicate"
+                else close["docs_ref"]
+            )
+            closure = (
+                f"\n\nClosing: {reference}. If this is incorrect, "
+                f"ask a maintainer to reopen this issue.\n\nReference: <{link}>"
             )
             selected.append("agent:closed")
         else:
@@ -279,17 +307,19 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         )
     if needs_maintainer:
         actions.extend(_maintainer(ctx, area, []))
-    if text:
+    if text or can_close:
         content = "\n\n".join(text)
-        body = f"Agent triage\n\n{fenced(content, 10000)}"
-        if can_close:
-            link = (
-                f"https://github.com/{ctx.event.repo}/issues/{close['target']}"
-                if close["kind"] == "duplicate"
-                else close["docs_ref"]
-            )
-            body += f"\n\nReference: <{link}>"
-        body += f"\n\n{marker('triage', ctx.run_id)}"
+        prefix = "Agent triage\n\n"
+        suffix = f"{closure}\n\n{marker('triage', ctx.run_id)}"
+        budget = 10000 - len(prefix) - len(suffix)
+        if budget < 8:
+            return _maintainer(ctx, area, ["Apply failed: comment explanation exceeds limit."])
+        prose = fenced(content, budget)
+        if len(prose) > budget:
+            # Budget for both fences as well as the neutralized model prose.
+            overhead = 2 * len(prose.partition("\n")[0]) + 2
+            prose = fenced(content, max(0, budget - overhead))
+        body = prefix + prose + suffix
         if find_leaks(body, ctx.secrets, ctx.canary):
             return _maintainer(ctx, area, ["Outbound scan alert: rendered action dropped."])
         actions.append(
