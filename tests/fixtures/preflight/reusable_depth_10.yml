@@ -1,0 +1,106 @@
+{
+  "caller.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level1.yml"
+      }
+    }
+  },
+  "level1.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level2.yml"
+      }
+    }
+  },
+  "level2.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level3.yml"
+      }
+    }
+  },
+  "level3.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level4.yml"
+      }
+    }
+  },
+  "level4.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level5.yml"
+      }
+    }
+  },
+  "level5.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level6.yml"
+      }
+    }
+  },
+  "level6.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level7.yml"
+      }
+    }
+  },
+  "level7.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level8.yml"
+      }
+    }
+  },
+  "level8.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level9.yml"
+      }
+    }
+  },
+  "level9.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/level10.yml"
+      }
+    }
+  },
+  "level10.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  }
+}

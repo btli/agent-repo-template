@@ -1,0 +1,41 @@
+{
+  "src.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  },
+  "down.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "src.yml"
+        ]
+      }
+    },
+    "permissions": {
+      "actions": "read"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/github-script@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "script": "await github.request('GET /repos/your-org/project/actions/runs/1/artifacts')"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

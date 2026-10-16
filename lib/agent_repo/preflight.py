@@ -231,13 +231,15 @@ def _strings(value: object):
             yield from _strings(item)
 
 
-def _secrets(value: object, *, include_token: bool = False) -> bool:
+def _secrets(
+    value: object, *, include_token: bool = False, grants: frozenset[str] | None = None
+) -> bool:
     if isinstance(value, dict):
-        return value.get("secrets") == "inherit" or any(
-            _secrets(item, include_token=include_token) for item in value.values()
+        return (value.get("secrets") == "inherit" and grants != frozenset()) or any(
+            _secrets(item, include_token=include_token, grants=grants) for item in value.values()
         )
     elif isinstance(value, list):
-        return any(_secrets(item, include_token=include_token) for item in value)
+        return any(_secrets(item, include_token=include_token, grants=grants) for item in value)
     elif isinstance(value, str):
         for expression in re.findall(r"\$\{\{(.*?)\}\}", value, re.DOTALL):
             if not include_token:
@@ -247,9 +249,44 @@ def _secrets(value: object, *, include_token: bool = False) -> bool:
                     expression,
                     flags=re.IGNORECASE,
                 )
+            if grants is not None:
+                if not grants:
+                    continue
+                expression = re.sub(
+                    r"\bsecrets\.([a-z_][a-z_0-9]*)",
+                    lambda match: match[0] if match[1] in grants else "",
+                    _context(expression),
+                )
             if re.search(r"\bsecrets\b", expression, re.IGNORECASE):
                 return True
     return False
+
+
+def _job_secrets(job: dict, workflow: dict, grants: frozenset[str] | None) -> bool:
+    # A callee's environment supplies its own secrets independently of caller grants.
+    return _secrets(job, grants=None if job.get("environment") else grants) or _secrets(
+        workflow.get("env"), grants=grants
+    )
+
+
+def _callee_grants(job: dict, grants: frozenset[str] | None) -> frozenset[str] | None:
+    passed = job.get("secrets", {})
+    if passed == "inherit":
+        return grants
+    if not isinstance(passed, dict):
+        raise ValueError("invalid reusable workflow secrets")
+    return frozenset(
+        name.lower()
+        for name, value in passed.items()
+        if _secrets(value, grants=grants)
+        or (
+            not _secrets(value, include_token=True)
+            and not (
+                isinstance(value, str)
+                and re.fullmatch(r"\s*\$\{\{\s*github\.token\s*\}\}\s*", _context(value))
+            )
+        )
+    )
 
 
 def _enabled(job: dict) -> bool:
@@ -305,7 +342,7 @@ def _executable(job: dict, workflow: dict) -> list:
         [
             {
                 key: step[key]
-                for key in ("uses", "run", "with", "env", "shell", "working-directory")
+                for key in ("uses", "run", "with", "env", "if", "shell", "working-directory")
                 if key in step
             }
             for step in _steps(job)
@@ -313,9 +350,20 @@ def _executable(job: dict, workflow: dict) -> list:
     ]
 
 
-def _target_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
+def _target_unsafe(
+    job: dict,
+    workflow: dict,
+    writes: frozenset[str],
+    grants: frozenset[str] | None,
+    head_check: bool,
+) -> bool:
+    if head_check and any(
+        re.search(r"github\.(?:event\.pull_request\.head\b|head_ref\b)", _context(value))
+        for value in _strings(_executable(job, workflow)[-1])
+    ):
+        return True
     # Target events run on the base branch, outside agent-branch environment exclusions.
-    privileged = writes or _secrets(job) or _secrets(workflow.get("env"))
+    privileged = writes or _job_secrets(job, workflow, grants)
     if not privileged:
         return False
     steps = _steps(job)
@@ -329,17 +377,24 @@ def _target_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
     return False
 
 
-def _downstream_unsafe(job: dict, workflow: dict, writes: frozenset[str]) -> bool:
+def _downstream_unsafe(
+    job: dict, workflow: dict, writes: frozenset[str], grants: frozenset[str] | None
+) -> bool:
     steps = _steps(job)
     executable = _executable(job, workflow)
-    if writes or _secrets(job) or _secrets(workflow.get("env")):
+    if writes or _job_secrets(job, workflow, grants):
         return True
     if any(
-        re.search(r"github\.event\.workflow_run\.head_\w+", _context(value))
+        re.search(r"github\.event\.workflow_run\.(head_\w+|pull_requests\b)", _context(value))
         for value in _strings(executable)
     ):
         return True
     for step in steps:
+        if any(
+            re.search(r"downloadArtifact|listWorkflowRunArtifacts|/artifacts", value)
+            for value in _strings(step.get("with"))
+        ):
+            return True
         uses = step.get("uses", "")
         if isinstance(uses, str) and "download" in uses.split("@")[0].lower():
             return True
@@ -419,18 +474,12 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 refs[path].add(ctx.default_branch)
                 changed = True
     targets = {path for path in parsed if TARGET_EVENTS.intersection(triggers[path])}
-    for path in sorted(reachable | downstream | targets):
-        is_downstream, is_target, is_reachable = (
-            path in downstream,
-            path in targets,
-            path in reachable,
-        )
+
+    def visit(
+        path, events, is_reachable, is_downstream, agent_ref_only, active, ceiling=None, grants=None
+    ):
+        is_target = bool(TARGET_EVENTS.intersection(events))
         workflow = parsed[path]
-        agent_ref_only = all(
-            event in AGENT_REF_EVENTS
-            for event, config in triggers[path].items()
-            if _reachable_refs({event: config}, ctx)
-        )
         for name, job in workflow["jobs"].items():
             if not _enabled(job):
                 continue
@@ -439,18 +488,28 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             declaration = job.get("permissions", workflow.get("permissions"))
             writes = (
                 frozenset({"*"})
-                if declaration is None and "pull_request_target" in triggers[path]
+                if declaration is None and "pull_request_target" in events
                 else _writes(declaration, ctx)
             )
+            if ceiling is not None:
+                if declaration is None:
+                    writes = ceiling
+                else:
+                    limited = writes if "*" in ceiling else writes & ceiling
+                    if "*" in writes:
+                        limited |= ceiling - {"id-token"}
+                    writes = limited if "id-token" in ceiling else limited - {"id-token"}
             if is_downstream:
-                if _downstream_unsafe(job, workflow, writes):
+                if _downstream_unsafe(job, workflow, writes, grants):
                     rules.add("workflow_run")
             elif is_reachable:
                 if writes - {"id-token"}:
                     rules.add("permissions")
                 if "id-token" in writes:
                     rules.add("id-token")
-            if is_target and _target_unsafe(job, workflow, writes):
+            if is_target and _target_unsafe(
+                job, workflow, writes, grants, "pull_request_target" in events
+            ):
                 rules.add("pull_request_target")
             environment = job.get("environment")
             if isinstance(environment, dict):
@@ -459,16 +518,49 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 is_reachable
                 and not is_downstream
                 and (environment not in ctx.safe_environments or not agent_ref_only)
-                and (_secrets(job) or _secrets(workflow.get("env")))
+                and _job_secrets(job, workflow, grants)
             ):
                 rules.add("secrets")
             if "uses" in job:
-                if writes or _secrets(job) or _secrets(workflow.get("env")):
+                if writes or _job_secrets(job, workflow, grants):
                     rules.add("reusable_workflow")
+                uses = job["uses"]
+                local = (
+                    re.fullmatch(r"\./\.github/workflows/([^/]+\.ya?ml)", uses)
+                    if isinstance(uses, str)
+                    else None
+                )
+                callee = local[1] if local else None
+                if (
+                    callee not in parsed
+                    or "workflow_call" not in triggers[callee]
+                    or callee in active
+                    or len(active) > 10
+                ):
+                    rules.add("runner")
+                else:
+                    visit(
+                        callee,
+                        events,
+                        is_reachable,
+                        is_downstream,
+                        agent_ref_only,
+                        (*active, callee),
+                        writes,
+                        _callee_grants(job, grants),
+                    )
             elif (is_reachable or is_downstream or is_target) and not _hosted(job.get("runs-on")):
                 rules.add("runner")
             for rule in rules:
                 findings.add((path, name, rule))
+
+    for path in sorted(reachable | downstream | targets):
+        agent_ref_only = all(
+            event in AGENT_REF_EVENTS
+            for event, config in triggers[path].items()
+            if _reachable_refs({event: config}, ctx)
+        )
+        visit(path, triggers[path], path in reachable, path in downstream, agent_ref_only, (path,))
     details = {
         "permissions": "Job may receive a writable token.",
         "id-token": "Job may mint an OIDC token.",

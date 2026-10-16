@@ -45,7 +45,7 @@ CASES = [
     ("secret_with", "secrets"),
     ("secret_run", "secrets"),
     ("github_token", None),
-    ("secret_inherit", "secrets,reusable_workflow"),
+    ("secret_inherit", "secrets,reusable_workflow,runner"),
     ("safe_environment", None),
     ("safe_environment_object", None),
     ("safe_env_write", "permissions"),
@@ -118,12 +118,12 @@ def test_malformed_workflow_fails_closed():
         )
 
 
-def api_transport(workflows, *, error=False, sha="a" * 40):
-    entries = []
+def api_transport(workflows, *, error=False, sha="a" * 40, entries=None):
+    listed = []
     for path in sorted(workflows.iterdir()):
         data = path.read_bytes()
         blob = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
-        entries.append(
+        listed.append(
             {
                 "name": path.name,
                 "path": f".github/workflows/{path.name}",
@@ -131,6 +131,9 @@ def api_transport(workflows, *, error=False, sha="a" * 40):
                 "type": "file",
             }
         )
+
+    if entries is None:
+        entries = listed
 
     def transport(request, timeout):
         parsed = urlparse(request.full_url)
@@ -222,6 +225,93 @@ def test_action_runs_command(tmp_path, monkeypatch):
 
 
 SCENARIO_CASES = [
+    ("reusable_mixed_token_input", [("callee.yml", "check", "secrets")]),
+    ("target_head_condition", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_privileged_allowlisted", [("ci.yml", "check", "pull_request_target")]),
+    ("reusable_unreachable", []),
+    ("reusable_nested_ungranted", []),
+    ("reusable_context_token", []),
+    ("reusable_not_callable", [("caller.yml", "call", "runner")]),
+    ("reusable_yaml_extension", [("callee.yaml", "check", "runner")]),
+    ("reusable_self_hosted", [("callee.yml", "check", "runner")]),
+    ("reusable_runner_group", [("callee.yml", "check", "runner")]),
+    ("reusable_hosted_readonly", []),
+    ("reusable_disabled", []),
+    ("reusable_permission_ceiling", []),
+    (
+        "reusable_inherited_write",
+        [
+            ("caller.yml", "call", "permissions"),
+            ("caller.yml", "call", "reusable_workflow"),
+            ("callee.yml", "check", "permissions"),
+        ],
+    ),
+    (
+        "reusable_inherited_oidc",
+        [
+            ("caller.yml", "call", "id-token"),
+            ("caller.yml", "call", "reusable_workflow"),
+            ("callee.yml", "check", "id-token"),
+        ],
+    ),
+    (
+        "reusable_secrets_explicit",
+        [
+            ("caller.yml", "call", "reusable_workflow"),
+            ("caller.yml", "call", "secrets"),
+            ("callee.yml", "check", "secrets"),
+        ],
+    ),
+    (
+        "reusable_secrets_inherit",
+        [
+            ("caller.yml", "call", "reusable_workflow"),
+            ("caller.yml", "call", "secrets"),
+            ("callee.yml", "check", "secrets"),
+        ],
+    ),
+    ("reusable_secrets_absent", []),
+    ("reusable_secrets_automatic", []),
+    (
+        "reusable_secrets_unrelated",
+        [("caller.yml", "call", "reusable_workflow"), ("caller.yml", "call", "secrets")],
+    ),
+    ("reusable_environment_secret", [("callee.yml", "check", "secrets")]),
+    ("reusable_protected_environment", []),
+    ("reusable_nested_runner", [("leaf.yml", "check", "runner")]),
+    ("reusable_cycle", [("callee.yml", "back", "runner")]),
+    ("reusable_diamond", []),
+    ("reusable_depth_10", []),
+    ("reusable_depth_11", [("level10.yml", "call", "runner")]),
+    ("reusable_target_pull_request_target", [("callee.yml", "check", "pull_request_target")]),
+    ("reusable_target_issue_comment", [("callee.yml", "check", "pull_request_target")]),
+    ("reusable_downstream_artifact", [("callee.yml", "check", "workflow_run")]),
+    (
+        "reusable_nested_secrets",
+        [
+            ("caller.yml", "call", "secrets"),
+            ("caller.yml", "call", "reusable_workflow"),
+            ("callee.yml", "call", "secrets"),
+            ("callee.yml", "call", "reusable_workflow"),
+            ("leaf.yml", "check", "secrets"),
+        ],
+    ),
+    ("target_head_readonly", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_privileged", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_brackets", [("ci.yml", "check", "pull_request_target")]),
+    ("target_head_ref", [("ci.yml", "check", "pull_request_target")]),
+    ("target_base_readonly", []),
+    ("target_head_display", []),
+    ("reusable_target_head", [("callee.yml", "check", "pull_request_target")]),
+    ("downstream_script_download_artifact", [("down.yml", "check", "workflow_run")]),
+    ("downstream_script_list_artifacts", [("down.yml", "check", "workflow_run")]),
+    ("downstream_script_artifacts_path", [("down.yml", "check", "workflow_run")]),
+    ("downstream_script_ordinary_script", []),
+    ("downstream_pull_requests", [("down.yml", "check", "workflow_run")]),
+    ("downstream_run_id", []),
+    ("downstream_script_display", []),
+    ("push_tags_only", []),
+    ("workflow_name_path", [("down.yml", "check", "workflow_run")]),
     ("custom_runner", [("ci.yml", "check", "runner")]),
     ("custom_list", [("ci.yml", "check", "runner")]),
     ("mixed_runner", [("ci.yml", "check", "runner")]),
@@ -333,9 +423,15 @@ SCENARIO_CASES = [
     ),
     (
         "target_pull_request_target_downstream_privileged",
-        [("consumer.yml", "consume", "workflow_run")],
+        [
+            ("consumer.yml", "consume", "workflow_run"),
+            ("source.yml", "produce", "pull_request_target"),
+        ],
     ),
-    ("target_pull_request_target_downstream_readonly", []),
+    (
+        "target_pull_request_target_downstream_readonly",
+        [("source.yml", "produce", "pull_request_target")],
+    ),
     ("target_issue_comment_downstream_privileged", [("consumer.yml", "consume", "workflow_run")]),
     ("target_issue_comment_downstream_readonly", []),
     ("workflow_name_brackets", [("down.yml", "check", "workflow_run")]),
@@ -385,10 +481,10 @@ SCENARIO_CASES = [
         "caller_privileged_secret",
         [("caller.yml", "call", "reusable_workflow"), ("caller.yml", "call", "secrets")],
     ),
-    ("caller_unprivileged_local", []),
-    ("caller_unprivileged_remote", []),
-    ("caller_unprivileged_missing", []),
-    ("caller_readonly_automatic_token", []),
+    ("caller_unprivileged_local", [("callee.yml", "check", "runner")]),
+    ("caller_unprivileged_remote", [("caller.yml", "call", "runner")]),
+    ("caller_unprivileged_missing", [("caller.yml", "call", "runner")]),
+    ("caller_readonly_automatic_token", [("callee.yml", "check", "runner")]),
     (
         "caller_downstream_write",
         [("caller.yml", "call", "reusable_workflow"), ("caller.yml", "call", "workflow_run")],
@@ -441,14 +537,51 @@ def test_invalid_workflow_values(fixture):
 
 
 @pytest.mark.parametrize(
-    "case", ["missing_local", "extra_local", "unexpected_error", "output_symlink", "output_rewrite"]
+    "case",
+    [
+        "missing_local",
+        "extra_local",
+        "unexpected_error",
+        "output_symlink",
+        "output_rewrite",
+        "listing_999",
+        "listing_1000",
+        "duplicate_entry",
+        "slash_entry",
+        "workflow_symlink",
+    ],
 )
 def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
     command = importlib.import_module("agent_repo.commands.preflight")
     workflows = tmp_path / "workflows"
     workflows.mkdir()
     shutil.copy(FIXTURES / f"command_{case}.yml", workflows / "ci.yml")
-    transport = api_transport(workflows)
+    entries = None
+    if case in {"listing_999", "listing_1000", "duplicate_entry", "slash_entry"}:
+        data = (workflows / "ci.yml").read_bytes()
+        blob = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+        entries = [
+            {"name": "ci.yml", "path": ".github/workflows/ci.yml", "sha": blob, "type": "file"}
+        ]
+        if case.startswith("listing_"):
+            entries += [
+                {
+                    "name": f"note-{index}.txt",
+                    "path": f".github/workflows/note-{index}.txt",
+                    "sha": "d" * 40,
+                    "type": "file",
+                }
+                for index in range(int(case.split("_")[1]) - 1)
+            ]
+        elif case == "duplicate_entry":
+            entries.append(dict(entries[0]))
+        else:
+            entries[0]["name"] = "nested/ci.yml"
+    transport = api_transport(workflows, entries=entries)
+    if case == "workflow_symlink":
+        target_workflow = tmp_path / "original.yml"
+        (workflows / "ci.yml").rename(target_workflow)
+        (workflows / "ci.yml").symlink_to(target_workflow)
     monkeypatch.setattr(GitHub, "_urlopen", staticmethod(transport))
     if case == "missing_local":
         (workflows / "ci.yml").unlink()
@@ -490,7 +623,8 @@ def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
             str(output),
         ]
     )
-    assert result == (0 if case == "output_rewrite" else 1)
+    success = case in {"output_rewrite", "listing_999"}
+    assert result == (0 if success else 1)
     captured = capsys.readouterr()
     assert "credential-canary" not in captured.out + captured.err
     if case == "output_symlink":
@@ -499,8 +633,8 @@ def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
     else:
         with output.open() as handle:
             artifact = json.load(handle)
-        assert artifact["pass"] is (case == "output_rewrite")
-        assert github_output.read_text() == f"pass={str(case == 'output_rewrite').lower()}\n"
+        assert artifact["pass"] is success
+        assert github_output.read_text() == f"pass={str(success).lower()}\n"
         assert "credential-canary" not in json.dumps(artifact)
 
 
@@ -547,6 +681,8 @@ def test_action_forwards_verified_settings(tmp_path, monkeypatch):
 
 
 SOURCE_CASES = [
+    ("branch_recursive_agent_ignore_segment", [("ci.yml", "check", "permissions")], "agent/**"),
+    ("branch_wildcard_intersection", [("ci.yml", "check", "permissions")], "agent/**"),
     ("branch_custom_agent", [("a-final.yml", "check", "workflow_run")], "bots/fix-*"),
     ("branch_custom_excluded", [], "bots/fix-*"),
     ("branch_ignore_exact_agent", [], "agent/fix-*"),
