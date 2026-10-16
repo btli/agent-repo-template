@@ -208,13 +208,21 @@ def test_clean_production_secret_set_posts_comment(maximum, tmp_path, record_pro
 
 
 @pytest.mark.parametrize(
-    "answer,label", [("type", "type:bug"), ("area", "area:api"), ("priority", "P2")]
+    "answer,values,label",
+    [
+        ("type", ("bug", "type:bug"), "type:bug"),
+        ("area", ("api", "area:api"), "area:api"),
+        ("priority", ("p2", "priority: P2"), "P2"),
+    ],
 )
 @pytest.mark.parametrize("probability,allowed", [(0.8, True), (0.79, False)])
-def test_labels_require_answer_threshold(answer, label, probability, allowed):
-    data = decision()
-    data["answers"][answer]["p"] = probability
-    assert (label in labels(plan(data, context()))) is allowed
+def test_labels_require_answer_threshold(answer, values, label, probability, allowed):
+    for value in values:
+        data = decision()
+        data["answers"][answer] = {"value": value, "p": probability}
+        actions = plan(data, context())
+        assert not any(action.payload.get("alerts") for action in actions)
+        assert (label in labels(actions)) is allowed
 
 
 @pytest.mark.parametrize("priority", ["P0", "P1"])
@@ -286,7 +294,7 @@ def test_close_with_all_guards(kind, prose, tmp_path):
                 "value": "none" if prose == "small" else "https://example.org/guide",
                 "p": 0.9,
             },
-            "duplicate_of": {"value": "none", "p": 0.9},
+            "duplicate_of": {"value": "#99" if kind == "duplicate" else "none", "p": 0.9},
             "security_sensitive": {"value": False, "p": 0.9},
         }
     )
@@ -643,7 +651,8 @@ def test_invalid_artifact_only_maintainer(bad, tmp_path):
         for question in ("needs_info", "out_of_scope", "security_sensitive")
         for value in ("yes", 1, None)
     ]
-    + [("priority", "")],
+    + [("priority", "")]
+    + [("duplicate_of", value) for value in ("#100", 7, "7", "#0", "none")],
 )
 def test_malformed_answer_cannot_authorize_close(question, value, tmp_path):
     from agent_repo.apply.actions import check_identity

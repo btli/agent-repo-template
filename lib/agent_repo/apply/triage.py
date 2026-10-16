@@ -140,24 +140,46 @@ def _priority(value: object) -> str:
     )
 
 
-def _valid_answers(answers: dict, ctx: ApplyContext) -> bool:
+def _answer_label(question: str, value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if question == "priority":
+        return _priority(value).upper()
+    prefix = f"{question}:"
+    return value if value.startswith(prefix) else prefix + value
+
+
+def _valid_answers(decision: dict, ctx: ApplyContext) -> bool:
+    answers = decision["answers"]
     choices = {
         "type": {label for label in ctx.config.labels if label.startswith("type:")},
-        "area": {area.name for area in ctx.config.areas} | {"unknown"},
-        "priority": set(ctx.charter.priorities),
+        "area": {f"area:{area.name}" for area in ctx.config.areas} | {"area:unknown"},
+        "priority": {priority.upper() for priority in ctx.charter.priorities},
         "docs_ref": {doc.url for doc in ctx.charter.docs_index} | {"none"},
-        # This context has no trusted duplicate candidates; never accept a model-supplied set.
-        "duplicate_of": {"none"},
     }
     for question, answer in answers.items():
         value = answer["value"]
+        if question in {"type", "area", "priority"}:
+            value = _answer_label(question, value)
         if question in choices:
             if not isinstance(value, str) or value not in choices[question]:
+                return False
+        elif question == "duplicate_of":
+            if not isinstance(value, str) or (
+                value != "none" and re.fullmatch(r"#[1-9][0-9]*", value) is None
+            ):
                 return False
         elif question in {"needs_info", "out_of_scope", "security_sensitive"}:
             if type(value) is not bool:
                 return False
-    return True
+    close = decision["close"]
+    duplicate = answers.get("duplicate_of")
+    return (
+        close is None
+        or close["kind"] != "duplicate"
+        or duplicate is None
+        or duplicate["value"] == f"#{close['target']}"
+    )
 
 
 def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
@@ -168,11 +190,15 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
     if errors:
         return _maintainer(ctx, None, errors)
     answers = decision["answers"]
-    if not _valid_answers(answers, ctx):
+    if not _valid_answers(decision, ctx):
         return _maintainer(ctx, None, ["Artifact rejected: invalid schema."])
     apply_min = ctx.config.raw["thresholds"]["apply_min"]
     area_answer = answers.get("area", {})
-    area = area_answer.get("value") if area_answer.get("p", 0) >= apply_min else None
+    area = (
+        _answer_label("area", area_answer.get("value"))
+        if area_answer.get("p", 0) >= apply_min
+        else None
+    )
     area = area.removeprefix("area:") if isinstance(area, str) else None
     # Scan before rendering: escaping or truncation must not hide a credential.
     if find_leaks("".join(_strings(decision)), ctx.secrets, ctx.canary) or find_leaks(
@@ -235,10 +261,9 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
             needs_maintainer = True
     for key, prefix in (("type", "type:"), ("area", "area:"), ("priority", "")):
         answer = answers.get(key, {})
-        value = answer.get("value")
-        if not isinstance(value, str):
+        label = _answer_label(key, answer.get("value"))
+        if label is None:
             continue
-        label = value if not prefix or value.startswith(prefix) else prefix + value
         if (
             answer.get("p", 0) >= apply_min
             and label in decision["labels"]
@@ -248,7 +273,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
                 or (key != "priority" and label.startswith(prefix))
             )
         ):
-            if key != "area" or value.removeprefix("area:") in {
+            if key != "area" or label.removeprefix("area:") in {
                 candidate.name for candidate in ctx.config.areas
             }:
                 selected.append(label)
