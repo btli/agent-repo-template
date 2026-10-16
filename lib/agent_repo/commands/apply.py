@@ -90,6 +90,7 @@ def main(argv: list[str]) -> int:
                     "add_labels",
                     {
                         "number": event.number,
+                        "bot_login": bot_login,
                         "labels": ["needs-maintainer"],
                         "alerts": ["Apply failed: trusted inputs unavailable."],
                     },
