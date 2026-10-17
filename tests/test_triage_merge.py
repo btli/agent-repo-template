@@ -198,6 +198,40 @@ def test_label_corrections_are_deduplicated(decision):
     ]
 
 
+@pytest.mark.parametrize(
+    "trusted,proposed_type,expected_type,escalates",
+    [
+        pytest.param(False, "question", "bug", True, id="untrusted-correction"),
+        pytest.param(True, "question", "question", False, id="trusted-correction"),
+        pytest.param(False, "bug", "bug", False, id="unchanged-three-arguments"),
+    ],
+)
+def test_merge_taxonomy_contract(decision, trusted, proposed_type, expected_type, escalates):
+    command = importlib.import_module("agent_repo.commands.triage_merge")
+    tier2 = copy.deepcopy(decision)
+    tier2["labels"] = [f"type:{proposed_type}", "area:core", "priority:P2", "keep"]
+    tier2["needs_info"] = {"text": "Which version?"}
+    if trusted:
+        result = command.merge(
+            decision, tier2, None, allowed_labels={"type:bug", "type:question", "area:core"}
+        )
+    else:
+        result = command.merge(decision, tier2, None)
+    assert validate(result, load_schema("decision")) == []
+    assert result["answers"] == decision["answers"]
+    if escalates:
+        assert result["labels"] == decision["labels"]
+        assert result["escalate"] == {
+            "to": "maintainer",
+            "reason": "Tier-2 label corrections violate the repository taxonomy.",
+        }
+        assert result["needs_info"] == decision["needs_info"]
+    else:
+        assert result["labels"] == ["priority:P2", "keep", f"type:{expected_type}", "area:core"]
+        assert result["escalate"] is None
+        assert result["needs_info"] == tier2["needs_info"]
+
+
 @pytest.mark.parametrize("explicit_none", [False, True], ids=["three-arguments", "explicit-none"])
 @pytest.mark.parametrize(
     "labels,extra_area,changed",
