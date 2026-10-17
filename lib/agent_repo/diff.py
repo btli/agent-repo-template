@@ -41,12 +41,6 @@ def diff_index(diff: str) -> dict[str, set[int]]:
         elif in_hunk and line.startswith((" ", "+")):
             result.setdefault(right_path, set()).add(right_line)
             right_line += 1
-        elif in_hunk and line.startswith("-"):
-            continue
-        elif in_hunk and line.startswith("\\"):
-            continue
-        elif line.startswith("diff --git "):
-            in_hunk = False
     return result
 
 

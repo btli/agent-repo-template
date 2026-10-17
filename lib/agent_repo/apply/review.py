@@ -8,20 +8,10 @@ from agent_repo.apply.actions import (
     check_identity,
     execute,
 )
+from agent_repo.apply.triage import _strings
 from agent_repo.github import GitHub
 from agent_repo.render import fenced
 from agent_repo.scan import find_leaks
-
-
-def _strings(value: object):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for child in value.values():
-            yield from _strings(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _strings(child)
 
 
 def _alert(ctx: ApplyContext, message: str) -> list[Action]:
@@ -79,16 +69,16 @@ def plan_review(review: dict, ctx: ApplyContext, index: dict[str, set[int]]) -> 
                 f"Finding outside the diff ({finding['severity']}) at "
                 f"{finding['path']}:{finding['line']}: {finding['body']}"
             )
-    if review["escalate"] is not None or not review["scope_ok"]:
-        labels = ["needs-maintainer"]
-    else:
-        labels = []
     actions = []
-    if labels:
+    if review["escalate"] is not None or not review["scope_ok"]:
         actions.append(
             Action(
                 "add_labels",
-                {"number": ctx.event.number, "labels": labels, "bot_login": ctx.bot_login},
+                {
+                    "number": ctx.event.number,
+                    "labels": ["needs-maintainer"],
+                    "bot_login": ctx.bot_login,
+                },
             )
         )
     body = "Automated review\n\n" + fenced("\n\n".join(filter(None, summary)), 12000)
