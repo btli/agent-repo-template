@@ -153,6 +153,22 @@ def test_lib_imports_stdlib_only():
             assert set(names) <= sys.stdlib_module_names | {"agent_repo"}, (path, names)
 
 
+def test_precommit_uv_entries_are_frozen():
+    document = load_yaml(ROOT / ".pre-commit-config.yaml")
+    assert isinstance(document, dict)
+    entries = [
+        hook["entry"]
+        for repository in document.get("repos", [])
+        if isinstance(repository, dict)
+        for hook in repository.get("hooks", [])
+        if isinstance(hook, dict)
+        and isinstance(hook.get("entry"), str)
+        and re.search(r"\buv\s+run\b", hook["entry"])
+    ]
+    assert entries
+    assert all("--frozen" in entry.split() for entry in entries)
+
+
 def test_no_unexpected_github_owners():
     for path in ROOT.rglob("*"):
         if not path.is_file():

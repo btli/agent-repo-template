@@ -257,6 +257,25 @@ def test_deeply_nested_response_body_raises_github_error(status: int, expected_m
     assert caught.value.message == expected_message
 
 
+@pytest.mark.parametrize(
+    ("status", "expected_message"),
+    [(200, "invalid JSON response"), (500, "GitHub API request failed with status 500")],
+)
+def test_large_integer_response_raises_github_error_without_context(
+    status: int, expected_message: str
+):
+    def transport(request: Request, timeout: float):
+        return status, {}, b"1" * 5000
+
+    api = GitHub(TOKEN, "your-org/project", transport=transport)
+    with pytest.raises(GitHubError) as caught:
+        api.request("GET", "/large-integer")
+    assert caught.value.status == status
+    assert caught.value.message == expected_message
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
 def test_paginate_caps_fresh_next_links():
     requested: list[str] = []
 

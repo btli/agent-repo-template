@@ -159,7 +159,11 @@ class GitHub:
         else:
             try:
                 value = json.loads(decoded)
-            except (json.JSONDecodeError, RecursionError):
+            except (ValueError, RecursionError):
+                invalid_json = True
+            else:
+                invalid_json = False
+            if invalid_json:
                 raise GitHubError(status, "invalid JSON response", token=self._token) from None
         return value, response_headers
 
@@ -189,7 +193,7 @@ class GitHub:
     def _http_error(self, status: int, headers: dict[str, str], body: bytes) -> GitHubError:
         try:
             payload = json.loads(body.decode("utf-8", errors="replace"))
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
             payload = {}
         message = payload.get("message") if isinstance(payload, dict) else None
         normalized_headers = {key.lower(): value for key, value in headers.items()}
