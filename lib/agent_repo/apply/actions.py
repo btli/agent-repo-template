@@ -1,6 +1,6 @@
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -190,6 +190,35 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
             ):
                 raise ValueError("duplicate target no longer open")
     item, comments = _check_enabled(actions, gh, number)
+    closed_by = item.get("closed_by")
+    closer = closed_by.get("login") if isinstance(closed_by, dict) else ""
+    closer = canonical_bot_login(closer) if isinstance(closer, str) else ""
+    for close in tuple(actions):
+        if (
+            close.kind == "close"
+            and item.get("state") != "open"
+            and closer != canonical_bot_login(close.payload.get("bot_login", ""))
+        ):
+            actions = [
+                replace(
+                    action,
+                    payload={
+                        **action.payload,
+                        "labels": [
+                            label for label in action.payload["labels"] if label != "agent:closed"
+                        ],
+                    },
+                )
+                if action.kind == "add_labels"
+                else action
+                for action in actions
+                if action != close
+                and not (
+                    action.kind == "comment"
+                    and action.payload["body"] == close.payload["comment_body"]
+                )
+            ]
+            actions.extend(close.payload["not_permitted"])
     existing_labels = {label["name"] for label in item["labels"]}
     existing_owners = {owner["login"] for owner in item["assignees"]}
     completed_comments = _bot_comments(comments)

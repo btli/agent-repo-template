@@ -9,9 +9,11 @@ from agent_repo.render import fenced
 from agent_repo.scan import find_leaks
 
 
-def _maintainer(ctx: ApplyContext, area: str | None, alerts: list[str]) -> list[Action]:
+def _maintainer(
+    ctx: ApplyContext, area: str | None, alerts: list[str], *, include_capped: bool = True
+) -> list[Action]:
     labels = ["needs-maintainer"]
-    if ctx.capped and "agent:triage-capped" in ctx.config.labels:
+    if include_capped and ctx.capped and "agent:triage-capped" in ctx.config.labels:
         labels.append("agent:triage-capped")
     actions = [
         Action(
@@ -182,10 +184,10 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
         return off
     errors = check_identity(decision, ctx, "decision")
     if errors:
-        return _maintainer(ctx, None, errors)
+        return _maintainer(ctx, None, errors, include_capped=False)
     answers = decision["answers"]
     if not _valid_answers(decision, ctx):
-        return _maintainer(ctx, None, ["Artifact rejected: invalid schema."])
+        return _maintainer(ctx, None, ["Artifact rejected: invalid schema."], include_capped=False)
     apply_min = ctx.config.raw["thresholds"]["apply_min"]
     area_answer = answers.get("area", {})
     area = (
@@ -287,6 +289,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
             f"{locations}\nConfirm with: {rca['confirm_with']}"
         )
     close = decision["close"]
+    close_suggestion = "Suggested closure requires maintainer confirmation."
     try:
         can_close = (
             close is not None
@@ -314,7 +317,7 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
             )
             selected.append("agent:closed")
         else:
-            text.append("Suggested closure requires maintainer confirmation.")
+            text.append(close_suggestion)
             needs_maintainer = True
     actions: list[Action] = []
     if selected:
@@ -351,6 +354,11 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
             )
         )
     if can_close:
+        suggestion_body = (
+            f"Agent triage\n\n{fenced(close_suggestion, 10000)}\n\n{marker('triage', ctx.run_id)}"
+        )
+        if find_leaks(suggestion_body, ctx.secrets, ctx.canary):
+            return _maintainer(ctx, area, ["Outbound scan alert: rendered action dropped."])
         actions.append(
             Action(
                 "close",
@@ -358,6 +366,17 @@ def plan_triage(decision: dict, ctx: ApplyContext) -> list[Action]:
                     "number": ctx.event.number,
                     "duplicate_target": close["target"] if close["kind"] == "duplicate" else None,
                     "comment_body": body,
+                    "not_permitted": [
+                        *_maintainer(ctx, area, []),
+                        Action(
+                            "comment",
+                            {
+                                "number": ctx.event.number,
+                                "body": suggestion_body,
+                                "bot_login": ctx.bot_login,
+                            },
+                        ),
+                    ],
                     "bot_login": ctx.bot_login,
                 },
             )

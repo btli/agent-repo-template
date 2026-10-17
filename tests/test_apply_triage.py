@@ -25,6 +25,7 @@ class API:
         self.comments = list(comments)
         self.fail = fail
         self.issue_state = "open"
+        self.closed_by = None
         self.gh = GitHub("test-token", "your-org/project", transport=self.transport)
 
     def transport(self, request, timeout):
@@ -44,6 +45,7 @@ class API:
                 )
             elif request.method == "PATCH" and path == "issues/7":
                 self.issue_state = body["state"]
+                self.closed_by = {"login": "agent-apply[bot]", "type": "Bot"}
             return 200, {}, b"{}"
         if path.endswith("/comments"):
             value = self.comments
@@ -59,6 +61,7 @@ class API:
                 else ("open" if self.target_open else "closed"),
                 "labels": [{"name": label} for label in self.labels],
                 "assignees": [{"login": owner} for owner in self.assignees],
+                "closed_by": self.closed_by,
             }
         return 200, {}, json.dumps(value).encode()
 
@@ -484,7 +487,9 @@ def test_cap_label_is_trusted(route, allowed, capped):
         data["notes"] = [ctx.canary]
     elif route == "invalid":
         data = None
-    assert ("agent:triage-capped" in labels(plan(data, ctx))) is (capped and allowed)
+    assert ("agent:triage-capped" in labels(plan(data, ctx))) is (
+        capped and allowed and route != "invalid"
+    )
 
 
 @pytest.mark.parametrize("area,assigned", [("api", True), ("unknown", False)])
@@ -660,12 +665,20 @@ def test_idempotent_live_state_makes_no_writes(tmp_path):
     assert api.writes == []
 
 
-@pytest.mark.parametrize("bad", [None, [], {"extra": "field"}])
-def test_invalid_artifact_only_maintainer(bad, tmp_path):
+@pytest.mark.parametrize("bad", [None, [], {"extra": "field"}, "identity", "answer"])
+@pytest.mark.parametrize("capped", [False, True])
+def test_invalid_artifact_only_maintainer(bad, capped, tmp_path):
     api = API()
-    _, summary = run(bad, context(api), api, tmp_path)
+    if bad == "identity":
+        bad = decision()
+        bad["run_id"] = "another-run"
+    elif bad == "answer":
+        bad = decision()
+        bad["answers"]["type"]["value"] = True
+    alerts, summary = run(bad, context(api, capped=capped), api, tmp_path)
     assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
-    assert "reject" in summary.lower()
+    assert alerts and "reject" in summary.lower()
+    assert "agent:triage-capped" not in summary
 
 
 @pytest.mark.parametrize(
@@ -979,7 +992,7 @@ def test_apply_action_ignores_workspace_python_modules(modules, tmp_path):
 
 
 def _python_uses_script(run):
-    for line in run.splitlines():
+    for line in run.replace("\\\n", "").splitlines():
         words = shlex.split(line, comments=True)
         for index, word in enumerate(words):
             if not re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(word).name):
@@ -1005,16 +1018,25 @@ def _python_uses_script(run):
 
 
 @pytest.mark.parametrize(
-    "command",
+    "command,expected",
     [
-        None,
-        "python3 -X dev -m agent_repo_cli",
-        "python3 -W ignore -m agent_repo_cli",
-        "python3 -X dev -Bm agent_repo_cli",
+        (None, True),
+        ("python3 -X dev -m agent_repo_cli", False),
+        ("python3 -W ignore -m agent_repo_cli", False),
+        ("python3 -X dev -Bm agent_repo_cli", False),
+        ('python3 "$GITHUB_ACTION_PATH/run.py" \\\n  --flag value', True),
+        ("python3 \\\n  -m agent_repo.cli", False),
     ],
-    ids=["real-actions", "x-option", "warnings-option", "clustered"],
+    ids=[
+        "real-actions",
+        "x-option",
+        "warnings-option",
+        "clustered",
+        "continued-script",
+        "continued-module",
+    ],
 )
-def test_composite_actions_do_not_use_python_module_or_command_mode(command):
+def test_composite_actions_do_not_use_python_module_or_command_mode(command, expected):
     from agent_repo.yamljson import load_yaml
 
     actions = Path(__file__).resolve().parents[1] / "actions"
@@ -1024,7 +1046,7 @@ def test_composite_actions_do_not_use_python_module_or_command_mode(command):
             continue
         for step in runs["steps"]:
             run = step.get("run", "") if command is None else command
-            assert _python_uses_script(run) is (command is None), (
+            assert _python_uses_script(run) is expected, (
                 f"{path.relative_to(actions)}: unexpected Python invocation policy result"
             )
 
@@ -1284,21 +1306,61 @@ def test_retry_after_comment_then_failed_close_does_not_repost(failure, tmp_path
     assert not [call for call in api.calls[boundary:] if call[0] != "GET"]
 
 
-def test_close_uses_existing_trusted_explanation(tmp_path):
+@pytest.mark.parametrize(
+    "closed_by", ["open", "human", "missing", "null", "agent-apply[bot]", "AGENT-APPLY[bot]"]
+)
+@pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
+@pytest.mark.parametrize("closed_at", [1, 2], ids=["already-closed", "closed-before-write"])
+def test_close_uses_existing_trusted_explanation(closed_by, kind, closed_at, tmp_path):
     from agent_repo.apply.actions import execute
 
     api = API()
     data = decision()
-    data["close"] = closing()
+    data["close"] = closing(kind)
     data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, context(api, enabled=True))
     body = next(action.payload["body"] for action in actions if action.kind == "comment")
-    api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
-    actions = [action for action in actions if action.kind != "comment"]
+    trusted = closed_by in {"open", "agent-apply[bot]", "AGENT-APPLY[bot]"}
+    if trusted:
+        api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
+        actions = [action for action in actions if action.kind != "comment"]
+    original = api.transport
+    issue_reads = 0
+
+    def transport(request, timeout):
+        nonlocal issue_reads
+        if request.method == "GET" and request.full_url.endswith("/issues/7"):
+            issue_reads += 1
+            if issue_reads >= closed_at and closed_by != "open":
+                api.issue_state = "closed"
+                api.closed_by = None if closed_by in {"missing", "null"} else {"login": closed_by}
+            status, headers, response = original(request, timeout)
+            value = json.loads(response)
+            if closed_by == "missing":
+                value.pop("closed_by", None)
+            return status, headers, json.dumps(value).encode()
+        return original(request, timeout)
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
     alerts = execute(actions, api.gh, "live", tmp_path / "summary.md")
     assert not alerts
     assert api.issue_state == "closed"
-    assert not any(path.endswith("/comments") for _, path, _ in api.writes)
+    assert ("agent:closed" in api.labels) is trusted
+    assert ("needs-maintainer" in api.labels) is (not trusted)
+    assert {"type:bug", "area:api", "P2"} <= set(api.labels)
+    assert any(method == "PATCH" for method, _, _ in api.writes) is (closed_by == "open")
+    posted = [payload["body"] for _, path, payload in api.writes if path.endswith("/comments")]
+    if trusted:
+        assert not posted
+    else:
+        assert len(posted) == 1
+        assert "Suggested closure requires maintainer confirmation." in posted[0]
+        assert "Closing:" not in posted[0] and "Reference:" not in posted[0]
+        assert posted[0].endswith("<!-- agent:triage run=run-1 -->")
+        assert api.assignees == ["octocat"]
+    boundary = len(api.calls)
+    assert not execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert not [call for call in api.calls[boundary:] if call[0] != "GET"]
 
 
 @pytest.mark.parametrize("role", ["read", "triage", "none", None])
