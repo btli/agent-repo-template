@@ -506,10 +506,26 @@ def test_explicit_short_key_with_nonmatching_name_is_scanned(action, monkeypatch
     assert "short-test" not in data + captured.out + captured.err
 
 
+def test_numeric_nonprimary_key_in_rca_fails_closed(action, monkeypatch, capsys):
+    credential = "9876543210"
+    monkeypatch.setenv("OTHER_KEY", credential)
+    action.update(source="json", leak=lambda _: credential)
+    assert action["module"].main() == 1
+    assert action["calls"]
+    text = action["output"].read_text() if action["output"].exists() else ""
+    if text:
+        assert json.loads(text)["escalate"]["to"] == "maintainer"
+    captured = capsys.readouterr()
+    assert credential not in text + captured.out + captured.err
+
+
 def test_timeout_has_kill_grace_and_no_key_in_argv(action):
     assert action["module"].main() == 0
     command = action["calls"][0][0]
     assert command[:4] == ["timeout", "-k", "15", "900"]
+    assert command[4:7] == ["omnigent", "run", str(Path("agents/triage").resolve())]
+    assert command[7:9] == ["--no-session", "--no-log"]
+    assert command[9] == "-p"
     assert all(
         "credential-value" not in argument for command, _ in action["calls"] for argument in command
     )
@@ -607,7 +623,7 @@ def test_runner_metadata_does_not_escalate(action, monkeypatch):
         ("OIDC_AUTH", "true"),
         ("CACHE_KEY", "null"),
         ("OTHER_KEY", "none"),
-        ("SERVICE_AUTH", "12.5"),
+        ("SERVICE_AUTH", "3.5"),
         ("FEATURE_AUTH", "TrUe"),
     ],
 )

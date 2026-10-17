@@ -58,6 +58,17 @@ def test_read_per_call_cap(tmp_path):
     assert obj._used == 8
 
 
+def test_budget_inside_repository_is_rejected(tmp_path, monkeypatch):
+    (tmp_path / "file").write_text("safe")
+    budget = tmp_path / "budget"
+    budget.write_text("0\n")
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("AGENT_REPO_BUDGET_FILE", str(budget))
+    module = importlib.import_module("agent_repo.repo_tools")
+    with pytest.raises(module.ToolError, match="unsafe budget location"):
+        reader(tmp_path, budget_file=budget).read_file("file")
+
+
 def test_read_window_in_large_file(tmp_path):
     (tmp_path / "file").write_text("prefix\n" * 10000 + "wanted\nlast\n")
     module = importlib.import_module("agent_repo.repo_tools")

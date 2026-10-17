@@ -86,7 +86,7 @@ def main() -> int:
             name in explicit
             or (
                 len(value) >= 4
-                and not re.fullmatch(r"true|false|null|none|yes|no|on|off|[0-9.]+", value, re.I)
+                and not re.fullmatch(r"true|false|null|none|yes|no|on|off", value, re.I)
                 and name.upper() != "SSH_AUTH_SOCK"
                 and re.search(
                     r"(?:^|_)(?:PAT|AUTH|KEY|TOKEN|SECRET|PASSWORD|PASS|PASSWD|CREDENTIALS?|PRIVATE|DSN)(?:_|$)",
