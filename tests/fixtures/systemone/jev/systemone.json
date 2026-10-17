@@ -1,0 +1,25 @@
+{
+  "request": {
+    "model": "jev-latest",
+    "state": "I was charged twice for my subscription this month. Please refund the extra charge.",
+    "questions": {
+      "billing": {
+        "type": "noul",
+        "instructions": "Is this message about billing?"
+      }
+    }
+  },
+  "response": {
+    "model": "jev-latest",
+    "answers": {
+      "billing": {
+        "type": "noul",
+        "noul": 0.98
+      }
+    },
+    "usage": {
+      "input_tokens": 120,
+      "output_tokens": 12
+    }
+  }
+}
