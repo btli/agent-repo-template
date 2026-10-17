@@ -1,0 +1,46 @@
+name: Set up repository agents
+description: Install pinned agent runtimes and configure an Anthropic gateway without storing keys.
+inputs:
+  gateway-url:
+    description: HTTPS gateway URL.
+    required: true
+  gateway-kind:
+    description: Gateway kind, databricks or litellm.
+    required: true
+  model:
+    description: Anthropic-family gateway model ID.
+    required: true
+  api-key-env:
+    description: Caller environment variable holding the role key; pass the same name to triage-agent.
+    required: false
+    default: LLM_API_KEY
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      with:
+        version: 0.13.1
+        enable-cache: false
+    - name: Install hash-locked omnigent
+      shell: bash
+      run: |
+        set -euo pipefail
+        venv="$RUNNER_TEMP/agent-repo-omnigent"
+        if [ ! -x "$venv/bin/python" ]; then
+          uv --no-config venv --python 3.12 "$venv"
+        fi
+        uv --no-config pip install --python "$venv/bin/python" --require-hashes \
+          --default-index https://pypi.org/simple -r "$GITHUB_ACTION_PATH/requirements-omnigent.txt"
+    - name: Install integrity-locked Claude CLI
+      uses: omnigent-ai/omnigent/.github/actions/setup-harness-cli@a8676d23e88df7918f4f8ef1c7c4e3186e710354 # v0.18.0
+      with:
+        harness: claude
+        enable-cache: false
+    - name: Configure gateway
+      shell: bash
+      env:
+        GATEWAY_URL: ${{ inputs.gateway-url }}
+        GATEWAY_KIND: ${{ inputs.gateway-kind }}
+        MODEL: ${{ inputs.model }}
+        API_KEY_ENV: ${{ inputs.api-key-env }}
+      run: '"$RUNNER_TEMP/agent-repo-omnigent/bin/python" "$GITHUB_ACTION_PATH/configure.py"'

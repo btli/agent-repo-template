@@ -1,0 +1,8 @@
+{
+  "schema_version": "1", "run_id": "run-1", "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tier": 1, "answers": {"type": {"value": "bug", "p": 0.85}},
+  "labels": ["type:bug", "area:core", "priority:P2", "keep"],
+  "suggestions": {"priority": null, "labels": []}, "needs_info": null, "rca": null,
+  "close": {"kind": "duplicate", "target": 42, "docs_ref": null, "p": 0.95, "lexical": 0.6, "tier2_agrees": false},
+  "escalate": null, "security": false, "notes": []
+}

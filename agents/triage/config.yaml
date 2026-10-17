@@ -1,0 +1,27 @@
+spec_version: 1
+name: agent-repo-triage
+description: Tier-2 triage with read-only repository tools.
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+async: false
+timers: false
+skills: none
+instructions: prompt.md
+guardrails:
+  policies:
+    allowlist_repo_tools:
+      type: function
+      on: [tool_call]
+      function:
+        path: agent_repo.policies.allow_only
+        arguments:
+          allowed: [read_repo_file, grep_repo]
+    tool_budget:
+      type: function
+      on: [tool_call]
+      function:
+        path: omnigent.policies.builtins.safety.max_tool_calls_per_session
+        arguments:
+          limit: 40
