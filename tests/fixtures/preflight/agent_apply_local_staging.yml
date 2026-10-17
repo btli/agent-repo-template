@@ -1,0 +1,29 @@
+{
+  "caller.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/callee.yml"
+      }
+    }
+  },
+  "callee.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "permissions": {},
+        "environment": {
+          "name": "staging"
+        },
+        "steps": [
+          {
+            "run": "true"
+          }
+        ]
+      }
+    }
+  }
+}

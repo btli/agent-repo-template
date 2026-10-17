@@ -48,7 +48,7 @@ CASES = [
     ("secret_with", "secrets"),
     ("secret_run", "secrets"),
     ("github_token", None),
-    ("secret_inherit", "secrets,reusable_workflow,runner"),
+    ("secret_inherit", "agent-apply,secrets,reusable_workflow,runner"),
     ("safe_environment", None),
     ("safe_environment_object", None),
     ("safe_env_write", "permissions"),
@@ -121,7 +121,9 @@ def test_malformed_workflow_fails_closed():
         )
 
 
-def api_transport(workflows, *, error=False, sha="a" * 40, entries=None):
+def api_transport(
+    workflows, *, error=False, sha="a" * 40, entries=None, ref_path="/git/ref/heads/main"
+):
     listed = []
     for path in sorted(workflows.iterdir()):
         data = path.read_bytes()
@@ -142,7 +144,8 @@ def api_transport(workflows, *, error=False, sha="a" * 40, entries=None):
         parsed = urlparse(request.full_url)
         if error:
             raise RuntimeError("credential-canary")
-        if parsed.path.endswith("/git/ref/heads/main"):
+        if "/git/ref/heads/" in parsed.path:
+            assert parsed.path.endswith(ref_path)
             value = {"object": {"type": "commit", "sha": "b" * 40}}
         else:
             assert parsed.path.endswith("/contents/.github/workflows")
@@ -228,6 +231,25 @@ def test_action_runs_command(tmp_path, monkeypatch):
 
 
 SCENARIO_CASES = [
+    ("agent_apply_case", [("ci.yml", "check", "agent-apply")]),
+    ("agent_apply_case_object", [("ci.yml", "check", "agent-apply")]),
+    ("agent_apply_expression", [("ci.yml", "check", "agent-apply")]),
+    ("agent_apply_expression_object", [("ci.yml", "check", "agent-apply")]),
+    ("agent_apply_expression_unknown", [("ci.yml", "check", "agent-apply")]),
+    ("agent_apply_local_push", [("callee.yml", "check", "agent-apply")]),
+    ("agent_apply_local_pr", [("callee.yml", "check", "agent-apply")]),
+    ("agent_apply_local_unreachable_push", [("callee.yml", "check", "agent-apply")]),
+    ("agent_apply_local_unreachable_pr", [("callee.yml", "check", "agent-apply")]),
+    ("agent_apply_local_missing", [("caller.yml", "call", "agent-apply")]),
+    ("agent_apply_local_not_callable", [("caller.yml", "call", "agent-apply")]),
+    ("agent_apply_local_cycle", [("callee.yml", "call", "agent-apply")]),
+    ("agent_apply_local_nested", [("leaf.yml", "check", "agent-apply")]),
+    ("agent_apply_staging", []),
+    ("agent_apply_local_staging", []),
+    ("agent_apply_local_disabled_call", []),
+    ("agent_apply_local_disabled_job", []),
+    ("agent_apply_uninvoked", []),
+    ("reusable_nested_inherit_ungranted", []),
     ("target_github_head_ref_env", [("a.yml", "check", "pull_request_target")]),
     ("target_github_base_ref_env", []),
     ("downstream_python_urllib", [("consumer.yml", "check", "workflow_run")]),
@@ -300,7 +322,10 @@ SCENARIO_CASES = [
     ("reusable_unreachable", []),
     ("reusable_nested_ungranted", []),
     ("reusable_context_token", []),
-    ("reusable_not_callable", [("caller.yml", "call", "runner")]),
+    (
+        "reusable_not_callable",
+        [("caller.yml", "call", "agent-apply"), ("caller.yml", "call", "runner")],
+    ),
     ("reusable_yaml_extension", [("callee.yaml", "check", "runner")]),
     ("reusable_self_hosted", [("callee.yml", "check", "runner")]),
     ("reusable_runner_group", [("callee.yml", "check", "runner")]),
@@ -348,10 +373,13 @@ SCENARIO_CASES = [
     ("reusable_environment_secret", [("callee.yml", "check", "secrets")]),
     ("reusable_protected_environment", []),
     ("reusable_nested_runner", [("leaf.yml", "check", "runner")]),
-    ("reusable_cycle", [("callee.yml", "back", "runner")]),
+    ("reusable_cycle", [("callee.yml", "back", "agent-apply"), ("callee.yml", "back", "runner")]),
     ("reusable_diamond", []),
     ("reusable_depth_10", []),
-    ("reusable_depth_11", [("level10.yml", "call", "runner")]),
+    (
+        "reusable_depth_11",
+        [("level10.yml", "call", "agent-apply"), ("level10.yml", "call", "runner")],
+    ),
     ("reusable_target_pull_request_target", [("callee.yml", "check", "pull_request_target")]),
     ("reusable_target_issue_comment", [("callee.yml", "check", "pull_request_target")]),
     ("reusable_downstream_artifact", [("callee.yml", "check", "workflow_run")]),
@@ -400,7 +428,10 @@ SCENARIO_CASES = [
     ("event_delete", [("ci.yml", "check", "pull_request_target")]),
     ("event_issue_comment", [("ci.yml", "check", "pull_request_target")]),
     ("unsafe_environment", [("ci.yml", "check", "secrets")]),
-    ("expression_environment", [("ci.yml", "check", "secrets")]),
+    (
+        "expression_environment",
+        [("ci.yml", "check", "agent-apply"), ("ci.yml", "check", "secrets")],
+    ),
     ("downstream_head_sha", [("down.yml", "check", "workflow_run")]),
     ("downstream_head_branch", [("down.yml", "check", "workflow_run")]),
     ("downstream_gh_download", [("down.yml", "check", "workflow_run")]),
@@ -579,7 +610,10 @@ SCENARIO_CASES = [
     ),
     ("caller_unprivileged_local", [("callee.yml", "check", "runner")]),
     ("caller_unprivileged_remote", [("caller.yml", "call", "runner")]),
-    ("caller_unprivileged_missing", [("caller.yml", "call", "runner")]),
+    (
+        "caller_unprivileged_missing",
+        [("caller.yml", "call", "agent-apply"), ("caller.yml", "call", "runner")],
+    ),
     ("caller_readonly_automatic_token", [("callee.yml", "check", "runner")]),
     (
         "caller_downstream_write",
@@ -654,6 +688,9 @@ def test_invalid_workflow_values(fixture):
         "duplicate_entry",
         "slash_entry",
         "workflow_symlink",
+        "listed_symlink",
+        "branch_slash",
+        "missing_token",
     ],
 )
 def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
@@ -662,7 +699,7 @@ def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
     workflows.mkdir()
     shutil.copy(FIXTURES / f"command_{case}.yml", workflows / "ci.yml")
     entries = None
-    if case in {"listing_999", "listing_1000", "duplicate_entry", "slash_entry"}:
+    if case in {"listing_999", "listing_1000", "duplicate_entry", "slash_entry", "listed_symlink"}:
         data = (workflows / "ci.yml").read_bytes()
         blob = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
         entries = [
@@ -680,9 +717,17 @@ def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
             ]
         elif case == "duplicate_entry":
             entries.append(dict(entries[0]))
+        elif case == "listed_symlink":
+            entries[0]["type"] = "symlink"
         else:
             entries[0]["name"] = "nested/ci.yml"
-    transport = api_transport(workflows, entries=entries)
+    transport = api_transport(
+        workflows,
+        entries=entries,
+        ref_path="/git/ref/heads/release%2Fmain"
+        if case == "branch_slash"
+        else "/git/ref/heads/main",
+    )
     if case == "workflow_symlink":
         target_workflow = tmp_path / "original.yml"
         (workflows / "ci.yml").rename(target_workflow)
@@ -699,6 +744,9 @@ def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
 
         monkeypatch.setattr(command, "load_yaml", fail_yaml)
     monkeypatch.setenv("GH_TOKEN", "credential-canary")
+    if case == "missing_token":
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setenv("GITHUB_REPOSITORY", "your-org/project")
     output = tmp_path / "preflight.json"
     target = tmp_path / "target"
@@ -721,14 +769,14 @@ def test_command_binding_and_output(case, tmp_path, monkeypatch, capsys):
         [
             "preflight",
             "--default-branch",
-            "main",
+            "release/main" if case == "branch_slash" else "main",
             "--workflows-dir",
             str(workflows),
             "--output",
             str(output),
         ]
     )
-    success = case in {"output_rewrite", "listing_999"}
+    success = case in {"output_rewrite", "listing_999", "branch_slash"}
     assert result == (0 if success else 1)
     captured = capsys.readouterr()
     assert "credential-canary" not in captured.out + captured.err

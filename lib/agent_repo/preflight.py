@@ -439,13 +439,6 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             _writes(job.get("permissions"), ctx)
         parsed[path] = workflow
         triggers[path] = _events(workflow)
-        if "push" in triggers[path] or "pull_request" in triggers[path]:
-            for name, job in workflow["jobs"].items():
-                environment = job.get("environment")
-                if isinstance(environment, dict):
-                    environment = environment.get("name")
-                if environment == "agent-apply" and _enabled(job):
-                    findings.add((path, name, "agent-apply"))
         refs[path] = _reachable_refs(triggers[path], ctx)
         if refs[path]:
             reachable.add(path)
@@ -457,6 +450,36 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
             ctx.default_branch if event in DEFAULT_REF_EVENTS else None
             for event in _target_events(triggers[path])
         )
+
+    def lint_agent_apply(path, active):
+        for name, job in parsed[path]["jobs"].items():
+            if not _enabled(job):
+                continue
+            environment = job.get("environment")
+            if isinstance(environment, dict):
+                environment = environment.get("name")
+            if isinstance(environment, str) and (
+                environment.casefold() == "agent-apply" or "${{" in environment
+            ):
+                findings.add((path, name, "agent-apply"))
+            uses = job.get("uses")
+            if isinstance(uses, str) and uses.startswith("./"):
+                local = re.fullmatch(r"\./\.github/workflows/([^/]+\.ya?ml)", uses)
+                callee = local[1] if local else None
+                if (
+                    callee not in parsed
+                    or "workflow_call" not in triggers[callee]
+                    or callee in active
+                    or len(active) > 10
+                ):
+                    findings.add((path, name, "agent-apply"))
+                else:
+                    lint_agent_apply(callee, (*active, callee))
+
+    for path in parsed:
+        if "push" in triggers[path] or "pull_request" in triggers[path]:
+            lint_agent_apply(path, (path,))
+
     downstream = set()
     changed = True
     while changed:
