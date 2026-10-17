@@ -191,7 +191,11 @@ def _execute_live(actions: list[Action], gh: GitHub) -> None:
                 raise ValueError("duplicate target no longer open")
     item, comments = _check_enabled(actions, gh, number)
     closed_by = item.get("closed_by")
-    closer = closed_by.get("login") if isinstance(closed_by, dict) else ""
+    closer = (
+        closed_by.get("login")
+        if isinstance(closed_by, dict) and closed_by.get("type") == "Bot"
+        else ""
+    )
     closer = canonical_bot_login(closer) if isinstance(closer, str) else ""
     for close in tuple(actions):
         if (

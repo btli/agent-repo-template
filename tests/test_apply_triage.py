@@ -992,14 +992,21 @@ def test_apply_action_ignores_workspace_python_modules(modules, tmp_path):
 
 
 def _python_uses_script(run):
+    run = run.replace("${{ github.action_path }}", "$GITHUB_ACTION_PATH")
     for line in run.replace("\\\n", "").splitlines():
         words = shlex.split(line, comments=True)
         for index, word in enumerate(words):
             if not re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(word).name):
                 continue
+            if index and words[index - 1] in {"-x", "--python"}:
+                continue
             options = iter(words[index + 1 :])
             for option in options:
-                if not option.startswith("-") or option in {"-", "--"}:
+                if option == "--":
+                    option = next(options, "")
+                if not option.startswith("-") or option == "-":
+                    if not option.startswith(("$GITHUB_ACTION_PATH/", "${GITHUB_ACTION_PATH}/")):
+                        return False
                     break
                 if option == "--check-hash-based-pycs":
                     next(options, None)
@@ -1014,6 +1021,8 @@ def _python_uses_script(run):
                         if position == len(option) - 1:
                             next(options, None)
                         break
+            else:
+                return False
     return True
 
 
@@ -1024,6 +1033,13 @@ def _python_uses_script(run):
         ("python3 -X dev -m agent_repo_cli", False),
         ("python3 -W ignore -m agent_repo_cli", False),
         ("python3 -X dev -Bm agent_repo_cli", False),
+        ('python3 "$GITHUB_WORKSPACE/configure.py"', False),
+        ("python3 configure.py", False),
+        ("python3 - <<EOF", False),
+        ("python3 <<EOF", False),
+        ("python3", False),
+        ('python3 "${{ github.action_path }}/run.py"', True),
+        ('python3 -P "$GITHUB_ACTION_PATH/run.py"', True),
         ('python3 "$GITHUB_ACTION_PATH/run.py" \\\n  --flag value', True),
         ("python3 \\\n  -m agent_repo.cli", False),
     ],
@@ -1032,6 +1048,13 @@ def _python_uses_script(run):
         "x-option",
         "warnings-option",
         "clustered",
+        "workspace-script",
+        "relative-script",
+        "stdin-script",
+        "heredoc",
+        "no-script",
+        "action-path-expression",
+        "safe-path-option",
         "continued-script",
         "continued-module",
     ],
@@ -1046,6 +1069,9 @@ def test_composite_actions_do_not_use_python_module_or_command_mode(command, exp
             continue
         for step in runs["steps"]:
             run = step.get("run", "") if command is None else command
+            for name, value in step.get("env", {}).items():
+                if value == "${{ github.action_path }}":
+                    run = run.replace(f"${name}/", "$GITHUB_ACTION_PATH/")
             assert _python_uses_script(run) is expected, (
                 f"{path.relative_to(actions)}: unexpected Python invocation policy result"
             )
@@ -1307,11 +1333,31 @@ def test_retry_after_comment_then_failed_close_does_not_repost(failure, tmp_path
 
 
 @pytest.mark.parametrize(
-    "closed_by", ["open", "human", "missing", "null", "agent-apply[bot]", "AGENT-APPLY[bot]"]
+    "closed_by,trusted",
+    [
+        ("open", True),
+        ({"login": "human", "type": "User"}, False),
+        ("missing", False),
+        (None, False),
+        ({"login": "agent-apply[bot]", "type": "Bot"}, True),
+        ({"login": "AGENT-APPLY[bot]", "type": "Bot"}, True),
+        ({"login": "agent-apply", "type": "User"}, False),
+        ({"login": "agent-apply[bot]"}, False),
+    ],
+    ids=[
+        "open",
+        "human",
+        "missing",
+        "null",
+        "agent-apply[bot]",
+        "AGENT-APPLY[bot]",
+        "lookalike-user",
+        "missing-type",
+    ],
 )
 @pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
 @pytest.mark.parametrize("closed_at", [1, 2], ids=["already-closed", "closed-before-write"])
-def test_close_uses_existing_trusted_explanation(closed_by, kind, closed_at, tmp_path):
+def test_close_uses_existing_trusted_explanation(closed_by, trusted, kind, closed_at, tmp_path):
     from agent_repo.apply.actions import execute
 
     api = API()
@@ -1320,8 +1366,7 @@ def test_close_uses_existing_trusted_explanation(closed_by, kind, closed_at, tmp
     data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
     actions = plan(data, context(api, enabled=True))
     body = next(action.payload["body"] for action in actions if action.kind == "comment")
-    trusted = closed_by in {"open", "agent-apply[bot]", "AGENT-APPLY[bot]"}
-    if trusted:
+    if trusted or closed_by == {"login": "agent-apply", "type": "User"}:
         api.comments.append({"body": body, "user": {"login": "agent-apply[bot]", "type": "Bot"}})
         actions = [action for action in actions if action.kind != "comment"]
     original = api.transport
@@ -1333,7 +1378,7 @@ def test_close_uses_existing_trusted_explanation(closed_by, kind, closed_at, tmp
             issue_reads += 1
             if issue_reads >= closed_at and closed_by != "open":
                 api.issue_state = "closed"
-                api.closed_by = None if closed_by in {"missing", "null"} else {"login": closed_by}
+                api.closed_by = None if closed_by == "missing" else closed_by
             status, headers, response = original(request, timeout)
             value = json.loads(response)
             if closed_by == "missing":
@@ -1438,6 +1483,23 @@ def test_empty_bot_identity_cannot_explain_close(existing, tmp_path):
     assert not any(
         path.endswith("/comments") or method == "PATCH" for method, path, _ in api.writes
     )
+
+
+def test_empty_bot_identity_cannot_ignore_off_marker(tmp_path):
+    from agent_repo.apply.actions import Action, execute
+
+    api = API(
+        comments=[
+            {
+                "body": "<!-- agent:off run=prior -->",
+                "user": {"login": "agent-apply[bot]", "type": "Bot"},
+            }
+        ]
+    )
+    actions = [Action("add_labels", {"number": 7, "labels": ["type:bug"], "bot_login": ""})]
+    alerts = execute(actions, api.gh, "live", tmp_path / "summary.md")
+    assert not api.writes
+    assert alerts
 
 
 @pytest.mark.parametrize("login", ["", "   ", "wrong/login"])
