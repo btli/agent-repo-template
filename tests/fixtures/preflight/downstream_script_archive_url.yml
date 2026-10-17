@@ -1,0 +1,46 @@
+{
+  "source.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    },
+    "name": "Build"
+  },
+  "consumer.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Build"
+        ],
+        "types": [
+          "completed"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "uses": "actions/github-script@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "script": "const {data} = await github.rest.actions.listArtifactsForRepo({owner: context.repo.owner, repo: context.repo.repo});\nconst archive = await github.request(data.artifacts[0].archive_download_url);\nrequire('fs').writeFileSync('a.zip', Buffer.from(archive.data));"
+            }
+          },
+          {
+            "run": "unzip a.zip && bash ./build.sh"
+          }
+        ]
+      }
+    }
+  }
+}

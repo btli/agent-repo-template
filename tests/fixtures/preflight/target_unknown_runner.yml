@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": "future_runner_event",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "self-hosted",
+        "steps": [
+          {
+            "uses": "actions/labeler@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    }
+  }
+}

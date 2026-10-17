@@ -1,0 +1,24 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ],
+        "services": {
+          "database": {
+            "image": "postgres:16",
+            "env": {
+              "X": "${{ secrets.NPM_TOKEN }}"
+            }
+          }
+        }
+      }
+    }
+  }
+}

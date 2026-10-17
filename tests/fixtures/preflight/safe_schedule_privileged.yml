@@ -1,0 +1,27 @@
+{
+  "ci.yml": {
+    "on": {
+      "schedule": [
+        {
+          "cron": "0 0 * * *"
+        }
+      ]
+    },
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ],
+        "env": {
+          "TOKEN": "${{ secrets.DEPLOY_KEY }}"
+        }
+      }
+    }
+  }
+}

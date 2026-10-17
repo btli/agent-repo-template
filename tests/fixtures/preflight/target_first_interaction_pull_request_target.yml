@@ -1,0 +1,21 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {
+      "pull-requests": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/first-interaction@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "env": {
+          "TOKEN": "${{ secrets.NPM_TOKEN }}"
+        }
+      }
+    }
+  }
+}

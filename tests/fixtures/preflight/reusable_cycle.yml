@@ -1,0 +1,23 @@
+{
+  "caller.yml": {
+    "on": [
+      "push",
+      "workflow_call"
+    ],
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/callee.yml"
+      }
+    }
+  },
+  "callee.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "back": {
+        "uses": "./.github/workflows/caller.yml"
+      }
+    }
+  }
+}

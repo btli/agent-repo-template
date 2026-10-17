@@ -1,0 +1,18 @@
+{
+  "ci.yml": {
+    "on": {
+      "push": {
+        "branches": [
+          "main"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "environment": "agent-apply",
+        "runs-on": "ubuntu-latest"
+      }
+    }
+  }
+}

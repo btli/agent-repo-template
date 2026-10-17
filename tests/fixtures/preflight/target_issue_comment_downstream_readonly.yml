@@ -1,0 +1,56 @@
+{
+  "source.yml": {
+    "name": "Source",
+    "on": "issue_comment",
+    "permissions": {},
+    "jobs": {
+      "produce": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "with": {
+              "ref": "refs/pull/12/head"
+            }
+          },
+          {
+            "run": "bash build.sh"
+          },
+          {
+            "uses": "actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "name": "output",
+              "path": "out"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "consumer.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Source"
+        ],
+        "types": [
+          "completed"
+        ],
+        "branches": [
+          "main"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "consume": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo completed"
+          }
+        ]
+      }
+    }
+  }
+}

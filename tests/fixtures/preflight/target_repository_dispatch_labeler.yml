@@ -1,0 +1,21 @@
+{
+  "ci.yml": {
+    "on": "repository_dispatch",
+    "permissions": {
+      "pull-requests": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/labeler@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "repo-token": "${{ secrets.GITHUB_TOKEN }}"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

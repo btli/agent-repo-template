@@ -1,0 +1,38 @@
+{
+  "src.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  },
+  "down.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          ".github/workflows/src.yml"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  }
+}

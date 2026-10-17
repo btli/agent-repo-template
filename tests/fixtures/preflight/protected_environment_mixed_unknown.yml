@@ -1,0 +1,27 @@
+{
+  "ci.yml": {
+    "on": {
+      "push": null,
+      "check_suite": {
+        "types": [
+          "completed"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ],
+        "environment": "release",
+        "env": {
+          "T": "${{ secrets.NPM_TOKEN }}"
+        }
+      }
+    }
+  }
+}

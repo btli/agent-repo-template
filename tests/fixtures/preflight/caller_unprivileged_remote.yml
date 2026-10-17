@@ -1,0 +1,11 @@
+{
+  "caller.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "your-org/project/.github/workflows/build.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+}

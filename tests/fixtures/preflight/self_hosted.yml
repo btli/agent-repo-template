@@ -1,0 +1,7 @@
+on: push
+permissions: {}
+jobs:
+  check:
+    runs-on: self-hosted
+    steps:
+      - run: echo safe

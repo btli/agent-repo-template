@@ -1,0 +1,8 @@
+on: push
+permissions: {}
+env: {TOKEN: "${{ secrets.NPM_TOKEN }}"}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo safe

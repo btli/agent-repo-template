@@ -1,0 +1,59 @@
+name: Consumer CI preflight
+description: Detect CI exposures before permitting a fix push.
+inputs:
+  token:
+    description: Read-only token for repository contents.
+    required: true
+  default-branch:
+    description: Consumer default branch to verify.
+    required: true
+  workflows-dir:
+    description: Local consumer workflow directory, matching the default branch.
+    default: .github/workflows
+  output:
+    description: Path for the preflight artifact.
+    default: preflight.json
+  token-readonly:
+    description: Confirmed read-only repository default token permissions.
+    default: 'false'
+  safe-environments:
+    description: Newline-separated environments confirmed to exclude agent branches.
+    default: ''
+  run-id:
+    description: Originating run identity.
+    default: ${{ github.run_id }}
+  base-sha:
+    description: Originating base commit identity.
+    default: ${{ github.sha }}
+outputs:
+  pass:
+    description: Whether consumer CI passed the exposure check.
+    value: ${{ steps.check.outputs.pass }}
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        PREFLIGHT_ACTION_PATH: ${{ github.action_path }}
+        PREFLIGHT_DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        PREFLIGHT_WORKFLOWS_DIR: ${{ inputs.workflows-dir }}
+        PREFLIGHT_OUTPUT: ${{ inputs.output }}
+        PREFLIGHT_TOKEN_READONLY: ${{ inputs.token-readonly }}
+        PREFLIGHT_SAFE_ENVIRONMENTS: ${{ inputs.safe-environments }}
+        PREFLIGHT_RUN_ID: ${{ inputs.run-id }}
+        PREFLIGHT_BASE_SHA: ${{ inputs.base-sha }}
+      run: |
+        args=(--default-branch "$PREFLIGHT_DEFAULT_BRANCH"
+              --workflows-dir "$PREFLIGHT_WORKFLOWS_DIR" --output "$PREFLIGHT_OUTPUT"
+              --run-id "$PREFLIGHT_RUN_ID" --base-sha "$PREFLIGHT_BASE_SHA")
+        if [[ "$PREFLIGHT_TOKEN_READONLY" == true ]]; then
+          args+=(--token-readonly)
+        fi
+        while IFS= read -r environment; do
+          if [[ -n "$environment" ]]; then
+            args+=(--safe-environment "$environment")
+          fi
+        done <<< "$PREFLIGHT_SAFE_ENVIRONMENTS"
+        python3 "$PREFLIGHT_ACTION_PATH/../../lib/agent_repo_cli.py" preflight "${args[@]}"

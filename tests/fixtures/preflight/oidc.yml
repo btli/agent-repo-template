@@ -1,0 +1,7 @@
+on: push
+permissions: {id-token: write}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo safe

@@ -1,0 +1,7 @@
+on: push
+permissions: {}
+jobs:
+  check:
+    runs-on: "${{ matrix.runner }}"
+    steps:
+      - run: echo safe

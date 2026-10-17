@@ -1,0 +1,23 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "services": {
+          "collector": {
+            "image": "ghcr.io/your-org/collector:latest"
+          }
+        },
+        "steps": [
+          {
+            "uses": "actions/labeler@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "ref": "${{ env.PR_HEAD }}"
+            }
+          }
+        ],
+        "env": {
+          "PR_HEAD": "${{ github.event.pull_request.head.sha }}"
+        }
+      }
+    }
+  }
+}

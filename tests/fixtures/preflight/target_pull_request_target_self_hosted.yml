@@ -1,0 +1,22 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "self-hosted",
+        "steps": [
+          {
+            "uses": "actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "ref": "refs/pull/12/head"
+            }
+          },
+          {
+            "run": "make"
+          }
+        ]
+      }
+    }
+  }
+}

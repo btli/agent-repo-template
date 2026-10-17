@@ -1,0 +1,44 @@
+{
+  "source.yml": {
+    "name": "CI",
+    "on": "pull_request",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  },
+  "down.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": "CI",
+        "types": [
+          "completed"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/download-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "run": "echo deploy"
+          }
+        ],
+        "env": {
+          "TOKEN": "${{ secrets.DEPLOY }}"
+        }
+      }
+    }
+  }
+}

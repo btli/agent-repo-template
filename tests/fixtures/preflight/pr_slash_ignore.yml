@@ -1,0 +1,7 @@
+on: {pull_request: {branches-ignore: ['release*']}}
+permissions: {}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ secrets.NPM_TOKEN }}"

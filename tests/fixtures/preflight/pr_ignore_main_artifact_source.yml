@@ -1,0 +1,51 @@
+{
+  "build.yml": {
+    "on": {
+      "pull_request": {
+        "branches-ignore": [
+          "main"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "make"
+          }
+        ]
+      }
+    },
+    "name": "Build"
+  },
+  "deploy.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Build"
+        ],
+        "types": [
+          "completed"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/download-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "run-id": "${{ github.event.workflow_run.id }}"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

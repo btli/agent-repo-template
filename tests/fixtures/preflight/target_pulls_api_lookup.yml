@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": "issue_comment",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "run": "sha=$(gh api repos/$R/pulls/${{ github.event.issue.number }} --jq 'getpath([\"head\",\"sha\"])'); git checkout $sha; make"
+          }
+        ]
+      }
+    }
+  }
+}
