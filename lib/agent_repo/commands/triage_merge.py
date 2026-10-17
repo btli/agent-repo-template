@@ -29,6 +29,15 @@ def label_corrections(tier2: dict, allowed_labels: set[str] | None) -> list[str]
     return corrections
 
 
+def llm_only_labels_match_answers(tier2: dict) -> bool:
+    for question in ("type", "area"):
+        answer = tier2["answers"][question]["value"]
+        labels = [label for label in tier2["labels"] if label.startswith(f"{question}:")]
+        if not isinstance(answer, str) or labels != [f"{question}:{answer}"]:
+            return False
+    return True
+
+
 def merge(
     decision: dict, tier2: dict | None, error: str | None, *, allowed_labels: set[str] | None = None
 ) -> dict:
@@ -39,7 +48,14 @@ def merge(
     if validate(decision, schema):
         raise ValueError("invalid Tier-1 decision")
     result = copy.deepcopy(decision)
-    if result["close"] is not None:
+    llm_only = decision.get("mode") == "llm-only"
+    if llm_only and decision["answers"]:
+        result["escalate"] = {
+            "to": "maintainer",
+            "reason": "LLM-only decision contains Tier-1 answers.",
+        }
+        return result
+    if result["close"] is not None and not llm_only:
         result["close"]["tier2_agrees"] = False
     if (
         error is not None
@@ -47,6 +63,8 @@ def merge(
         or validate(tier2, schema)
         or any(tier2[key] != decision[key] for key in ["run_id", "base_sha", "schema_version"])
     ):
+        if result["close"] is not None:
+            result["close"]["tier2_agrees"] = False
         result["escalate"] = result["escalate"] or {
             "to": "maintainer",
             "reason": "Tier-2 triage failed or returned invalid output.",
@@ -63,15 +81,35 @@ def merge(
             allowed_labels = set(decision["labels"])
     corrections = label_corrections(tier2, allowed_labels)
     if corrections is None:
+        if result["close"] is not None:
+            result["close"]["tier2_agrees"] = False
         result["escalate"] = result["escalate"] or {
             "to": "maintainer",
             "reason": "Tier-2 label corrections violate the repository taxonomy.",
         }
         return result
+    if llm_only and (
+        not {
+            "type",
+            "area",
+            "priority",
+            "needs_info",
+            "out_of_scope",
+            "docs_ref",
+            "duplicate_of",
+            "security_sensitive",
+        }.issubset(tier2["answers"])
+        or not llm_only_labels_match_answers(tier2)
+    ):
+        result["escalate"] = {
+            "to": "maintainer",
+            "reason": "LLM-only Tier-2 answers or labels are incomplete or inconsistent.",
+        }
+        return result
     for key in ["rca", "needs_info"]:
         result[key] = copy.deepcopy(tier2[key])
     result["escalate"] = copy.deepcopy(decision["escalate"] or tier2["escalate"])
-    if decision.get("mode") == "llm-only":
+    if llm_only:
         result["answers"] = copy.deepcopy(tier2["answers"])
         result["labels"] = [
             label for label in decision["labels"] if not label.startswith(("type:", "area:"))

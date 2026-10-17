@@ -140,6 +140,19 @@ def decision():
     }
 
 
+def complete_llm_answers(*, priority="P2", duplicate="none"):
+    return {
+        "type": {"value": "bug", "p": 0.99},
+        "area": {"value": "api", "p": 0.99},
+        "priority": {"value": priority, "p": 0.99},
+        "needs_info": {"value": False, "p": 0.99},
+        "out_of_scope": {"value": False, "p": 0.99},
+        "docs_ref": {"value": "none", "p": 0.99},
+        "duplicate_of": {"value": duplicate, "p": 0.99},
+        "security_sensitive": {"value": False, "p": 0.99},
+    }
+
+
 def closing(kind="duplicate"):
     return {
         "kind": kind,
@@ -1568,13 +1581,49 @@ def test_llm_only_p1_remains_suggestion_only():
     tier2.update(
         tier=2,
         mode="llm-only",
-        answers={"priority": {"value": "P1", "p": 0.99}},
-        labels=["P1"],
+        answers=complete_llm_answers(priority="P1"),
+        labels=["type:bug", "area:api", "P1"],
         suggestions={"priority": "P1", "labels": []},
     )
-    data = merge(tier1, tier2, None)
+    data = merge(tier1, tier2, None, allowed_labels={"type:bug", "area:api"})
 
     actions = plan(data, ctx)
 
     assert labels(actions) == {"needs-maintainer"}
     assert "Suggested priority: P1." in bodies(actions)
+
+    partial = dict(tier2)
+    partial["answers"] = dict(tier2["answers"])
+    partial["answers"].pop("security_sensitive")
+    failed = merge(tier1, partial, None, allowed_labels={"type:bug", "area:api"})
+    assert failed["escalate"]["to"] == "maintainer"
+    assert failed["answers"] == {}
+    assert failed["suggestions"] == tier1["suggestions"]
+
+
+def test_llm_only_merged_close_cannot_close_with_system_one_configured():
+    from agent_repo.commands.triage_merge import merge
+
+    api = API()
+    tier1 = decision()
+    tier1.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = decision()
+    tier2.update(
+        tier=2,
+        answers=complete_llm_answers(duplicate="#99"),
+        labels=["type:bug", "area:api", "P2"],
+        close=closing(),
+    )
+    merged = merge(
+        tier1,
+        tier2,
+        None,
+        allowed_labels={"type:bug", "area:api", "area:unknown"},
+    )
+    ctx = context(api, enabled=True)
+
+    assert ctx.config.raw["system_one"] is not None
+    assert merged["close"]["tier2_agrees"] is False
+    actions = plan(merged, ctx)
+
+    assert not any(action.kind == "close" for action in actions)

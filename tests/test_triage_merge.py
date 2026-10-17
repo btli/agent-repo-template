@@ -20,6 +20,19 @@ def merge(*args, **kwargs):
     return importlib.import_module("agent_repo.commands.triage_merge").merge(*args, **kwargs)
 
 
+def llm_answers(type_value="question", area_value="ui"):
+    return {
+        "type": {"value": type_value, "p": 0.9},
+        "area": {"value": area_value, "p": 0.9},
+        "priority": {"value": "P2", "p": 0.9},
+        "needs_info": {"value": True, "p": 0.9},
+        "out_of_scope": {"value": False, "p": 0.9},
+        "docs_ref": {"value": "none", "p": 0.9},
+        "duplicate_of": {"value": "none", "p": 0.9},
+        "security_sensitive": {"value": False, "p": 0.9},
+    }
+
+
 def test_keeps_tier1_authority_and_copies_only_corrections(decision):
     original = copy.deepcopy(decision)
     tier2 = copy.deepcopy(decision)
@@ -51,24 +64,24 @@ def test_keeps_tier1_authority_and_copies_only_corrections(decision):
     assert decision == original
 
 
-def test_llm_only_uses_tier2_answers_and_labels_when_taxonomy_is_trusted(decision):
+def test_llm_only_uses_tier2_answers_and_labels_when_taxonomy_is_trusted(decision, monkeypatch):
     llm_only = copy.deepcopy(decision)
-    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    llm_only.update(
+        mode="llm-only",
+        answers={},
+        labels=["type:bug", "area:core", "priority:P2", "keep"],
+        suggestions={"priority": "P1", "labels": ["tier1"]},
+        close=None,
+        security=True,
+    )
     tier2 = copy.deepcopy(decision)
     tier2.update(
         tier=2,
         mode="llm-only",
-        answers={
-            "type": {"value": "question", "p": 0.9},
-            "area": {"value": "ui", "p": 0.9},
-            "priority": {"value": "P2", "p": 0.9},
-            "needs_info": {"value": True, "p": 0.9},
-            "out_of_scope": {"value": False, "p": 0.9},
-            "docs_ref": {"value": "none", "p": 0.9},
-            "duplicate_of": {"value": "none", "p": 0.9},
-            "security_sensitive": {"value": False, "p": 0.9},
-        },
+        answers=llm_answers(),
         labels=["type:question", "area:ui", "P2"],
+        suggestions={"priority": "P0", "labels": ["tier2"]},
+        security=False,
         needs_info={"text": "Which version?"},
     )
 
@@ -80,32 +93,60 @@ def test_llm_only_uses_tier2_answers_and_labels_when_taxonomy_is_trusted(decisio
     )
 
     assert result["answers"] == tier2["answers"]
-    assert result["labels"] == ["type:question", "area:ui", "P2"]
+    assert result["labels"] == ["priority:P2", "keep", "type:question", "area:ui", "P2"]
     assert result["needs_info"] == tier2["needs_info"]
+    assert result["suggestions"] == tier2["suggestions"]
+    assert result["security"] is True
     assert result["escalate"] is None
     assert validate(result, load_schema("decision")) == []
 
+    module = importlib.import_module("agent_repo.commands.triage_merge")
+    original_validate = module.validate
 
-def test_llm_only_without_trusted_taxonomy_fails_closed(decision):
+    def reject_merged_output(data, schema):
+        if data is llm_only or data is tier2:
+            return original_validate(data, schema)
+        if data.get("mode") == "llm-only":
+            return ["invalid merged decision"]
+        return original_validate(data, schema)
+
+    monkeypatch.setattr(module, "validate", reject_merged_output)
+    with pytest.raises(ValueError, match="invalid merged decision"):
+        merge(
+            llm_only,
+            tier2,
+            None,
+            allowed_labels={"type:bug", "type:question", "area:core", "area:ui"},
+        )
+
+
+def test_omitted_labels_merge_without_trusted_taxonomy(decision):
+    tier2 = copy.deepcopy(decision)
+    tier2["labels"] = []
+
+    result = merge(decision, tier2, None, allowed_labels=None)
+
+    assert result["answers"] == decision["answers"]
+    assert result["labels"] == decision["labels"]
+    assert result["escalate"] is None
+
+
+def test_llm_only_type_correction_without_trusted_taxonomy_fails_closed(decision):
     llm_only = copy.deepcopy(decision)
     llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
     tier2 = copy.deepcopy(decision)
     tier2.update(
         tier=2,
         mode="llm-only",
-        answers={
-            "type": {"value": "question", "p": 0.9},
-            "priority": {"value": "P1", "p": 0.9},
-            "security_sensitive": {"value": False, "p": 0.9},
-        },
-        labels=[],
+        answers=llm_answers("bug", "core"),
+        labels=["type:bug", "area:core"],
     )
 
     result = merge(llm_only, tier2, None, allowed_labels=None)
 
-    assert result["answers"] == tier2["answers"]
+    assert result["answers"] == {}
     assert result["labels"] == []
-    assert result["escalate"] is None
+    assert result["escalate"]["to"] == "maintainer"
 
 
 @pytest.mark.parametrize(
@@ -127,6 +168,115 @@ def test_invalid_tier2_escalates_and_keeps_tier1(decision, bad):
         assert result[key] == decision[key]
     assert "credential-value" not in json.dumps(result)
     assert validate(result, load_schema("decision")) == []
+
+
+def test_llm_only_four_answers_escalate_and_keep_tier1(decision):
+    llm_only = copy.deepcopy(decision)
+    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = copy.deepcopy(decision)
+    tier2.update(
+        tier=2,
+        answers={
+            "type": {"value": "bug", "p": 0.9},
+            "area": {"value": "core", "p": 0.9},
+            "priority": {"value": "P2", "p": 0.9},
+            "needs_info": {"value": False, "p": 0.9},
+        },
+        labels=["type:bug", "area:core"],
+        needs_info={"text": "Tier-2 must not replace the safe artifact."},
+        security=True,
+    )
+
+    result = merge(llm_only, tier2, None)
+
+    assert result["answers"] == llm_only["answers"]
+    assert result["labels"] == llm_only["labels"]
+    assert result["needs_info"] == llm_only["needs_info"]
+    assert result["security"] == llm_only["security"]
+    assert result["escalate"] == {
+        "to": "maintainer",
+        "reason": "LLM-only Tier-2 answers or labels are incomplete or inconsistent.",
+    }
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [[], ["type:bug", "area:ui"]],
+    ids=["empty", "mismatched-type"],
+)
+def test_llm_only_inconsistent_type_and_area_labels_escalate(decision, labels):
+    llm_only = copy.deepcopy(decision)
+    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = copy.deepcopy(decision)
+    tier2.update(
+        tier=2,
+        answers=llm_answers(),
+        labels=labels,
+        needs_info={"text": "Tier-2 must not replace the safe artifact."},
+        security=True,
+    )
+
+    result = merge(llm_only, tier2, None)
+
+    assert result["answers"] == {}
+    assert result["labels"] == []
+    assert result["needs_info"] is None
+    assert result["security"] is False
+    assert result["escalate"] == {
+        "to": "maintainer",
+        "reason": "LLM-only Tier-2 answers or labels are incomplete or inconsistent.",
+    }
+
+
+def test_llm_only_decision_with_tier1_answers_escalates_and_keeps_tier1(decision):
+    llm_only = copy.deepcopy(decision)
+    llm_only.update(mode="llm-only", answers={"type": {"value": "bug", "p": 0.99}})
+    tier2 = copy.deepcopy(decision)
+    tier2.update(tier=2, answers=llm_answers(), labels=["type:question", "area:ui"])
+
+    result = merge(llm_only, tier2, None)
+
+    assert result["answers"] == llm_only["answers"]
+    assert result["labels"] == llm_only["labels"]
+    assert result["close"] == llm_only["close"]
+    assert result["escalate"] == {
+        "to": "maintainer",
+        "reason": "LLM-only decision contains Tier-1 answers.",
+    }
+
+
+def test_tier2_llm_only_marker_cannot_take_over_configured_decision(decision):
+    tier2 = copy.deepcopy(decision)
+    tier2.update(
+        tier=2,
+        mode="llm-only",
+        answers=llm_answers("question", "ui"),
+        labels=["type:question", "area:ui"],
+    )
+    tier2["close"]["tier2_agrees"] = True
+
+    result = merge(decision, tier2, None)
+
+    assert result["answers"] == decision["answers"]
+    assert "mode" not in result
+    assert result["labels"] == ["priority:P2", "keep", "type:question", "area:ui"]
+    assert result["close"]["tier2_agrees"] is True
+
+
+def test_llm_only_merge_rejects_tier2_close_agreement(decision):
+    llm_only = copy.deepcopy(decision)
+    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = copy.deepcopy(decision)
+    tier2.update(
+        tier=2,
+        answers=llm_answers("bug", "core"),
+        labels=["type:bug", "area:core"],
+    )
+    tier2["close"]["tier2_agrees"] = True
+
+    result = merge(llm_only, tier2, None)
+
+    assert result["close"]["tier2_agrees"] is False
 
 
 def test_runtime_error_is_sanitized(decision):

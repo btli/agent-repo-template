@@ -2,7 +2,17 @@ import base64
 from dataclasses import replace
 
 import pytest
-from test_apply_triage import API, bodies, closing, context, decision, labels, plan, run
+from test_apply_triage import (
+    API,
+    bodies,
+    closing,
+    complete_llm_answers,
+    context,
+    decision,
+    labels,
+    plan,
+    run,
+)
 
 
 def test_llm_only_tier2_close_attempt_cannot_close(tmp_path):
@@ -15,16 +25,12 @@ def test_llm_only_tier2_close_attempt_cannot_close(tmp_path):
     tier2.update(
         tier=2,
         mode="llm-only",
-        answers={
-            "type": {"value": "bug", "p": 0.99},
-            "area": {"value": "api", "p": 0.99},
-            "priority": {"value": "P2", "p": 0.99},
-            "duplicate_of": {"value": "#99", "p": 0.99},
-        },
+        answers=complete_llm_answers(duplicate="#99"),
         labels=["type:bug", "area:api", "P2"],
         close=closing(),
     )
     merged = merge(tier1, tier2, None, allowed_labels={"type:bug", "area:api", "area:unknown"})
+    assert merged["close"]["tier2_agrees"] is False
     ctx = context(api, enabled=True)
     config_raw = dict(ctx.config.raw)
     config_raw.pop("system_one")
