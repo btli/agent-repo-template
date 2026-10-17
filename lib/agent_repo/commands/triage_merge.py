@@ -68,29 +68,23 @@ def merge(
             "reason": "Tier-2 label corrections violate the repository taxonomy.",
         }
         return result
+    for key in ["rca", "needs_info"]:
+        result[key] = copy.deepcopy(tier2[key])
+    result["escalate"] = copy.deepcopy(decision["escalate"] or tier2["escalate"])
     if decision.get("mode") == "llm-only":
         result["answers"] = copy.deepcopy(tier2["answers"])
         result["labels"] = [
             label for label in decision["labels"] if not label.startswith(("type:", "area:"))
         ]
-        result["labels"].extend(
-            label
-            for label in tier2["labels"]
-            if not label.startswith(("type:", "area:")) or label in corrections
-        )
-        result["labels"] = list(dict.fromkeys(result["labels"]))
-        for key in ["suggestions", "needs_info", "rca", "close"]:
+        result["labels"] = list(dict.fromkeys(result["labels"] + tier2["labels"]))
+        for key in ["suggestions", "close"]:
             result[key] = copy.deepcopy(tier2[key])
         if result["close"] is not None:
             result["close"]["tier2_agrees"] = False
-        result["escalate"] = copy.deepcopy(decision["escalate"] or tier2["escalate"])
         result["security"] = decision["security"] or tier2["security"]
         if validate(result, schema):
             raise ValueError("invalid merged decision")
         return result
-    for key in ["rca", "needs_info"]:
-        result[key] = copy.deepcopy(tier2[key])
-    result["escalate"] = copy.deepcopy(decision["escalate"] or tier2["escalate"])
     replaced = tuple(
         prefix for prefix in ["type:", "area:"] if any(c.startswith(prefix) for c in corrections)
     )
