@@ -1,0 +1,103 @@
+name: Review or apply a pull request review
+description: Fetch diffs without checkout, run a confined reviewer, and apply COMMENT-only reviews.
+inputs:
+  mode:
+    description: Select propose or apply.
+    required: false
+    default: propose
+  config-dir:
+    description: Trusted default-branch .agents directory.
+    required: false
+    default: ''
+  diff-file:
+    description: Destination or source for the API-provided unified diff.
+    required: true
+  output-file:
+    description: Destination or source for the validated review JSON.
+    required: true
+  run-id:
+    description: Workflow run identity.
+    required: true
+  token:
+    description: Repository token for review apply.
+    required: false
+    default: ${{ github.token }}
+  scan-keys:
+    description: Newline-separated outbound scan keys.
+    required: false
+    default: ''
+  bot-login:
+    description: Trusted GitHub App bot login.
+    required: false
+    default: ''
+  canary:
+    description: Gate-generated outbound scan canary.
+    required: false
+    default: ''
+  api-key-env:
+    description: Caller environment variable holding the role key.
+    required: false
+    default: LLM_API_KEY
+outputs:
+  base-sha:
+    description: Trusted default-branch policy commit.
+    value: ${{ steps.fetch.outputs.base_sha }}
+  head-sha:
+    description: Pull request head captured by the fetch step.
+    value: ${{ steps.fetch.outputs.head_sha }}
+  summary-only:
+    description: Whether the patch was too large or sensitive for model review.
+    value: ${{ steps.fetch.outputs.summary_only }}
+  summary-reason:
+    description: Bounded reason for a summary-only review.
+    value: ${{ steps.fetch.outputs.summary_reason }}
+runs:
+  using: composite
+  steps:
+    - name: Fetch diff from the GitHub API
+      id: fetch
+      if: inputs.mode == 'propose'
+      shell: bash
+      env:
+        CONFIG_DIR: ${{ inputs.config-dir }}
+        DIFF_FILE: ${{ inputs.diff-file }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
+        export PYTHONPATH="$template_root/lib"
+        python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" fetch_diff "$DIFF_FILE" "$CONFIG_DIR"
+    - name: Run review agent
+      if: inputs.mode == 'propose'
+      shell: bash
+      env:
+        DIFF_FILE: ${{ inputs.diff-file }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+        RUN_ID: ${{ inputs.run-id }}
+        BASE_SHA: ${{ steps.fetch.outputs.base_sha }}
+        HEAD_SHA: ${{ steps.fetch.outputs.head_sha }}
+        SUMMARY_ONLY: ${{ steps.fetch.outputs.summary_only }}
+        SUMMARY_REASON: ${{ steps.fetch.outputs.summary_reason }}
+        API_KEY_ENV: ${{ inputs.api-key-env }}
+      run: |
+        set -euo pipefail
+        template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
+        export PATH="$RUNNER_TEMP/agent-repo-omnigent/bin:$PATH"
+        export PYTHONPATH="$template_root/lib"
+        export REVIEW_AGENT="$template_root/agents/review"
+        python "$GITHUB_ACTION_PATH/run.py"
+    - name: Apply review artifact
+      if: inputs.mode == 'apply'
+      shell: bash
+      env:
+        REVIEW_FILE: ${{ inputs.output-file }}
+        DIFF_FILE: ${{ inputs.diff-file }}
+        GH_TOKEN: ${{ inputs.token }}
+        AGENT_SCAN_KEYS: ${{ inputs.scan-keys }}
+        AGENT_BOT_LOGIN: ${{ inputs.bot-login }}
+        AGENT_CANARY: ${{ inputs.canary }}
+      run: |
+        set -euo pipefail
+        template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
+        export PYTHONPATH="$template_root/lib"
+        python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" review_apply "$REVIEW_FILE" "$DIFF_FILE"

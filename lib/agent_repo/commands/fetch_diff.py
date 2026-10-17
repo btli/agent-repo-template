@@ -1,0 +1,76 @@
+import os
+import re
+import sys
+from pathlib import Path
+
+from agent_repo.config import load_config
+from agent_repo.diff import summary_only
+from agent_repo.event import Event, load_event
+from agent_repo.github import GitHub, GitHubError
+
+
+def _pull(gh: GitHub, event: Event) -> dict:
+    value = gh.request("GET", f"pulls/{event.number}")
+    if not isinstance(value, dict) or not isinstance(value.get("head"), dict):
+        raise ValueError("invalid pull request metadata")
+    base = value.get("base")
+    if not isinstance(base, dict) or base.get("ref") != event.default_branch:
+        raise ValueError("pull request is not based on the default branch")
+    head_sha = value["head"].get("sha")
+    if not isinstance(head_sha, str) or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
+        raise ValueError("invalid pull request head")
+    if event.name == "pull_request_target" and event.head_sha != head_sha:
+        raise ValueError("pull request head changed since event")
+    return value
+
+
+def fetch(diff_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
+    event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
+    if (
+        event.name not in {"pull_request_target", "issue_comment"}
+        or not event.is_pr
+        or event.number < 1
+        or not event.default_branch
+        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", event.repo) is None
+    ):
+        raise ValueError("pull request event required")
+    base_sha = os.environ["GITHUB_SHA"]
+    if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
+        raise ValueError("invalid policy SHA")
+    if event.name == "pull_request_target" and event.base_sha != base_sha:
+        raise ValueError("event base does not match policy SHA")
+    gh = GitHub(os.environ["GH_TOKEN"], event.repo)
+    pull = _pull(gh, event)
+    head_sha = pull["head"]["sha"]
+    diff = gh.request("GET", f"pulls/{event.number}", accept="application/vnd.github.diff")
+    if not isinstance(diff, str) or len(diff.encode()) > 2_000_000:
+        raise ValueError("invalid or oversized pull request diff")
+    if _pull(gh, event)["head"]["sha"] != head_sha:
+        raise ValueError("pull request head changed while fetching diff")
+    config = load_config(config_dir)
+    limited, reason = summary_only(diff, config)
+    reason = reason.replace("\r", " ").replace("\n", " ")[:4000]
+    diff_path.parent.mkdir(parents=True, exist_ok=True)
+    diff_path.write_text(diff, encoding="utf-8")
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+        output.write(f"base_sha={base_sha}\n")
+        output.write(f"head_sha={head_sha}\n")
+        output.write(f"summary_only={str(limited).lower()}\n")
+        output.write(f"summary_reason={reason}\n")
+    return base_sha, head_sha, limited, reason
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print("usage: fetch_diff <diff-file> <trusted-config-dir>", file=sys.stderr)
+        return 2
+    try:
+        fetch(Path(argv[0]), Path(argv[1]))
+    except (GitHubError, KeyError, OSError, TypeError, ValueError):
+        print("Pull request diff could not be fetched safely.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

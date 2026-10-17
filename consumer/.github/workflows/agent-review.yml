@@ -1,0 +1,94 @@
+name: Agent pull request review
+
+on:
+  # zizmor: ignore[dangerous-triggers] Reads PR data via API and checks out only default-branch policy.
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  agent-propose-review:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      canary: ${{ steps.gate.outputs.canary }}
+      head_sha: ${{ steps.propose.outputs.head-sha }}
+    steps:
+      - name: Gate review request
+        id: gate
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
+        uses: btli/agent-repo-template/actions/gate@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          workflow: review
+          enabled: ${{ vars.AGENTS_ENABLED }}
+          bot-login: ${{ vars.AGENT_BOT_LOGIN }}
+      - name: Set up repository agent
+        if: steps.gate.outputs.run == 'true'
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
+        uses: btli/agent-repo-template/actions/setup@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          gateway-url: ${{ vars.AGENT_GATEWAY_URL }}
+          gateway-kind: ${{ vars.AGENT_GATEWAY_KIND }}
+          model: ${{ vars.AGENT_REVIEW_MODEL }}
+        env:
+          LLM_API_KEY: ${{ secrets.AGENT_REVIEW_KEY }}
+      - name: Propose review
+        id: propose
+        if: steps.gate.outputs.run == 'true'
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
+        uses: btli/agent-repo-template/actions/review-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        env:
+          LLM_API_KEY: ${{ secrets.AGENT_REVIEW_KEY }}
+        with:
+          mode: propose
+          config-dir: ${{ github.workspace }}/agent-gate-default/.agents
+          diff-file: ${{ runner.temp }}/agent-review/diff.patch
+          output-file: ${{ runner.temp }}/agent-review/review.json
+          run-id: ${{ github.run_id }}
+      - name: Share review inputs with the apply job
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v4.6.2
+        with:
+          name: agent-review-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/agent-review/diff.patch
+            ${{ runner.temp }}/agent-review/review.json
+          if-no-files-found: error
+          retention-days: 1
+
+  agent-apply-review:
+    needs: agent-propose-review
+    if: needs.agent-propose-review.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Download review inputs
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-review-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-review
+      - name: Apply review
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
+        uses: btli/agent-repo-template/actions/review-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          mode: apply
+          diff-file: ${{ runner.temp }}/agent-review/diff.patch
+          output-file: ${{ runner.temp }}/agent-review/review.json
+          run-id: ${{ github.run_id }}
+          token: ${{ github.token }}
+          scan-keys: ${{ secrets.AGENT_SCAN_KEYS }}
+          bot-login: ${{ vars.AGENT_BOT_LOGIN }}
+          canary: ${{ needs.agent-propose-review.outputs.canary }}
