@@ -18,6 +18,9 @@ inputs:
   run-id:
     description: Workflow run identity.
     required: true
+  expected-head-sha:
+    description: Head SHA captured when the gate authorized the event.
+    required: true
   token:
     description: Repository token for review apply.
     required: false
@@ -62,6 +65,7 @@ runs:
         CONFIG_DIR: ${{ inputs.config-dir }}
         DIFF_FILE: ${{ inputs.diff-file }}
         GH_TOKEN: ${{ inputs.token }}
+        EXPECTED_HEAD_SHA: ${{ inputs.expected-head-sha }}
       run: |
         set -euo pipefail
         template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
@@ -93,6 +97,7 @@ runs:
         REVIEW_FILE: ${{ inputs.output-file }}
         DIFF_FILE: ${{ inputs.diff-file }}
         GH_TOKEN: ${{ inputs.token }}
+        EXPECTED_HEAD_SHA: ${{ inputs.expected-head-sha }}
         AGENT_SCAN_KEYS: ${{ inputs.scan-keys }}
         AGENT_BOT_LOGIN: ${{ inputs.bot-login }}
         AGENT_CANARY: ${{ inputs.canary }}

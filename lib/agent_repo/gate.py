@@ -88,6 +88,7 @@ class GateResult:
     capped: bool
     command: Command | None
     canary: str
+    head_sha: str = ""
 
 
 def _mapping(value: object) -> dict:
@@ -126,7 +127,10 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     gh = _Budget(ctx.gh)
 
     def result(run: bool, reason: str, tier2: bool = False, capped: bool = False) -> GateResult:
-        return GateResult(run, reason, tier2, capped, command, canary)
+        head_sha = event.head_sha or ""
+        if re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
+            head_sha = ""
+        return GateResult(run, reason, tier2, capped, command, canary, head_sha)
 
     if not ctx.enabled:
         return result(False, "disabled")
@@ -214,6 +218,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         event = replace(
             event,
             head_ref=head.get("ref"),
+            head_sha=head.get("sha"),
             head_repo=_mapping(head.get("repo") or {}).get("full_name"),
             draft=pull["draft"],
             author=_mapping(pull["user"])["login"],

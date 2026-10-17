@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import tempfile
 from dataclasses import replace
@@ -27,11 +28,24 @@ def main(argv: list[str]) -> int:
         review = json.loads(review_path.read_text(encoding="utf-8"))
         event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
         gh = GitHub(os.environ["GH_TOKEN"], event.repo)
-        pull = _pull(gh, event)
+        expected_head_sha = os.environ["EXPECTED_HEAD_SHA"]
+        if re.fullmatch(r"[0-9a-f]{40}", expected_head_sha) is None:
+            raise ValueError
+        try:
+            pull = _pull(gh, event)
+        except ValueError as error:
+            if str(error) == "pull request head changed since event":
+                summary.write_text("No review posted: pull request head moved.\n", encoding="utf-8")
+                return 0
+            raise
         base_sha = os.environ["GITHUB_SHA"]
         if event.name == "pull_request_target" and event.base_sha != base_sha:
             raise ValueError
-        if review.get("head_sha") != pull["head"]["sha"]:
+        if (
+            pull["head"]["sha"] != expected_head_sha
+            or (event.head_sha is not None and event.head_sha != expected_head_sha)
+            or review.get("head_sha") != expected_head_sha
+        ):
             summary.write_text("No review posted: pull request head moved.\n", encoding="utf-8")
             return 0
         if review.get("base_sha") != base_sha:

@@ -9,10 +9,12 @@ from agent_repo.github import GitHub
 
 
 class API:
-    def __init__(self, *, base_ref="main", head_sha="b" * 40):
+    def __init__(self, *, base_ref="main", base_sha="a" * 40, head_sha="b" * 40, head_reads=None):
         self.calls = []
         self.base_ref = base_ref
+        self.base_sha = base_sha
         self.head_sha = head_sha
+        self.head_reads = iter(head_reads or ())
 
     def __call__(self, request, timeout):
         path = urlparse(request.full_url).path
@@ -33,7 +35,7 @@ class API:
             json.dumps(
                 {
                     "head": {"sha": self.head_sha},
-                    "base": {"ref": self.base_ref, "sha": "a" * 40},
+                    "base": {"ref": self.base_ref, "sha": self.base_sha},
                 }
             ).encode(),
         )
@@ -61,6 +63,7 @@ def test_fetch_diff_uses_api_diff_and_never_checks_out_code(tmp_path, monkeypatc
     monkeypatch.setenv("GITHUB_SHA", "a" * 40)
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setenv("GH_TOKEN", "test-token")
+    monkeypatch.setenv("EXPECTED_HEAD_SHA", "b" * 40)
     monkeypatch.setattr(
         "agent_repo.commands.fetch_diff.GitHub",
         lambda token, repo: GitHub(token, repo, transport=transport),
@@ -76,6 +79,303 @@ def test_fetch_diff_uses_api_diff_and_never_checks_out_code(tmp_path, monkeypatc
     assert diff_path.read_text().startswith("diff --git")
     assert any(call[2] == "application/vnd.github.diff" for call in transport.calls)
     assert not any(call[0] == "checkout" for call in transport.calls)
+
+
+def _event_file(
+    tmp_path, name="pull_request_target", *, head="b" * 40, base="a" * 40, base_ref="main"
+):
+    source = (
+        "tests/fixtures/events/issue_comment.created.pr.json"
+        if name == "issue_comment"
+        else "tests/fixtures/events/pull_request_target.opened.json"
+    )
+    payload = json.loads(Path(source).read_text())
+    payload["repository"]["full_name"] = "your-org/project"
+    payload["repository"]["default_branch"] = "main"
+    if name == "pull_request_target":
+        payload["pull_request"]["base"].update({"ref": base_ref, "sha": base})
+        payload["pull_request"]["head"]["sha"] = head
+    event_path = tmp_path / f"{name}-event.json"
+    event_path.write_text(json.dumps(payload))
+    return event_path
+
+
+def _fetch_env(monkeypatch, event_path, output, *, name, base="a" * 40, expected_head="b" * 40):
+    monkeypatch.setenv("GITHUB_EVENT_NAME", name)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_SHA", base)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    monkeypatch.setenv("EXPECTED_HEAD_SHA", expected_head)
+
+
+def test_issue_comment_fetch_rejects_head_that_moved_after_gate(tmp_path, monkeypatch):
+    event_path = _event_file(tmp_path, "issue_comment")
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+    transport = API(head_sha="c" * 40)
+    _fetch_env(monkeypatch, event_path, output, name="issue_comment")
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    try:
+        fetch(tmp_path / "diff.patch", config_dir)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("head moved after gate was accepted")
+    assert not any(call[2] == "application/vnd.github.diff" for call in transport.calls)
+    assert not (tmp_path / "diff.patch").exists()
+
+
+def test_fetch_rejects_event_head_that_differs_from_api(tmp_path):
+    event_path = _event_file(tmp_path, head="b" * 40)
+    event = load_event("pull_request_target", event_path)
+    transport = API(head_sha="c" * 40)
+
+    try:
+        _pull(GitHub("test-token", event.repo, transport=transport), event)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("event and API heads differed")
+
+
+def test_fetch_rejects_policy_sha_that_differs_from_event_base(tmp_path, monkeypatch):
+    event_path = _event_file(tmp_path)
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+    transport = API()
+    _fetch_env(monkeypatch, event_path, output, name="pull_request_target", base="c" * 40)
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    try:
+        fetch(tmp_path / "diff.patch", config_dir)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("event base and policy SHA differed")
+    assert not any(call[2] == "application/vnd.github.diff" for call in transport.calls)
+    assert not (tmp_path / "diff.patch").exists()
+
+
+def test_fetch_rejects_event_base_ref_retarget_race(tmp_path, monkeypatch):
+    event_path = _event_file(tmp_path, base_ref="release")
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+    transport = API(base_ref="main")
+    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    try:
+        fetch(tmp_path / "diff.patch", config_dir)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("retargeted pull request was accepted")
+    assert not transport.calls
+
+
+def test_fetch_rejects_api_base_sha_that_changed_since_target_event(tmp_path, monkeypatch):
+    event_path = _event_file(tmp_path)
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+    transport = API(base_sha="c" * 40)
+    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    try:
+        fetch(tmp_path / "diff.patch", config_dir)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("changed default branch base SHA was accepted")
+    assert not any(call[2] == "application/vnd.github.diff" for call in transport.calls)
+    assert not (tmp_path / "diff.patch").exists()
+
+
+def test_fetch_rechecks_head_after_diff_read(tmp_path, monkeypatch):
+    event_path = _event_file(tmp_path, "issue_comment")
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+
+    class ChangingAPI(API):
+        def __init__(self):
+            super().__init__()
+            self.pull_reads = 0
+
+        def __call__(self, request, timeout):
+            if request.get_header("Accept") != "application/vnd.github.diff":
+                self.pull_reads += 1
+                if self.pull_reads == 2:
+                    self.head_sha = "c" * 40
+            return super().__call__(request, timeout)
+
+    transport = ChangingAPI()
+    _fetch_env(monkeypatch, event_path, output, name="issue_comment")
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    try:
+        fetch(tmp_path / "diff.patch", config_dir)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("head change while reading diff was accepted")
+    assert not (tmp_path / "diff.patch").exists()
+
+
+class ReviewApplyAPI:
+    def __init__(self, *, head_sha="b" * 40, base_ref="main", base_sha="a" * 40):
+        self.head_sha = head_sha
+        self.base_ref = base_ref
+        self.base_sha = base_sha
+        self.calls = []
+
+    def __call__(self, request, timeout):
+        path = urlparse(request.full_url).path.removeprefix("/repos/your-org/project/")
+        self.calls.append((request.method, path))
+        if request.method == "GET" and path == "pulls/24":
+            value = {
+                "head": {"sha": self.head_sha},
+                "base": {"ref": self.base_ref, "sha": self.base_sha},
+            }
+        elif request.method == "GET" and path in {"issues/24", "issues/24/comments"}:
+            value = {"labels": [], "assignees": []} if path == "issues/24" else []
+        else:
+            value = {}
+        return 200, {}, json.dumps(value).encode()
+
+
+def _review_apply_setup(
+    tmp_path,
+    monkeypatch,
+    *,
+    api,
+    base_sha="a" * 40,
+    scan_keys="scan-key",
+    event_name="pull_request_target",
+):
+    from agent_repo.commands import review_apply
+    from agent_repo.github import GitHub
+
+    event_path = _event_file(tmp_path, event_name, base=base_sha)
+    review_path = tmp_path / "review.json"
+    review_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "run_id": "99",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+                "summary": "Review summary.",
+                "findings": [],
+                "scope_ok": True,
+                "tests_missing": False,
+                "docs_needed": False,
+                "escalate": None,
+            }
+        )
+    )
+    diff_path = tmp_path / "diff.patch"
+    diff_path.write_text("")
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_RUN_ID", "99")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    monkeypatch.setenv("EXPECTED_HEAD_SHA", "b" * 40)
+    monkeypatch.setenv("AGENT_SCAN_KEYS", scan_keys)
+    monkeypatch.setenv("AGENT_CANARY", "canary")
+    monkeypatch.setenv("AGENT_BOT_LOGIN", "agent-review[bot]")
+    monkeypatch.setattr(
+        review_apply, "GitHub", lambda token, repo: GitHub(token, repo, transport=api)
+    )
+    from agent_repo.config import Area, RepoConfig
+
+    config = RepoConfig(
+        {"limits": {"review_max_lines": 1500}, "mode": {"review": "live"}},
+        (Area("core", "Core", ("src/**",), (), False),),
+        ("needs-maintainer",),
+    )
+    from agent_repo.charter import parse_charter
+
+    charter = parse_charter(Path("tests/fixtures/charter/example.md").read_text())
+    monkeypatch.setattr(
+        review_apply,
+        "_policy",
+        lambda gh, sha, directory: ("a" * 40, config, charter),
+    )
+    return review_apply, review_path, diff_path, summary
+
+
+def test_review_apply_main_rejects_head_moved_since_gate(tmp_path, monkeypatch):
+    api = ReviewApplyAPI(head_sha="c" * 40)
+    command, review_path, diff_path, summary = _review_apply_setup(
+        tmp_path, monkeypatch, api=api, event_name="issue_comment"
+    )
+    policy_calls = []
+    policy = command._policy
+    monkeypatch.setattr(
+        command, "_policy", lambda *args: (policy_calls.append(args[1]), policy(*args))[1]
+    )
+
+    assert command.main([str(review_path), str(diff_path)]) == 0
+    assert not any(method == "POST" for method, _ in api.calls)
+    assert "head moved" in summary.read_text()
+    assert not policy_calls
+
+
+def test_review_apply_main_rejects_base_mismatch_before_policy_or_write(tmp_path, monkeypatch):
+    api = ReviewApplyAPI(base_sha="c" * 40)
+    command, review_path, diff_path, summary = _review_apply_setup(
+        tmp_path, monkeypatch, api=api, base_sha="c" * 40
+    )
+    policy_calls = []
+    policy = command._policy
+    monkeypatch.setattr(
+        command, "_policy", lambda *args: (policy_calls.append(args[1]), policy(*args))[1]
+    )
+
+    assert command.main([str(review_path), str(diff_path)]) == 1
+    assert not any(method == "POST" for method, _ in api.calls)
+    assert "trusted review inputs unavailable" in summary.read_text()
+    assert not policy_calls
+
+
+def test_review_apply_main_requires_scan_keys(tmp_path, monkeypatch):
+    api = ReviewApplyAPI()
+    command, review_path, diff_path, _ = _review_apply_setup(
+        tmp_path, monkeypatch, api=api, scan_keys="\n"
+    )
+
+    assert command.main([str(review_path), str(diff_path)]) == 1
+    assert not any(method == "POST" for method, _ in api.calls)
 
 
 def test_pull_refuses_nondefault_base_before_diff_request(tmp_path):

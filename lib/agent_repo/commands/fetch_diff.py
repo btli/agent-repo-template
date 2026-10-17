@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -16,6 +17,9 @@ def _pull(gh: GitHub, event: Event) -> dict:
     base = value.get("base")
     if not isinstance(base, dict) or base.get("ref") != event.default_branch:
         raise ValueError("pull request is not based on the default branch")
+    if event.name == "pull_request_target":
+        if event.base_sha != base.get("sha"):
+            raise ValueError("pull request base changed since event")
     head_sha = value["head"].get("sha")
     if not isinstance(head_sha, str) or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
         raise ValueError("invalid pull request head")
@@ -24,8 +28,22 @@ def _pull(gh: GitHub, event: Event) -> dict:
     return value
 
 
+def _event_base_ref(event_name: str, event_path: Path) -> str | None:
+    if event_name != "pull_request_target":
+        return None
+    payload = json.loads(event_path.read_text(encoding="utf-8"))
+    pull = payload.get("pull_request") if isinstance(payload, dict) else None
+    base = pull.get("base") if isinstance(pull, dict) else None
+    if isinstance(base, dict):
+        value = base.get("ref")
+        return value if isinstance(value, str) else None
+    return None
+
+
 def fetch(diff_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
-    event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
+    event_name = os.environ["GITHUB_EVENT_NAME"]
+    event_path = Path(os.environ["GITHUB_EVENT_PATH"])
+    event = load_event(event_name, event_path)
     if (
         event.name not in {"pull_request_target", "issue_comment"}
         or not event.is_pr
@@ -39,13 +57,20 @@ def fetch(diff_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
         raise ValueError("invalid policy SHA")
     if event.name == "pull_request_target" and event.base_sha != base_sha:
         raise ValueError("event base does not match policy SHA")
+    if _event_base_ref(event_name, event_path) not in (None, event.default_branch):
+        raise ValueError("event pull request is not based on the default branch")
+    expected_head_sha = os.environ["EXPECTED_HEAD_SHA"]
+    if re.fullmatch(r"[0-9a-f]{40}", expected_head_sha) is None:
+        raise ValueError("invalid gate head SHA")
     gh = GitHub(os.environ["GH_TOKEN"], event.repo)
     pull = _pull(gh, event)
     head_sha = pull["head"]["sha"]
+    if head_sha != expected_head_sha:
+        raise ValueError("pull request head changed since gate")
     diff = gh.request("GET", f"pulls/{event.number}", accept="application/vnd.github.diff")
     if not isinstance(diff, str) or len(diff.encode()) > 2_000_000:
         raise ValueError("invalid or oversized pull request diff")
-    if _pull(gh, event)["head"]["sha"] != head_sha:
+    if _pull(gh, event)["head"]["sha"] != expected_head_sha:
         raise ValueError("pull request head changed while fetching diff")
     config = load_config(config_dir)
     limited, reason = summary_only(diff, config)

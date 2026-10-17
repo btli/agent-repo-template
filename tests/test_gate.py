@@ -443,6 +443,14 @@ def test_authorized_review_overrides_first_time_cost_gate(tmp_path):
     assert result.run and result.reason == "ready"
 
 
+def test_pull_request_review_gate_captures_event_head(tmp_path):
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "known-review"))
+
+    result, event, _, _ = evaluate_case(case, tmp_path)
+
+    assert result.head_sha == event.head_sha
+
+
 @pytest.mark.parametrize(
     "case_id",
     [
@@ -655,6 +663,7 @@ def test_cli_requires_literal_true_and_emits_all_outputs(enabled, tmp_path, monk
         "command": "",
         "command_args": "",
         "canary": values["canary"],
+        "head_sha": "",
     }
     assert re.fullmatch(r"[0-9a-f]{32}", values["canary"])
     assert TOKEN not in output.read_text()
@@ -694,6 +703,31 @@ def test_cli_reads_maintainers_from_default_checkout_and_preserves_args(tmp_path
     assert TOKEN not in output.read_text()
 
 
+def test_review_gate_outputs_pr_head_captured_for_issue_comment(tmp_path, monkeypatch):
+    from agent_repo.commands import gate
+
+    case = copy.deepcopy(next(c for c in CASES if c["id"] == "authorized-review"))
+    checkout, event_path, output = prepare_cli(tmp_path, monkeypatch)
+    event_path.write_text(json.dumps(case["payload"]))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    gh = GitHub(TOKEN, "your-org/project", transport=FakeTransport(case))
+    monkeypatch.setattr(gate, "GitHub", lambda *args, **kwargs: gh)
+
+    assert gate.main(["review", str(checkout)]) == 0
+
+    values = read_outputs(output)
+    assert values["run"] == "true"
+    assert (
+        values["head_sha"]
+        == case.get(
+            "pull",
+            json.loads(Path("tests/fixtures/events/pull_request_target.opened.json").read_text())[
+                "pull_request"
+            ],
+        )["head"]["sha"]
+    )
+
+
 @pytest.mark.parametrize("failure", ["config", "event", "maintainers"])
 def test_cli_errors_emit_closed_outputs_without_credentials(failure, tmp_path, monkeypatch, capsys):
     from agent_repo.commands.gate import main
@@ -728,6 +762,21 @@ def test_composite_action_input_defaults_use_runner_contexts():
             expression = re.sub(r"'(?:[^']|'')*'", "", expression)
             identifiers = set(re.findall(r"(?<![\w.-])\b([A-Za-z_]\w*)", expression))
             assert identifiers - {"true", "false", "null"} <= allowed, (name, expression)
+
+
+def test_gate_checkout_uses_current_actions_checkout_pin():
+    action = load_yaml(Path("actions/gate/action.yml"))
+    checkout = next(
+        step
+        for step in action["runs"]["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    )
+
+    assert checkout["uses"] == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+    assert (
+        "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+        in Path("actions/gate/action.yml").read_text()
+    )
 
 
 @pytest.mark.parametrize("enabled", ["false", "", None])

@@ -13,11 +13,12 @@ from agent_repo.github import GitHub
 
 
 class ReviewAPI:
-    def __init__(self, *, labels=(), comments=(), head_sha="b" * 40):
+    def __init__(self, *, labels=(), comments=(), head_sha="b" * 40, head_reads=None):
         self.calls = []
         self.labels = list(labels)
         self.comments = list(comments)
         self.head_sha = head_sha
+        self.head_reads = iter(head_reads or ())
         self.gh = GitHub("test-token", "your-org/project", transport=self.transport)
 
     def transport(self, request, timeout):
@@ -27,6 +28,7 @@ class ReviewAPI:
         if request.method == "POST" and path.endswith("/reviews"):
             return 200, {}, b"{}"
         if request.method == "GET" and path == "pulls/7":
+            self.head_sha = next(self.head_reads, self.head_sha)
             return 200, {}, json.dumps({"head": {"sha": self.head_sha}}).encode()
         if request.method == "GET" and path == "issues/7":
             return (
@@ -155,6 +157,17 @@ def test_finding_key_leak_is_dropped_and_alert_raised():
     assert key not in repr(actions)
 
 
+def test_escalated_review_plans_needs_maintainer_label():
+    actions = plan_review(
+        review(escalate={"to": "maintainer", "reason": "Sensitive changes."}), context(), {}
+    )
+
+    assert any(
+        action.kind == "add_labels" and "needs-maintainer" in action.payload["labels"]
+        for action in actions
+    )
+
+
 def test_head_sha_mismatch_does_not_plan_a_review():
     assert plan_review(review(head_sha="c" * 40), context(), {}) == []
 
@@ -185,8 +198,8 @@ def test_apply_skip_label_recheck_prevents_posting(tmp_path):
 
     alerts = apply_review(review(), context(api), {}, api.gh, "live", tmp_path / "summary.md")
 
-    assert alerts
-    assert not [call for call in api.writes if call[1] == "pulls/7/reviews"]
+    assert alerts == ["Apply skipped: automation disabled for this issue."]
+    assert not api.writes
 
 
 def test_apply_bot_off_marker_recheck_prevents_posting(tmp_path):
@@ -203,5 +216,43 @@ def test_apply_bot_off_marker_recheck_prevents_posting(tmp_path):
 
     alerts = apply_review(review(), context(api), {}, api.gh, "live", tmp_path / "summary.md")
 
-    assert alerts
+    assert alerts == ["Apply skipped: automation disabled for this issue."]
+    assert not api.writes
+
+
+def test_moved_head_prevents_escalation_label_write(tmp_path):
+    api = ReviewAPI(head_sha="c" * 40)
+
+    apply_review(
+        review(escalate={"to": "maintainer", "reason": "Review requested."}),
+        context(api),
+        {},
+        api.gh,
+        "live",
+        tmp_path / "summary.md",
+    )
+
+    assert not api.writes
+
+
+def test_head_change_after_enabled_check_prevents_label_write(tmp_path):
+    api = ReviewAPI(head_reads=["b" * 40, "c" * 40])
+
+    apply_review(
+        review(escalate={"to": "maintainer", "reason": "Review requested."}),
+        context(api),
+        {},
+        api.gh,
+        "live",
+        tmp_path / "summary.md",
+    )
+
+    assert not api.writes
+
+
+def test_second_head_check_catches_move_after_enabled_check(tmp_path):
+    api = ReviewAPI(head_reads=["b" * 40, "b" * 40, "b" * 40, "c" * 40])
+
+    apply_review(review(), context(api), {}, api.gh, "live", tmp_path / "summary.md")
+
     assert not [call for call in api.writes if call[1] == "pulls/7/reviews"]

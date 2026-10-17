@@ -4,6 +4,7 @@ from pathlib import Path
 from agent_repo.apply.actions import (
     Action,
     ApplyContext,
+    _AutomationDisabled,
     _check_enabled,
     check_identity,
     execute,
@@ -119,6 +120,27 @@ def apply_review(
         return []
     labels = [action for action in actions if action.kind != "review"]
     reviews = [action for action in actions if action.kind == "review"]
+    if mode == "live" and gh is not None:
+        number = actions[0].payload["number"]
+        expected_head = ctx.event.head_sha
+        try:
+            pull = gh.request("GET", f"pulls/{number}")
+            if not isinstance(pull, dict) or pull.get("head", {}).get("sha") != expected_head:
+                _summary(summary_path, "No review posted: pull request head moved.")
+                return []
+            _check_enabled(actions, gh, number)
+            pull = gh.request("GET", f"pulls/{number}")
+            if not isinstance(pull, dict) or pull.get("head", {}).get("sha") != expected_head:
+                _summary(summary_path, "No review posted: pull request head moved.")
+                return []
+        except _AutomationDisabled:
+            alert = "Apply skipped: automation disabled for this issue."
+            _summary(summary_path, alert)
+            return [alert]
+        except Exception:
+            alert = "Apply failed: pull request review stopped; maintainer attention required."
+            _summary(summary_path, alert)
+            return [alert]
     alerts = execute(labels, gh, mode, summary_path) if labels else []
     if not reviews:
         return alerts
@@ -153,6 +175,10 @@ def apply_review(
                 "comments": action.payload["comments"],
             },
         )
+    except _AutomationDisabled:
+        alert = "Apply skipped: automation disabled for this issue."
+        _summary(summary_path, alert)
+        return [*alerts, alert]
     except Exception:
         alert = "Apply failed: pull request review stopped; maintainer attention required."
         _summary(summary_path, alert)
