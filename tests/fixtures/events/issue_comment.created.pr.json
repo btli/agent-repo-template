@@ -1,0 +1,15 @@
+{
+  "action": "created",
+  "repository": {"full_name": "your-org/project", "default_branch": "main"},
+  "sender": {"login": "maintainer", "type": "User"},
+  "issue": {
+    "number": 24,
+    "title": "Improve validation messages",
+    "body": "PR discussion",
+    "user": {"login": "contributor"},
+    "author_association": "MEMBER",
+    "labels": [],
+    "pull_request": {"url": "https://api.github.com/repos/your-org/project/pulls/24"}
+  },
+  "comment": {"body": "/review", "user": {"login": "maintainer"}}
+}

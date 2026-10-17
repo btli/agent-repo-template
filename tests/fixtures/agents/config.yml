@@ -1,0 +1,35 @@
+version: 1
+mode:
+  triage: dry-run
+  review: dry-run
+  fix: dry-run
+system_one:
+  provider: databricks-openjev
+  model: system.ai.openjev-qwen35-4b
+models:
+  triage: gateway-triage
+  review: gateway-review
+  fix: gateway-fix
+thresholds:
+  apply_min: 0.8
+  close_min: 0.92
+  close_lexical_min: 0.45
+close:
+  enabled: false
+triage:
+  rca_authors: all
+limits:
+  triage_runs_per_issue: 3
+  tier2_per_author_per_day: 2
+  tier2_per_day: 25
+  edit_debounce_minutes: 10
+  review_max_lines: 1500
+  fix_max_turns: 40
+  fix_max_diff_lines: 400
+commands:
+  setup: ""
+  test: ""
+  lint: ""
+fix:
+  allow_new_deps: false
+  accept_ci_exposure: false

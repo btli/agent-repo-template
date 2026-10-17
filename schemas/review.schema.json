@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "base_sha", "head_sha", "summary", "findings", "scope_ok", "tests_missing", "docs_needed", "escalate"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "summary": {"type": "string", "maxLength": 4000},
+    "findings": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "path", "line", "body"],
+        "properties": {
+          "severity": {"enum": ["blocker", "high", "medium", "low"]},
+          "path": {"type": "string"},
+          "line": {"type": "integer", "minimum": 1},
+          "body": {"type": "string", "maxLength": 2000}
+        }
+      }
+    },
+    "scope_ok": {"type": "boolean"},
+    "tests_missing": {"type": "boolean"},
+    "docs_needed": {"type": "boolean"},
+    "escalate": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["to", "reason"],
+      "properties": {
+        "to": {"const": "maintainer"},
+        "reason": {"type": "string", "maxLength": 500}
+      }
+    }
+  }
+}
