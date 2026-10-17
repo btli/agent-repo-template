@@ -141,8 +141,12 @@ def test_grep_returns_partial_with_marker(tmp_path):
     assert any("truncated" in line for _, _, line in result)
 
 
-def test_default_glob_searches_template_with_large_lockfiles():
-    result = reader(Path.cwd()).grep("def merge")
+def test_default_glob_searches_template_with_large_lockfiles(tmp_path):
+    (tmp_path / "uv.lock").write_text("x" * 168000)
+    source = tmp_path / "lib/agent_repo/commands/triage_merge.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def merge():\n    pass\n")
+    result = reader(tmp_path).grep("def merge")
     assert any(
         path == "lib/agent_repo/commands/triage_merge.py" and "def merge" in line
         for path, _, line in result
