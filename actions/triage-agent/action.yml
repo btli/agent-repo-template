@@ -1,0 +1,41 @@
+name: Tier-2 issue triage
+description: Run the confined read-only agent and merge schema-validated corrections.
+inputs:
+  issue-file:
+    description: File containing the filtered issue text and eligible comments.
+    required: true
+  decision-file:
+    description: Tier-1 decision JSON.
+    required: true
+  context-file:
+    description: Default-branch JSON with charter/contributing/docs_index text and config.yml/labels.yml/areas.yml text.
+    required: true
+  output-file:
+    description: Merged decision path; unsafe artifacts are removed and the caller must escalate exit 1.
+    required: true
+  api-key-env:
+    description: Caller environment variable holding the role key.
+    required: false
+    default: LLM_API_KEY
+outputs:
+  decision-file:
+    description: Path to the merged decision.
+    value: ${{ inputs.output-file }}
+runs:
+  using: composite
+  steps:
+    - name: Run triage agent
+      shell: bash
+      env:
+        ISSUE_FILE: ${{ inputs.issue-file }}
+        DECISION_FILE: ${{ inputs.decision-file }}
+        CONTEXT_FILE: ${{ inputs.context-file }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+        API_KEY_ENV: ${{ inputs.api-key-env }}
+      run: |
+        set -euo pipefail
+        template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
+        export PATH="$RUNNER_TEMP/agent-repo-omnigent/bin:$PATH"
+        export PYTHONPATH="$template_root/lib"
+        export TRIAGE_AGENT="$template_root/agents/triage"
+        python "$GITHUB_ACTION_PATH/run.py"
