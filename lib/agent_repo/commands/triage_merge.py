@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 
+from agent_repo.apply.triage import _answer_label
 from agent_repo.config import ConfigError, load_config
 from agent_repo.schema import load_schema, validate
 
@@ -31,9 +32,9 @@ def label_corrections(tier2: dict, allowed_labels: set[str] | None) -> list[str]
 
 def llm_only_labels_match_answers(tier2: dict) -> bool:
     for question in ("type", "area"):
-        answer = tier2["answers"][question]["value"]
+        answer = _answer_label(question, tier2["answers"][question]["value"])
         labels = [label for label in tier2["labels"] if label.startswith(f"{question}:")]
-        if not isinstance(answer, str) or labels != [f"{question}:{answer}"]:
+        if not isinstance(answer, str) or labels != [answer]:
             return False
     return True
 
@@ -48,6 +49,8 @@ def merge(
     if validate(decision, schema):
         raise ValueError("invalid Tier-1 decision")
     result = copy.deepcopy(decision)
+    if result["close"] is not None:
+        result["close"]["tier2_agrees"] = False
     llm_only = decision.get("mode") == "llm-only"
     if llm_only and decision["answers"]:
         result["escalate"] = {
@@ -55,16 +58,12 @@ def merge(
             "reason": "LLM-only decision contains Tier-1 answers.",
         }
         return result
-    if result["close"] is not None and not llm_only:
-        result["close"]["tier2_agrees"] = False
     if (
         error is not None
         or tier2 is None
         or validate(tier2, schema)
         or any(tier2[key] != decision[key] for key in ["run_id", "base_sha", "schema_version"])
     ):
-        if result["close"] is not None:
-            result["close"]["tier2_agrees"] = False
         result["escalate"] = result["escalate"] or {
             "to": "maintainer",
             "reason": "Tier-2 triage failed or returned invalid output.",
@@ -81,8 +80,6 @@ def merge(
             allowed_labels = set(decision["labels"])
     corrections = label_corrections(tier2, allowed_labels)
     if corrections is None:
-        if result["close"] is not None:
-            result["close"]["tier2_agrees"] = False
         result["escalate"] = result["escalate"] or {
             "to": "maintainer",
             "reason": "Tier-2 label corrections violate the repository taxonomy.",

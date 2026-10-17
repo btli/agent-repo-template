@@ -1627,3 +1627,47 @@ def test_llm_only_merged_close_cannot_close_with_system_one_configured():
     actions = plan(merged, ctx)
 
     assert not any(action.kind == "close" for action in actions)
+
+
+@pytest.mark.parametrize("failure", ["incomplete", "contradiction"], ids=["p1", "p2"])
+def test_llm_only_escalation_cannot_close_with_system_one_configured(failure, tmp_path):
+    from agent_repo.commands.triage_merge import merge
+
+    api = API()
+    tier1 = decision()
+    tier1.update(
+        mode="llm-only",
+        answers={} if failure == "incomplete" else tier1["answers"],
+        labels=["type:bug", "area:api", "P2"],
+        close=closing("out_of_scope"),
+    )
+    tier1["close"]["tier2_agrees"] = True
+    tier2 = decision()
+    tier2.update(
+        tier=2,
+        mode="llm-only",
+        answers=(
+            {"type": {"value": "bug", "p": 0.99}}
+            if failure == "incomplete"
+            else complete_llm_answers()
+        ),
+        labels=["type:bug", "area:api", "P2"],
+        close=closing("out_of_scope"),
+    )
+    merged = merge(
+        tier1,
+        tier2,
+        None,
+        allowed_labels={"type:bug", "area:api"},
+    )
+    ctx = context(api, enabled=True)
+
+    assert ctx.config.raw["system_one"] is not None
+    assert merged["escalate"]["to"] == "maintainer"
+    assert merged["close"]["tier2_agrees"] is False
+    assert not any(action.kind == "close" for action in plan(merged, ctx))
+
+    run(merged, ctx, api, tmp_path)
+
+    assert api.issue_state == "open"
+    assert not any(method == "PATCH" for method, _, _ in api.writes)

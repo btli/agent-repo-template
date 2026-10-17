@@ -19,8 +19,10 @@ Return one final fenced ```json object matching the supplied decision schema.
 Copy schema_version, run_id and base_sha from the input decision. Set tier to 2.
 When mode is "llm-only", answer every question in answers: type, area, priority,
 needs_info, out_of_scope, docs_ref, duplicate_of and security_sensitive. Each
-answer has value and self-reported p in [0, 1]. Preserve mode and return labels
-that match the answers. Otherwise copy answers, suggestions, security and notes
+answer has value and self-reported p in [0, 1]. Use bare values for type and
+area answers (for example, `bug` and `core`); put `type:` and `area:` prefixes
+only on labels. Preserve mode and return labels that match the answers. Otherwise
+copy answers, suggestions, security and notes
 from Tier 1, correcting only type: and area: labels while keeping priority and
 other labels. Set rca or needs_info as appropriate. Agree to a proposed close
 only if its exact kind, target and docs_ref are justified by the evidence;

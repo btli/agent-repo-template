@@ -170,18 +170,29 @@ def test_invalid_tier2_escalates_and_keeps_tier1(decision, bad):
     assert validate(result, load_schema("decision")) == []
 
 
-def test_llm_only_four_answers_escalate_and_keep_tier1(decision):
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "type",
+        "area",
+        "priority",
+        "needs_info",
+        "out_of_scope",
+        "docs_ref",
+        "duplicate_of",
+        "security_sensitive",
+    ],
+)
+def test_llm_only_missing_answer_escalates_and_keeps_tier1(decision, missing):
     llm_only = copy.deepcopy(decision)
-    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    llm_only.update(mode="llm-only", answers={}, labels=[])
+    llm_only["close"]["tier2_agrees"] = True
     tier2 = copy.deepcopy(decision)
+    answers = llm_answers("bug", "core")
+    answers.pop(missing)
     tier2.update(
         tier=2,
-        answers={
-            "type": {"value": "bug", "p": 0.9},
-            "area": {"value": "core", "p": 0.9},
-            "priority": {"value": "P2", "p": 0.9},
-            "needs_info": {"value": False, "p": 0.9},
-        },
+        answers=answers,
         labels=["type:bug", "area:core"],
         needs_info={"text": "Tier-2 must not replace the safe artifact."},
         security=True,
@@ -193,6 +204,7 @@ def test_llm_only_four_answers_escalate_and_keep_tier1(decision):
     assert result["labels"] == llm_only["labels"]
     assert result["needs_info"] == llm_only["needs_info"]
     assert result["security"] == llm_only["security"]
+    assert result["close"]["tier2_agrees"] is False
     assert result["escalate"] == {
         "to": "maintainer",
         "reason": "LLM-only Tier-2 answers or labels are incomplete or inconsistent.",
@@ -201,12 +213,19 @@ def test_llm_only_four_answers_escalate_and_keep_tier1(decision):
 
 @pytest.mark.parametrize(
     "labels",
-    [[], ["type:bug", "area:ui"]],
-    ids=["empty", "mismatched-type"],
+    [
+        [],
+        ["type:bug", "area:ui"],
+        ["type:question", "area:core"],
+        ["type:question", "area:ui", "area:ui"],
+        ["type:question", "area:ui", "area:core"],
+    ],
+    ids=["empty", "mismatched-type", "mismatched-area", "duplicate-area", "extra-area"],
 )
 def test_llm_only_inconsistent_type_and_area_labels_escalate(decision, labels):
     llm_only = copy.deepcopy(decision)
-    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    llm_only.update(mode="llm-only", answers={}, labels=[])
+    llm_only["close"]["tier2_agrees"] = True
     tier2 = copy.deepcopy(decision)
     tier2.update(
         tier=2,
@@ -222,6 +241,7 @@ def test_llm_only_inconsistent_type_and_area_labels_escalate(decision, labels):
     assert result["labels"] == []
     assert result["needs_info"] is None
     assert result["security"] is False
+    assert result["close"]["tier2_agrees"] is False
     assert result["escalate"] == {
         "to": "maintainer",
         "reason": "LLM-only Tier-2 answers or labels are incomplete or inconsistent.",
@@ -231,6 +251,7 @@ def test_llm_only_inconsistent_type_and_area_labels_escalate(decision, labels):
 def test_llm_only_decision_with_tier1_answers_escalates_and_keeps_tier1(decision):
     llm_only = copy.deepcopy(decision)
     llm_only.update(mode="llm-only", answers={"type": {"value": "bug", "p": 0.99}})
+    llm_only["close"]["tier2_agrees"] = True
     tier2 = copy.deepcopy(decision)
     tier2.update(tier=2, answers=llm_answers(), labels=["type:question", "area:ui"])
 
@@ -238,11 +259,57 @@ def test_llm_only_decision_with_tier1_answers_escalates_and_keeps_tier1(decision
 
     assert result["answers"] == llm_only["answers"]
     assert result["labels"] == llm_only["labels"]
-    assert result["close"] == llm_only["close"]
+    assert result["close"]["tier2_agrees"] is False
     assert result["escalate"] == {
         "to": "maintainer",
         "reason": "LLM-only decision contains Tier-1 answers.",
     }
+
+
+@pytest.mark.parametrize("type_value", ["bug", "type:bug"])
+@pytest.mark.parametrize("area_value", ["api", "area:api"])
+def test_llm_only_bare_and_prefixed_answer_values_match_labels(decision, type_value, area_value):
+    llm_only = copy.deepcopy(decision)
+    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = copy.deepcopy(decision)
+    tier2.update(
+        tier=2,
+        answers=llm_answers(type_value, area_value),
+        labels=["type:bug", "area:api"],
+    )
+
+    result = merge(
+        llm_only,
+        tier2,
+        None,
+        allowed_labels={"type:bug", "area:api"},
+    )
+
+    assert result["answers"] == tier2["answers"]
+    assert result["labels"] == ["type:bug", "area:api"]
+    assert result["escalate"] is None
+
+
+@pytest.mark.parametrize("failure", ["runtime", "invalid", "taxonomy"])
+def test_llm_only_failed_tier2_clears_close_agreement(decision, failure):
+    llm_only = copy.deepcopy(decision)
+    llm_only.update(mode="llm-only", answers={}, labels=[])
+    llm_only["close"]["tier2_agrees"] = True
+    tier2 = copy.deepcopy(decision)
+    tier2.update(
+        tier=2,
+        answers=llm_answers("bug", "core"),
+        labels=["type:bug", "area:core"],
+    )
+    if failure == "invalid":
+        tier2["run_id"] = "other"
+    elif failure == "taxonomy":
+        tier2["labels"] = ["type:invented"]
+
+    result = merge(llm_only, tier2, "failed" if failure == "runtime" else None)
+
+    assert result["close"]["tier2_agrees"] is False
+    assert result["escalate"]["to"] == "maintainer"
 
 
 def test_tier2_llm_only_marker_cannot_take_over_configured_decision(decision):
