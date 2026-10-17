@@ -1,0 +1,16 @@
+{
+  "a.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo \"$GITHUB_BASE_REF\""
+          }
+        ]
+      }
+    }
+  }
+}

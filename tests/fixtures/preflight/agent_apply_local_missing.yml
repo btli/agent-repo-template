@@ -1,0 +1,17 @@
+{
+  "caller.yml": {
+    "on": {
+      "push": {
+        "branches": [
+          "main"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/callee.yml"
+      }
+    }
+  }
+}

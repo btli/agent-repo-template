@@ -1,0 +1,27 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "ref": "${{ github.event.pull_request.base.sha }}"
+            }
+          },
+          {
+            "run": "make test"
+          }
+        ],
+        "defaults": {
+          "run": {
+            "working-directory": "${{ github.head_ref }}"
+          }
+        }
+      }
+    }
+  }
+}

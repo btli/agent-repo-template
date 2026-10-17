@@ -1,0 +1,18 @@
+{
+  "ci.yml": {
+    "on": "pull_request_target",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "name": "${{ secrets.NPM_TOKEN }}",
+            "run": "echo ready"
+          }
+        ],
+        "name": "PR head"
+      }
+    }
+  }
+}

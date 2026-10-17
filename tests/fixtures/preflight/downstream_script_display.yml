@@ -1,0 +1,40 @@
+{
+  "src.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  },
+  "down.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "src.yml"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "ref": "${{ github.event.workflow_run.id }}"
+            },
+            "name": "downloadArtifact listWorkflowRunArtifacts /artifacts"
+          }
+        ]
+      }
+    }
+  }
+}

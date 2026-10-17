@@ -1,0 +1,46 @@
+{
+  "source.yml": {
+    "on": {
+      "push": {
+        "branches": [
+          "main"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    },
+    "name": "Build"
+  },
+  "consumer.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Build"
+        ],
+        "types": [
+          "completed"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "run": "python3 fetch.py && bash out/run.sh"
+          }
+        ]
+      }
+    }
+  }
+}

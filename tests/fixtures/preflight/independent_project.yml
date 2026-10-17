@@ -1,0 +1,19 @@
+{
+  "ci.yml": {
+    "on": "project",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "true"
+          }
+        ],
+        "env": {
+          "TOKEN": "${{ secrets.NPM_TOKEN }}"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "ci.yml": {
+    "on": {
+      "discussion_comment": {
+        "types": [
+          "created"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo \"${{ github.event.comment.body }}\" | bash"
+          }
+        ]
+      }
+    }
+  }
+}

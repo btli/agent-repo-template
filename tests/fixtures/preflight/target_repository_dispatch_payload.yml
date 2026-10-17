@@ -1,0 +1,27 @@
+{
+  "ci.yml": {
+    "on": "repository_dispatch",
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "with": {
+              "ref": "${{ github.event.client_payload.sha }}"
+            }
+          },
+          {
+            "run": "make deploy",
+            "env": {
+              "TOKEN": "${{ secrets.DEPLOY_TOKEN }}"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

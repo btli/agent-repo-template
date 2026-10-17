@@ -1,0 +1,47 @@
+{
+  "z-build.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "true"
+          }
+        ]
+      }
+    },
+    "name": "Build"
+  },
+  "a-final.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Build"
+        ],
+        "types": [
+          "completed"
+        ],
+        "branches": [
+          "bots/**"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "true"
+          }
+        ],
+        "env": {
+          "TOKEN": "${{ secrets.NPM_TOKEN }}"
+        }
+      }
+    },
+    "name": "Final"
+  }
+}

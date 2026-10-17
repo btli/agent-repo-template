@@ -1,0 +1,48 @@
+{
+  "build.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    },
+    "name": "Build"
+  },
+  "caller.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Build"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "write"
+    },
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/callee.yml"
+      }
+    }
+  },
+  "callee.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  }
+}

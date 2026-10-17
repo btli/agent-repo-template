@@ -1,0 +1,23 @@
+{
+  "ci.yml": {
+    "on": {
+      "push": {
+        "branches": "agent/fix-*"
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "env": {
+          "TOKEN": "${{ secrets.NPM_TOKEN }}"
+        },
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  }
+}

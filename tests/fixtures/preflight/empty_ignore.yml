@@ -1,0 +1,20 @@
+{
+  "ci.yml": {
+    "on": {
+      "push": {
+        "branches-ignore": []
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      }
+    }
+  }
+}

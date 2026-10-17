@@ -1,0 +1,8 @@
+on: push
+permissions: {}
+jobs:
+  check:
+    environment: {name: release}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ secrets.NPM_TOKEN }}"

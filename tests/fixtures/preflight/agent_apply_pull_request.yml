@@ -1,0 +1,15 @@
+{
+  "on": "pull_request",
+  "permissions": {},
+  "jobs": {
+    "check": {
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "run": "echo ready"
+        }
+      ],
+      "environment": "agent-apply"
+    }
+  }
+}

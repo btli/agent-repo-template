@@ -1,0 +1,19 @@
+{
+  "ci.yml": {
+    "on": "issue_comment",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ],
+        "env": {
+          "TOKEN": "${{ github.token }}"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+on: push
+permissions: {}
+jobs:
+  check:
+    environment: agent-apply
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo safe

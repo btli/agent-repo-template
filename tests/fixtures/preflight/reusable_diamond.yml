@@ -1,0 +1,37 @@
+{
+  "caller.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "call": {
+        "uses": "./.github/workflows/callee.yml"
+      }
+    }
+  },
+  "callee.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "first": {
+        "uses": "./.github/workflows/leaf.yml"
+      },
+      "second": {
+        "uses": "./.github/workflows/leaf.yml"
+      }
+    }
+  },
+  "leaf.yml": {
+    "on": "workflow_call",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo ready"
+          }
+        ]
+      }
+    }
+  }
+}

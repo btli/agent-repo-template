@@ -1,0 +1,18 @@
+{
+  "ci.yml": {
+    "on": "future_metadata_event",
+    "permissions": {
+      "issues": "write"
+    },
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "uses": "actions/labeler@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    }
+  }
+}

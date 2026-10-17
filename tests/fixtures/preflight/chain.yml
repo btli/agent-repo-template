@@ -1,0 +1,68 @@
+{
+  "a-down.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Mid"
+        ],
+        "types": [
+          "completed"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "uses": "actions/download-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "with": {
+              "run-id": "${{ github.event.workflow_run.id }}"
+            }
+          }
+        ]
+      }
+    },
+    "name": "Downloader"
+  },
+  "b-mid.yml": {
+    "on": {
+      "workflow_run": {
+        "workflows": [
+          "Build"
+        ],
+        "types": [
+          "completed"
+        ]
+      }
+    },
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      }
+    },
+    "name": "Mid"
+  },
+  "c-build.yml": {
+    "on": "push",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "run": "echo safe"
+          }
+        ]
+      }
+    },
+    "name": "Build"
+  }
+}

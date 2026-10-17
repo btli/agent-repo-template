@@ -1,0 +1,20 @@
+{
+  "ci.yml": {
+    "on": "pull_request",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-latest",
+        "permissions": {},
+        "environment": {
+          "name": "${{ 'agent-apply' }}"
+        },
+        "steps": [
+          {
+            "run": "true"
+          }
+        ]
+      }
+    }
+  }
+}

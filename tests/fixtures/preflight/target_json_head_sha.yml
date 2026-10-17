@@ -1,0 +1,16 @@
+{
+  "ci.yml": {
+    "on": "issue_comment",
+    "permissions": {},
+    "jobs": {
+      "check": {
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "run": "sha=$(jq -r '.head.sha' response.json); git checkout $sha; make"
+          }
+        ]
+      }
+    }
+  }
+}
