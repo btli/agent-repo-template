@@ -3,6 +3,7 @@ import re
 from urllib.parse import quote
 
 from agent_repo.apply.actions import Action, ApplyContext, check_identity
+from agent_repo.config import is_llm_only
 from agent_repo.github import GitHubError
 from agent_repo.markers import marker
 from agent_repo.render import fenced
@@ -98,7 +99,8 @@ def _off(ctx: ApplyContext) -> list[Action] | None:
 def _can_close(close: dict, ctx: ApplyContext, duplicate_of: object) -> bool:
     thresholds = ctx.config.raw["thresholds"]
     if (
-        not ctx.config.raw["close"]["enabled"]
+        is_llm_only(ctx.config)
+        or not ctx.config.raw["close"]["enabled"]
         or close["p"] < thresholds["close_min"]
         or not close["tier2_agrees"]
     ):

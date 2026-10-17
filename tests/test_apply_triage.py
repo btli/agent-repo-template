@@ -79,6 +79,7 @@ def context(api=None, *, enabled=False, capped=False, off=False):
     config = RepoConfig(
         {
             "thresholds": {"apply_min": 0.8, "close_min": 0.92, "close_lexical_min": 0.45},
+            "system_one": {"provider": "jev", "model": "model"},
             "close": {"enabled": enabled},
             "mode": {"triage": "live"},
         },
@@ -1531,3 +1532,49 @@ def test_cli_rejects_missing_or_invalid_bot_identity(login, monkeypatch, tmp_pat
     assert main([str(artifact)]) == 1
     assert not api.writes
     assert "Traceback" not in capsys.readouterr().err
+
+
+def test_llm_only_suppresses_close_even_when_enabled(tmp_path):
+    api = API()
+    ctx = context(api, enabled=True)
+    config_raw = dict(ctx.config.raw)
+    config_raw.pop("system_one")
+    ctx = replace(ctx, config=replace(ctx.config, raw=config_raw))
+    data = decision()
+    data["mode"] = "llm-only"
+    data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
+
+    actions = plan(data, ctx)
+    assert "needs-maintainer" in labels(actions)
+    assert "Suggested closure requires maintainer confirmation." in bodies(actions)
+    assert not any(action.kind == "close" for action in actions)
+
+    run(data, ctx, api, tmp_path)
+    assert api.issue_state == "open"
+    assert not any(method == "PATCH" for method, _, _ in api.writes)
+
+
+def test_llm_only_p1_remains_suggestion_only():
+    from agent_repo.commands.triage_merge import merge
+
+    ctx = context(enabled=True)
+    config_raw = dict(ctx.config.raw)
+    config_raw["system_one"] = None
+    ctx = replace(ctx, config=replace(ctx.config, raw=config_raw))
+    tier1 = decision()
+    tier1.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = decision()
+    tier2.update(
+        tier=2,
+        mode="llm-only",
+        answers={"priority": {"value": "P1", "p": 0.99}},
+        labels=["P1"],
+        suggestions={"priority": "P1", "labels": []},
+    )
+    data = merge(tier1, tier2, None)
+
+    actions = plan(data, ctx)
+
+    assert labels(actions) == {"needs-maintainer"}
+    assert "Suggested priority: P1." in bodies(actions)

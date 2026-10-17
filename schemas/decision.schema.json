@@ -7,6 +7,7 @@
     "run_id": {"type": "string", "minLength": 1},
     "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "tier": {"enum": [0, 1, 2]},
+    "mode": {"enum": ["llm-only"]},
     "answers": {
       "type": "object",
       "additionalProperties": {
@@ -16,6 +17,80 @@
         "properties": {
           "value": {"type": ["string", "number", "boolean", "null"]},
           "p": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      },
+      "properties": {
+        "type": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "p"],
+          "properties": {
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "p": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "area": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "p"],
+          "properties": {
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "p": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "priority": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "p"],
+          "properties": {
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "p": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "needs_info": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "p"],
+          "properties": {
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "p": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "out_of_scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "p"],
+          "properties": {
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "p": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "docs_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "p"],
+          "properties": {
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "p": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "duplicate_of": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "p"],
+          "properties": {
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "p": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "security_sensitive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "p"],
+          "properties": {
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "p": {"type": "number", "minimum": 0, "maximum": 1}
+          }
         }
       }
     },

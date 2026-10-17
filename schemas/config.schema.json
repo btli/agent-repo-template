@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "mode", "system_one", "models", "thresholds", "close", "triage", "limits", "commands", "fix"],
+  "required": ["version", "mode", "models", "thresholds", "close", "triage", "limits", "commands", "fix"],
   "properties": {
     "version": {"const": 1},
     "mode": {
@@ -15,7 +15,7 @@
       }
     },
     "system_one": {
-      "type": "object",
+      "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["provider", "model"],
       "properties": {

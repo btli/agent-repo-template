@@ -51,6 +51,63 @@ def test_keeps_tier1_authority_and_copies_only_corrections(decision):
     assert decision == original
 
 
+def test_llm_only_uses_tier2_answers_and_labels_when_taxonomy_is_trusted(decision):
+    llm_only = copy.deepcopy(decision)
+    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = copy.deepcopy(decision)
+    tier2.update(
+        tier=2,
+        mode="llm-only",
+        answers={
+            "type": {"value": "question", "p": 0.9},
+            "area": {"value": "ui", "p": 0.9},
+            "priority": {"value": "P2", "p": 0.9},
+            "needs_info": {"value": True, "p": 0.9},
+            "out_of_scope": {"value": False, "p": 0.9},
+            "docs_ref": {"value": "none", "p": 0.9},
+            "duplicate_of": {"value": "none", "p": 0.9},
+            "security_sensitive": {"value": False, "p": 0.9},
+        },
+        labels=["type:question", "area:ui", "P2"],
+        needs_info={"text": "Which version?"},
+    )
+
+    result = merge(
+        llm_only,
+        tier2,
+        None,
+        allowed_labels={"type:bug", "type:question", "area:core", "area:ui"},
+    )
+
+    assert result["answers"] == tier2["answers"]
+    assert result["labels"] == ["type:question", "area:ui", "P2"]
+    assert result["needs_info"] == tier2["needs_info"]
+    assert result["escalate"] is None
+    assert validate(result, load_schema("decision")) == []
+
+
+def test_llm_only_without_trusted_taxonomy_fails_closed(decision):
+    llm_only = copy.deepcopy(decision)
+    llm_only.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = copy.deepcopy(decision)
+    tier2.update(
+        tier=2,
+        mode="llm-only",
+        answers={
+            "type": {"value": "question", "p": 0.9},
+            "priority": {"value": "P1", "p": 0.9},
+            "security_sensitive": {"value": False, "p": 0.9},
+        },
+        labels=[],
+    )
+
+    result = merge(llm_only, tier2, None, allowed_labels=None)
+
+    assert result["answers"] == tier2["answers"]
+    assert result["labels"] == []
+    assert result["escalate"] is None
+
+
 @pytest.mark.parametrize(
     "bad",
     [

@@ -16,9 +16,13 @@ ask targeted questions. Be friendly and never promise a fix. Escalate uncertaint
 to the maintainer.
 
 Return one final fenced ```json object matching the supplied decision schema.
-Copy schema_version, run_id, base_sha, answers, suggestions, security and notes
-from the Tier-1 decision. Set tier to 2. Correct only type: and area: labels;
-keep priority and other labels. Set rca or needs_info as appropriate. Agree to a
-proposed close only if its exact kind, target and docs_ref are justified by the
-evidence; otherwise set close.tier2_agrees to false. Never invent a close target.
-Use escalate: {"to":"maintainer","reason":"..."} when uncertain.
+Copy schema_version, run_id and base_sha from the input decision. Set tier to 2.
+When mode is "llm-only", answer every question in answers: type, area, priority,
+needs_info, out_of_scope, docs_ref, duplicate_of and security_sensitive. Each
+answer has value and self-reported p in [0, 1]. Preserve mode and return labels
+that match the answers. Otherwise copy answers, suggestions, security and notes
+from Tier 1, correcting only type: and area: labels while keeping priority and
+other labels. Set rca or needs_info as appropriate. Agree to a proposed close
+only if its exact kind, target and docs_ref are justified by the evidence;
+otherwise set close.tier2_agrees to false. Never invent a close target. Use
+escalate: {"to":"maintainer","reason":"..."} when uncertain.

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from agent_repo import config as config_module
 from agent_repo.config import ConfigError, load_config
 
 FIXTURE = Path("tests/fixtures/agents")
@@ -35,6 +36,25 @@ def test_fixture_config_loads_and_preserves_each_mode(tmp_path: Path):
     assert config.mode_for("triage") == "live"
     assert config.mode_for("review") == "dry-run"
     assert config.mode_for("fix") == "live"
+
+
+@pytest.mark.parametrize("system_one", ["absent", "null"])
+def test_system_one_optional_selects_llm_only_mode(tmp_path: Path, system_one: str):
+    target = copy_agents(tmp_path)
+    path = target / "config.yml"
+    text = path.read_text()
+    block = "system_one:\n  provider: databricks-openjev\n  model: system.ai.openjev-qwen35-4b\n"
+    if system_one == "absent":
+        text = text.replace(block, "")
+    else:
+        text = text.replace(block, "system_one: null\n")
+    path.write_text(text)
+
+    assert config_module.is_llm_only(load_config(target))
+
+
+def test_configured_system_one_keeps_system_one_mode():
+    assert not config_module.is_llm_only(load_config(FIXTURE))
 
 
 def test_unknown_key_names_the_key(tmp_path: Path):

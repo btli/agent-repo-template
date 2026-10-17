@@ -29,6 +29,10 @@ class RepoConfig:
         return self.raw["mode"][role]
 
 
+def is_llm_only(config: RepoConfig) -> bool:
+    return config.raw.get("system_one") is None
+
+
 def _read(path: Path) -> object:
     if not path.is_file():
         raise ConfigError(f"missing {path.name}")
