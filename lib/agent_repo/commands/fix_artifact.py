@@ -36,7 +36,7 @@ def build_artifact(
 ) -> tuple[dict, str | None]:
     if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None or not run_id:
         raise ValueError("invalid run identity")
-    if not isinstance(agent_json, dict) or validate(agent_json, load_schema("fix")):
+    if validate(agent_json, load_schema("fix")):
         raise ValueError("fix output does not match the schema")
     if agent_json["run_id"] != run_id or agent_json["base_sha"] != base_sha:
         raise ValueError("fix output does not echo the run identity")
