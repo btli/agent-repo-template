@@ -1,0 +1,34 @@
+{
+  "request": {
+    "model": "jev",
+    "state": "Customer wrote: I was charged twice for my order #4411 and want one of the charges refunded today.",
+    "questions": {
+      "urgency": {
+        "type": "choice",
+        "instructions": "How urgent is this?",
+        "criteria": {
+          "low": "can wait a week",
+          "high": "needs action today"
+        }
+      }
+    }
+  },
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "urgency": {
+        "type": "choice",
+        "choice": "high",
+        "confidence": 1.0,
+        "probabilities": {
+          "low": 0.0,
+          "high": 1.0
+        }
+      }
+    },
+    "usage": {
+      "input_tokens": 391,
+      "output_tokens": 67
+    }
+  }
+}
