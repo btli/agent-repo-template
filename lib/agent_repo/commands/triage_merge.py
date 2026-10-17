@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 
+from agent_repo.apply.triage import _answer_label
 from agent_repo.config import ConfigError, load_config
 from agent_repo.schema import load_schema, validate
 
@@ -29,6 +30,15 @@ def label_corrections(tier2: dict, allowed_labels: set[str] | None) -> list[str]
     return corrections
 
 
+def llm_only_labels_match_answers(tier2: dict) -> bool:
+    for question in ("type", "area"):
+        answer = _answer_label(question, tier2["answers"][question]["value"])
+        labels = [label for label in tier2["labels"] if label.startswith(f"{question}:")]
+        if not isinstance(answer, str) or labels != [answer]:
+            return False
+    return True
+
+
 def merge(
     decision: dict, tier2: dict | None, error: str | None, *, allowed_labels: set[str] | None = None
 ) -> dict:
@@ -41,6 +51,13 @@ def merge(
     result = copy.deepcopy(decision)
     if result["close"] is not None:
         result["close"]["tier2_agrees"] = False
+    llm_only = decision.get("mode") == "llm-only"
+    if llm_only and decision["answers"]:
+        result["escalate"] = {
+            "to": "maintainer",
+            "reason": "LLM-only decision contains Tier-1 answers.",
+        }
+        return result
     if (
         error is not None
         or tier2 is None
@@ -68,9 +85,41 @@ def merge(
             "reason": "Tier-2 label corrections violate the repository taxonomy.",
         }
         return result
+    if llm_only and (
+        not {
+            "type",
+            "area",
+            "priority",
+            "needs_info",
+            "out_of_scope",
+            "docs_ref",
+            "duplicate_of",
+            "security_sensitive",
+        }.issubset(tier2["answers"])
+        or not llm_only_labels_match_answers(tier2)
+    ):
+        result["escalate"] = {
+            "to": "maintainer",
+            "reason": "LLM-only Tier-2 answers or labels are incomplete or inconsistent.",
+        }
+        return result
     for key in ["rca", "needs_info"]:
         result[key] = copy.deepcopy(tier2[key])
     result["escalate"] = copy.deepcopy(decision["escalate"] or tier2["escalate"])
+    if llm_only:
+        result["answers"] = copy.deepcopy(tier2["answers"])
+        result["labels"] = [
+            label for label in decision["labels"] if not label.startswith(("type:", "area:"))
+        ]
+        result["labels"] = list(dict.fromkeys(result["labels"] + tier2["labels"]))
+        for key in ["suggestions", "close"]:
+            result[key] = copy.deepcopy(tier2[key])
+        if result["close"] is not None:
+            result["close"]["tier2_agrees"] = False
+        result["security"] = decision["security"] or tier2["security"]
+        if validate(result, schema):
+            raise ValueError("invalid merged decision")
+        return result
     replaced = tuple(
         prefix for prefix in ["type:", "area:"] if any(c.startswith(prefix) for c in corrections)
     )

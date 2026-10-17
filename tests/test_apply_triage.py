@@ -79,6 +79,7 @@ def context(api=None, *, enabled=False, capped=False, off=False):
     config = RepoConfig(
         {
             "thresholds": {"apply_min": 0.8, "close_min": 0.92, "close_lexical_min": 0.45},
+            "system_one": {"provider": "jev", "model": "model"},
             "close": {"enabled": enabled},
             "mode": {"triage": "live"},
         },
@@ -136,6 +137,19 @@ def decision():
         "escalate": None,
         "security": False,
         "notes": [],
+    }
+
+
+def complete_llm_answers(*, priority="P2", duplicate="none"):
+    return {
+        "type": {"value": "bug", "p": 0.99},
+        "area": {"value": "api", "p": 0.99},
+        "priority": {"value": priority, "p": 0.99},
+        "needs_info": {"value": False, "p": 0.99},
+        "out_of_scope": {"value": False, "p": 0.99},
+        "docs_ref": {"value": "none", "p": 0.99},
+        "duplicate_of": {"value": duplicate, "p": 0.99},
+        "security_sensitive": {"value": False, "p": 0.99},
     }
 
 
@@ -1531,3 +1545,129 @@ def test_cli_rejects_missing_or_invalid_bot_identity(login, monkeypatch, tmp_pat
     assert main([str(artifact)]) == 1
     assert not api.writes
     assert "Traceback" not in capsys.readouterr().err
+
+
+def test_llm_only_suppresses_close_even_when_enabled(tmp_path):
+    api = API()
+    ctx = context(api, enabled=True)
+    config_raw = dict(ctx.config.raw)
+    config_raw.pop("system_one")
+    ctx = replace(ctx, config=replace(ctx.config, raw=config_raw))
+    data = decision()
+    data["mode"] = "llm-only"
+    data["close"] = closing()
+    data["answers"]["duplicate_of"] = {"value": "#99", "p": 0.9}
+
+    actions = plan(data, ctx)
+    assert "needs-maintainer" in labels(actions)
+    assert "Suggested closure requires maintainer confirmation." in bodies(actions)
+    assert not any(action.kind == "close" for action in actions)
+
+    run(data, ctx, api, tmp_path)
+    assert api.issue_state == "open"
+    assert not any(method == "PATCH" for method, _, _ in api.writes)
+
+
+def test_llm_only_p1_remains_suggestion_only():
+    from agent_repo.commands.triage_merge import merge
+
+    ctx = context(enabled=True)
+    config_raw = dict(ctx.config.raw)
+    config_raw["system_one"] = None
+    ctx = replace(ctx, config=replace(ctx.config, raw=config_raw))
+    tier1 = decision()
+    tier1.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = decision()
+    tier2.update(
+        tier=2,
+        mode="llm-only",
+        answers=complete_llm_answers(priority="P1"),
+        labels=["type:bug", "area:api", "P1"],
+        suggestions={"priority": "P1", "labels": []},
+    )
+    data = merge(tier1, tier2, None, allowed_labels={"type:bug", "area:api"})
+
+    actions = plan(data, ctx)
+
+    assert labels(actions) == {"needs-maintainer"}
+    assert "Suggested priority: P1." in bodies(actions)
+
+    partial = dict(tier2)
+    partial["answers"] = dict(tier2["answers"])
+    partial["answers"].pop("security_sensitive")
+    failed = merge(tier1, partial, None, allowed_labels={"type:bug", "area:api"})
+    assert failed["escalate"]["to"] == "maintainer"
+    assert failed["answers"] == {}
+    assert failed["suggestions"] == tier1["suggestions"]
+
+
+def test_llm_only_merged_close_cannot_close_with_system_one_configured():
+    from agent_repo.commands.triage_merge import merge
+
+    api = API()
+    tier1 = decision()
+    tier1.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = decision()
+    tier2.update(
+        tier=2,
+        answers=complete_llm_answers(duplicate="#99"),
+        labels=["type:bug", "area:api", "P2"],
+        close=closing(),
+    )
+    merged = merge(
+        tier1,
+        tier2,
+        None,
+        allowed_labels={"type:bug", "area:api", "area:unknown"},
+    )
+    ctx = context(api, enabled=True)
+
+    assert ctx.config.raw["system_one"] is not None
+    assert merged["close"]["tier2_agrees"] is False
+    actions = plan(merged, ctx)
+
+    assert not any(action.kind == "close" for action in actions)
+
+
+@pytest.mark.parametrize("failure", ["incomplete", "contradiction"], ids=["p1", "p2"])
+def test_llm_only_escalation_cannot_close_with_system_one_configured(failure, tmp_path):
+    from agent_repo.commands.triage_merge import merge
+
+    api = API()
+    tier1 = decision()
+    tier1.update(
+        mode="llm-only",
+        answers={} if failure == "incomplete" else tier1["answers"],
+        labels=["type:bug", "area:api", "P2"],
+        close=closing("out_of_scope"),
+    )
+    tier1["close"]["tier2_agrees"] = True
+    tier2 = decision()
+    tier2.update(
+        tier=2,
+        mode="llm-only",
+        answers=(
+            {"type": {"value": "bug", "p": 0.99}}
+            if failure == "incomplete"
+            else complete_llm_answers()
+        ),
+        labels=["type:bug", "area:api", "P2"],
+        close=closing("out_of_scope"),
+    )
+    merged = merge(
+        tier1,
+        tier2,
+        None,
+        allowed_labels={"type:bug", "area:api"},
+    )
+    ctx = context(api, enabled=True)
+
+    assert ctx.config.raw["system_one"] is not None
+    assert merged["escalate"]["to"] == "maintainer"
+    assert merged["close"]["tier2_agrees"] is False
+    assert not any(action.kind == "close" for action in plan(merged, ctx))
+
+    run(merged, ctx, api, tmp_path)
+
+    assert api.issue_state == "open"
+    assert not any(method == "PATCH" for method, _, _ in api.writes)

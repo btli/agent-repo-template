@@ -2,7 +2,48 @@ import base64
 from dataclasses import replace
 
 import pytest
-from test_apply_triage import API, bodies, closing, context, decision, labels, plan, run
+from test_apply_triage import (
+    API,
+    bodies,
+    closing,
+    complete_llm_answers,
+    context,
+    decision,
+    labels,
+    plan,
+    run,
+)
+
+
+def test_llm_only_tier2_close_attempt_cannot_close(tmp_path):
+    from agent_repo.commands.triage_merge import merge
+
+    api = API()
+    tier1 = decision()
+    tier1.update(mode="llm-only", answers={}, labels=[], close=None)
+    tier2 = decision()
+    tier2.update(
+        tier=2,
+        mode="llm-only",
+        answers=complete_llm_answers(duplicate="#99"),
+        labels=["type:bug", "area:api", "P2"],
+        close=closing(),
+    )
+    merged = merge(tier1, tier2, None, allowed_labels={"type:bug", "area:api", "area:unknown"})
+    assert merged["close"]["tier2_agrees"] is False
+    ctx = context(api, enabled=True)
+    config_raw = dict(ctx.config.raw)
+    config_raw.pop("system_one")
+    ctx = replace(ctx, config=replace(ctx.config, raw=config_raw))
+
+    run(merged, ctx, api, tmp_path)
+
+    assert api.issue_state == "open"
+    assert not any(method == "PATCH" for method, _, _ in api.writes)
+    assert "needs-maintainer" in api.labels
+    assert "Suggested closure requires maintainer confirmation." in "\n".join(
+        body["body"] for body in api.comments
+    )
 
 
 def test_close_reference_cannot_redirect_write(tmp_path):

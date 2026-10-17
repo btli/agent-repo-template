@@ -7,6 +7,7 @@
     "run_id": {"type": "string", "minLength": 1},
     "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "tier": {"enum": [0, 1, 2]},
+    "mode": {"enum": ["llm-only"]},
     "answers": {
       "type": "object",
       "additionalProperties": {

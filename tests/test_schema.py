@@ -66,6 +66,35 @@ def test_union_type_accepts_none():
     assert validate(None, {"type": ["object", "null"]}) == []
 
 
+@pytest.mark.parametrize("system_one", ["absent", None])
+def test_config_accepts_absent_or_null_system_one(system_one):
+    config = _valid_schema_instance("config")
+    if system_one == "absent":
+        del config["system_one"]
+    else:
+        config["system_one"] = system_one
+    assert validate(config, load_schema("config")) == []
+
+
+def test_decision_accepts_llm_only_full_question_answers():
+    decision = _valid_schema_instance("decision")
+    decision["mode"] = "llm-only"
+    decision["answers"] = {
+        "type": {"value": "bug", "p": 0.8},
+        "area": {"value": "core", "p": 0.8},
+        "priority": {"value": "P2", "p": 0.8},
+        "needs_info": {"value": False, "p": 0.8},
+        "out_of_scope": {"value": False, "p": 0.8},
+        "docs_ref": {"value": "none", "p": 0.8},
+        "duplicate_of": {"value": "none", "p": 0.8},
+        "security_sensitive": {"value": False, "p": 0.8},
+    }
+    assert validate(decision, load_schema("decision")) == []
+
+    decision["answers"]["security_sensitive"]["p"] = 1.1
+    assert "$.answers.security_sensitive.p: maximum" in validate(decision, load_schema("decision"))
+
+
 def test_array_string_and_number_boundaries():
     assert validate([1, 2], {"type": "array", "maxItems": 2}) == []
     assert validate([1, 2, 3], {"type": "array", "maxItems": 2})
