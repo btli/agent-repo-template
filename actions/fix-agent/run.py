@@ -8,7 +8,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-from agent_repo.commands.fix_artifact import build_artifact, local_config, run_git, write_artifact
+from agent_repo.commands.fix_artifact import (
+    build_artifact,
+    local_config,
+    refuse_repository_commands,
+    run_git,
+    write_artifact,
+)
 from agent_repo.commands.fix_spec import render_spec
 from agent_repo.config import ConfigError, load_config
 from agent_repo.policies import agent_environment
@@ -117,6 +123,11 @@ def run_agent(output: Path, canary: str) -> str:
     )
     if head.returncode != 0 or head.stdout.strip() != base_sha:
         raise Refused("work tree is not at the base SHA")
+    # Status hashes modified files, so filters and nested repositories are refused first.
+    try:
+        refuse_repository_commands(work, dot_git)
+    except ValueError as exc:
+        raise Refused(str(exc)) from None
     # Setup output that is not gitignored would otherwise land in the patch as agent work.
     if run_git(work, dot_git, "status", "--porcelain", "-z", "--untracked-files=all"):
         raise Refused("work tree is not clean after setup; gitignore setup outputs")

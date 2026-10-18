@@ -42,10 +42,11 @@ def refuse_repository_commands(repo: Path, git_dir: Path) -> None:
     while pending:
         with os.scandir(pending.pop()) as entries:
             for entry in entries:
-                # Only the git dir in use is exempt; the action keeps it outside the tree.
+                # Only the git dir in use is exempt; the agent step moves it out of the tree.
                 if Path(entry.path) == git_dir:
                     continue
-                if entry.name == ".git":
+                # Case-insensitive filesystems resolve .GIT and other variants as .git.
+                if entry.name.casefold() == ".git":
                     raise ValueError("work tree contains git metadata")
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(Path(entry.path))

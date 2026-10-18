@@ -38,8 +38,6 @@ outputs = {"canary": canary, "split_canary": "-".join(canary), "oversized": "x" 
            "encoded_key": base64.b64encode(key.encode()).decode()}
 if mode in outputs:
     (work / "notes.txt").write_text(outputs[mode])
-if mode == "attributes_filter":
-    (work / ".gitattributes").write_text("*.py filter=hooked\\n")
 if mode == "nested_repo":
     vendor = work / "vendor"
     vendor.mkdir()
@@ -344,13 +342,10 @@ def test_canary_in_patch_fails_closed(action, mode):
     assert canary not in result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("mode", ["attributes_filter", "nested_repo"])
-def test_repository_filters_never_run_after_the_agent(action, mode):
+def test_repository_filters_never_run_after_the_agent(action):
     marker = action["home"] / "filter.ran"
     write_script(action["home"] / "filter.sh", f"#!/bin/bash\ntouch {marker}\ncat\n")
-    if mode == "attributes_filter":
-        git(action["work"], "config", "filter.hooked.clean", str(action["home"] / "filter.sh"))
-    (action["home"] / "mode").write_text(mode)
+    (action["home"] / "mode").write_text("nested_repo")
     result = run_action(action, "agent")
     assert result.returncode == 1
     assert "Fix agent refused: agent output rejected." in result.stderr
@@ -450,6 +445,23 @@ def test_unignored_setup_output_refuses_agent(action):
     result = run_action(action, "agent")
     assert result.returncode == 1
     assert "Fix agent refused: work tree is not clean after setup" in result.stderr
+    assert calls(action) == []
+
+
+def test_repository_filters_never_run_before_the_agent(action):
+    work, marker = action["work"], action["home"] / "filter.ran"
+    (work / ".gitattributes").write_text("*.py filter=hooked\n")
+    git(work, "add", ".gitattributes")
+    git(work, "commit", "-q", "-m", "attributes")
+    action["env"]["BASE_SHA"] = git(work, "rev-parse", "HEAD").strip()
+    write_script(action["home"] / "filter.sh", f"#!/bin/bash\ntouch {marker}\ncat\n")
+    git(work, "config", "filter.hooked.clean", str(action["home"] / "filter.sh"))
+    # A same-size edit after setup makes the dirty-tree status hash it through the filter.
+    (work / "lib.py").write_text("def add(a, b):\n    return a + b\n")
+    result = run_action(action, "agent")
+    assert not marker.exists()
+    assert result.returncode == 1
+    assert "Fix agent refused: git config defines filters." in result.stderr
     assert calls(action) == []
 
 

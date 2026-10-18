@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from agent_repo.cli import main
+from agent_repo.commands import fix_artifact
 from agent_repo.commands.fix_artifact import MAX_PATCH_BYTES, build_artifact
 from agent_repo.schema import load_schema, validate
 
@@ -156,8 +157,8 @@ def test_nested_repository_filter_never_runs(tmp_path):
     assert "git metadata" in str(refused.value)
 
 
-@pytest.mark.parametrize("kind", ["file", "symlink"])
-def test_any_dot_git_entry_is_refused(tmp_path, kind):
+@pytest.mark.parametrize("kind", ["file", "symlink", "uppercase_directory"])
+def test_any_dot_git_entry_is_refused(tmp_path, kind, monkeypatch):
     repo = tmp_path / "repo"
     base_sha = make_repo(repo)
     plant_fix(repo)
@@ -166,10 +167,16 @@ def test_any_dot_git_entry_is_refused(tmp_path, kind):
     planted = repo / "tests" / ".git"
     if kind == "file":
         planted.write_text(f"gitdir: {git_dir}\n")
-    else:
+    elif kind == "symlink":
         planted.symlink_to(git_dir)
-    with pytest.raises(ValueError, match="git metadata"):
+    else:
+        (repo / "tests" / ".GIT").mkdir()
+    commands = []
+    monkeypatch.setattr(fix_artifact, "run_git", lambda *args: commands.append(args) or b"")
+    with pytest.raises(ValueError) as refused:
         build_artifact(repo, base_sha, "run-1", answer(base_sha), git_dir=git_dir)
+    assert commands == []
+    assert "git metadata" in str(refused.value)
 
 
 def test_gitlink_in_patch_is_refused(tmp_path):
