@@ -22,6 +22,10 @@ def missing_fields(body: str, required: tuple[str, ...]) -> list[str]:
     ]
 
 
+def has_field_heading(body: str, fields: tuple[str, ...]) -> bool:
+    return any(match.group(1).strip() in fields for match, _ in _heading_spans(body))
+
+
 def _heading_spans(body: str):
     headings = list(re.finditer(r"^###\s+(.+?)\s*$", body, re.MULTILINE))
     for index, heading in enumerate(headings):

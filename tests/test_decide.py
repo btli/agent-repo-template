@@ -13,6 +13,7 @@ from agent_repo.decide import (
     to_decision,
 )
 from agent_repo.event import load_event
+from agent_repo.gate import GateContext, evaluate
 from agent_repo.schema import load_schema, validate
 from agent_repo.systemone import Answer, Question, SystemOneError
 from agent_repo.tier0 import Candidate
@@ -22,6 +23,12 @@ FIXTURES = Path("tests/fixtures")
 EVENT = load_event("issues", FIXTURES / "events/issues.opened.json")
 CHARTER = parse_charter((FIXTURES / "charter/example.md").read_text())
 CONFIG = load_config(FIXTURES / "agents")
+GATE_LIMITS = {
+    "triage_runs_per_issue": 3,
+    "edit_debounce_minutes": 10,
+    "tier2_per_day": 25,
+    "tier2_per_author_per_day": 2,
+}
 
 
 def answers(**values):
@@ -36,6 +43,57 @@ def answers(**values):
     }
     complete.update(values)
     return {key: Answer(key, value, probability) for key, (value, probability) in complete.items()}
+
+
+def prepare_command_checkout(tmp_path, body, *, llm_only=False):
+    checkout = tmp_path / "checkout"
+    agents = checkout / ".agents"
+    agents.mkdir(parents=True)
+    for name in ("areas.yml", "labels.yml"):
+        (agents / name).write_text((FIXTURES / "agents" / name).read_text())
+    config_text = (FIXTURES / "agents/config.yml").read_text()
+    if llm_only:
+        config_text = config_text.replace(
+            "system_one:\n  provider: databricks-openjev\n  model: system.ai.openjev-qwen35-4b\n",
+            "",
+        )
+    (agents / "config.yml").write_text(config_text)
+    (agents / "charter.md").write_text((FIXTURES / "charter/example.md").read_text())
+    template_dir = checkout / ".github/ISSUE_TEMPLATE"
+    template_dir.mkdir(parents=True)
+    (template_dir / "bug.yml").write_text(
+        """body:
+  - type: input
+    attributes:
+      label: Version
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+"""
+    )
+    event_path = tmp_path / "event.json"
+    event_payload = json.loads((FIXTURES / "events/issues.opened.json").read_text())
+    event_payload["issue"]["body"] = body
+    event_path.write_text(json.dumps(event_payload))
+    return checkout, event_path, tmp_path / "decision.json", tmp_path / "issue.txt"
+
+
+def set_command_environment(monkeypatch, tmp_path, event_path, *, tier2_allowed="true"):
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issues")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", EVENT.repo)
+    monkeypatch.setenv("GITHUB_RUN_ID", "run-55")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GH_TOKEN", "gh-secret")
+    monkeypatch.setenv("TIER2_ALLOWED", tier2_allowed)
+    monkeypatch.setenv("SYSTEM_ONE_BASE_URL", "https://systemone.example")
+    monkeypatch.setenv("LLM_API_KEY", "llm-secret")
+    monkeypatch.setenv("GATE_CANARY", "canary-secret")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
 
 
 def test_build_questions_uses_spec_order_and_eight_example_ids():
@@ -108,6 +166,13 @@ def test_route_bug_with_enough_information_is_rca_candidate():
     proposal = route(answers(type=("bug", 0.9), needs_info=(False, 0.9)), CONFIG, EVENT, True, [])
 
     assert proposal.rca_candidate
+    assert proposal.escalate
+    assert (
+        to_decision(
+            proposal, answers(type=("bug", 0.9), needs_info=(False, 0.9)), "run", "a" * 40, 1
+        )["escalate"]
+        is None
+    )
 
 
 def test_route_known_rca_author_rejects_unassociated_author():
@@ -120,10 +185,50 @@ def test_route_known_rca_author_rejects_unassociated_author():
 
 def test_route_tier2_cap_records_reason_and_maintainer_when_answer_is_low():
     proposal = route(answers(area=("core", 0.5)), CONFIG, EVENT, False, [])
+    decision = to_decision(proposal, answers(area=("core", 0.5)), "run", "a" * 40, 1)
 
     assert not proposal.escalate
     assert "tier2-cap" in proposal.escalate_reasons
     assert "needs-maintainer" in proposal.labels
+    assert decision["escalate"] is not None
+
+
+def test_rca_routed_to_tier2_does_not_escalate_when_tier2_is_capped():
+    model_answers = answers(type=("bug", 0.9), needs_info=(False, 0.9))
+
+    proposal = route(model_answers, CONFIG, EVENT, False, [])
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
+
+    assert not proposal.escalate
+    assert "tier2-cap" in proposal.escalate_reasons
+    assert "needs-maintainer" not in proposal.labels
+    assert decision["escalate"] is None
+
+
+def test_route_tier2_cap_escalates_p0_priority():
+    proposal = route(answers(priority=("P0", 0.9)), CONFIG, EVENT, False, [])
+    decision = to_decision(proposal, answers(priority=("P0", 0.9)), "run", "a" * 40, 1)
+
+    assert "needs-maintainer" in proposal.labels
+    assert decision["escalate"]["reason"] == "priority, tier2-cap"
+
+
+def test_route_adds_needs_info_label_for_confident_needs_info_answer():
+    proposal = route(answers(needs_info=(True, 0.9)), CONFIG, EVENT, True, [])
+
+    assert "needs-info" in proposal.labels
+
+
+def test_tier1_security_answer_is_terminal_without_tier2_routing():
+    model_answers = answers(security_sensitive=(True, 0.95))
+
+    proposal = route(model_answers, CONFIG, EVENT, True, [])
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
+
+    assert proposal.security
+    assert proposal.escalate is False
+    assert decision["security"] is True
+    assert decision["escalate"] == {"to": "maintainer", "reason": "security"}
 
 
 def test_route_missing_answers_escalate_fail_closed():
@@ -148,6 +253,29 @@ def test_route_missing_answers_escalate_fail_closed():
     )
 
     assert proposal.escalate
+
+
+def test_system_one_failure_with_tier2_unavailable_escalates_to_maintainer():
+    missing_answers = {
+        key: None
+        for key in (
+            "type",
+            "area",
+            "priority",
+            "needs_info",
+            "out_of_scope",
+            "docs_ref",
+            "security_sensitive",
+        )
+    }
+
+    proposal = route(missing_answers, CONFIG, EVENT, False, [])
+    decision = to_decision(proposal, missing_answers, "run", "a" * 40, 1)
+
+    assert not proposal.escalate
+    assert "tier2-cap" in proposal.escalate_reasons
+    assert "needs-maintainer" in proposal.labels
+    assert decision["escalate"] is not None
 
 
 def test_route_normalizes_system_one_yes_no_answers_to_booleans():
@@ -179,6 +307,30 @@ def test_route_close_disabled_keeps_close_empty_and_records_suggestion():
     assert any("suggest" in note.casefold() for note in decision["notes"])
 
 
+def test_route_duplicate_below_close_min_hands_off_without_close():
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    candidate = Candidate(30, "Validation fails for empty input", 0.5)
+    model_answers = answers(duplicate_of=("#30", 0.90))
+
+    proposal = route(model_answers, config, EVENT, True, [candidate])
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
+
+    assert proposal.close is None
+    assert "needs-maintainer" in proposal.labels
+    assert decision["escalate"] == {"to": "maintainer", "reason": "close-suggestion"}
+    assert any("suggested duplicate" in note.casefold() for note in decision["notes"])
+
+
+def test_route_duplicate_p91_below_close_min_never_emits_close():
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    candidate = Candidate(30, "Validation fails for empty input", 0.5)
+
+    proposal = route(answers(duplicate_of=("#30", 0.91)), config, EVENT, True, [candidate])
+
+    assert proposal.close is None
+    assert "needs-maintainer" in proposal.labels
+
+
 def test_route_close_proposal_requires_tier2_agreement():
     config = replace(
         CONFIG,
@@ -198,10 +350,53 @@ def test_route_close_proposal_requires_tier2_agreement():
 def test_route_rejects_close_when_lexical_score_is_below_threshold():
     config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
     candidate = Candidate(30, "Unrelated", 0.4)
+    model_answers = answers(duplicate_of=("#30", 0.95), area=("core", 0.5))
 
-    proposal = route(answers(duplicate_of=("#30", 0.95)), config, EVENT, True, [candidate])
+    proposal = route(model_answers, config, EVENT, True, [candidate])
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
 
     assert proposal.close is None
+    assert "needs-maintainer" in proposal.labels
+    assert decision["escalate"]["reason"] == "close-suggestion"
+
+
+def test_route_duplicate_none_never_targets_the_first_candidate():
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    candidate = Candidate(30, "Validation fails for empty input", 0.9)
+
+    proposal = route(answers(duplicate_of=("none", 0.95)), config, EVENT, True, [candidate])
+
+    assert proposal.close is None
+
+
+def test_route_out_of_scope_below_close_min_hands_off_without_close():
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    docs_ref = CHARTER.docs_index[0].url
+    model_answers = answers(out_of_scope=(True, 0.90), docs_ref=(docs_ref, 0.95))
+
+    proposal = route(model_answers, config, EVENT, True, [])
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
+
+    assert proposal.close is None
+    assert "needs-maintainer" in proposal.labels
+    assert decision["escalate"]["reason"] == "close-suggestion"
+    assert any("suggested out-of-scope close" in note.casefold() for note in decision["notes"])
+
+
+def test_route_out_of_scope_below_close_min_does_not_propose_close():
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    docs_ref = CHARTER.docs_index[0].url
+
+    proposal = route(
+        answers(out_of_scope=(True, 0.91), docs_ref=(docs_ref, 0.95)),
+        config,
+        EVENT,
+        True,
+        [],
+    )
+
+    assert proposal.close is None
+    assert "needs-maintainer" in proposal.labels
 
 
 def test_to_decision_emits_schema_valid_artifact_with_input_identity():
@@ -213,13 +408,75 @@ def test_to_decision_emits_schema_valid_artifact_with_input_identity():
     assert validate(artifact, load_schema("decision")) == []
 
 
-def test_tier2_counter_artifacts_match_gate_name_format():
-    names = tier2_counter_artifact_names("ConTriButor", datetime(2026, 10, 14, tzinfo=UTC))
+@pytest.mark.parametrize(
+    ("stage", "count", "reason"),
+    [("global", 25, "tier2-global-cap"), ("author", 2, "tier2-author-cap")],
+)
+def test_decide_counter_names_trip_gate_caps_for_mixed_case_author(
+    stage, count, reason, monkeypatch
+):
+    monkeypatch.setenv(
+        "GITHUB_WORKFLOW_REF",
+        f"{EVENT.repo}/.github/workflows/agent-triage.yml@refs/heads/main",
+    )
+    names = tier2_counter_artifact_names("CoNtRiBuToR", datetime(2026, 10, 14, tzinfo=UTC))
+    selected_name = names[0 if stage == "global" else 1]
+    queried_names = []
+    artifacts = [
+        {"name": selected_name, "workflow_run": {"repository_id": 7, "head_repository_id": 7}}
+        for _ in range(count)
+    ]
 
-    assert names == ("tier2-20261014", "tier2-20261014-contributor")
+    class FakeGitHub:
+        def paginate(self, path):
+            assert path == f"issues/{EVENT.number}/comments"
+            return []
+
+        def request(self, method, path, *, params=None):
+            if path == f"issues/{EVENT.number}/comments":
+                return []
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == "actions/artifacts":
+                name = params["name"]
+                queried_names.append(name)
+                return {"artifacts": [item for item in artifacts if item["name"] == name]}
+            raise AssertionError(path)
+
+    gate_config = replace(
+        CONFIG,
+        raw={
+            "limits": {
+                "triage_runs_per_issue": 3,
+                "edit_debounce_minutes": 10,
+                "tier2_per_day": 25,
+                "tier2_per_author_per_day": 2,
+            }
+        },
+    )
+    event = replace(EVENT, author="CoNtRiBuToR")
+    gate = GateContext(
+        workflow="triage",
+        enabled=True,
+        bot_login="helper[bot]",
+        config=gate_config,
+        gh=FakeGitHub(),
+        now=datetime(2026, 10, 14, 12, tzinfo=UTC),
+        maintainers=frozenset(),
+        run_id="99",
+    )
+
+    result = evaluate(event, gate)
+
+    assert not result.tier2_allowed
+    assert result.reason == reason
+    tier2_queries = [name for name in queried_names if name.startswith("tier2-")]
+    assert tier2_queries == list(names[: 1 if stage == "global" else 2])
 
 
-@pytest.mark.parametrize("failure", ["system-one-error", "malformed-answer"])
+@pytest.mark.parametrize(
+    "failure", ["system-one-error", "malformed-answer", "out-of-range-probability", "off-option"]
+)
 def test_system_one_error_or_malformed_answer_becomes_none(monkeypatch, failure):
     from agent_repo.commands import decide as command
 
@@ -232,11 +489,19 @@ def test_system_one_error_or_malformed_answer_becomes_none(monkeypatch, failure)
             raise SystemOneError("provider request failed")
 
         monkeypatch.setattr(command, "ask", broken_ask)
-    else:
+    elif failure == "malformed-answer":
         monkeypatch.setattr(
             command,
             "ask",
             lambda *args, **kwargs: {"type": Answer("wrong-id", "bug", 0.9)},
+        )
+    elif failure == "out-of-range-probability":
+        monkeypatch.setattr(
+            command, "ask", lambda *args, **kwargs: {"type": Answer("type", "bug", 1.1)}
+        )
+    else:
+        monkeypatch.setattr(
+            command, "ask", lambda *args, **kwargs: {"type": Answer("type", "feature", 0.9)}
         )
 
     answers_from_model = command._model_answers(
@@ -266,7 +531,9 @@ def test_decide_action_uploads_both_gate_counter_artifacts():
     }
 
 
-def test_decide_command_writes_llm_only_decision_and_filtered_context(tmp_path, monkeypatch):
+def test_decide_command_writes_llm_only_decision_and_filtered_context(
+    tmp_path, monkeypatch, capsys
+):
     from agent_repo.commands import decide as command
 
     checkout = tmp_path / "checkout"
@@ -301,12 +568,16 @@ def test_decide_command_writes_llm_only_decision_and_filtered_context(tmp_path, 
 
     class FakeGitHub:
         def __init__(self, token, repo):
-            assert token == "credential"
+            assert token == "gh-secret"
             assert repo == EVENT.repo
 
         def request(self, method, path, *, params=None):
             if path == "/search/issues":
                 return {"items": []}
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == "actions/artifacts":
+                return {"artifacts": []}
             if path.endswith("/permission"):
                 return {"role_name": "read"}
             raise AssertionError(path)
@@ -326,9 +597,10 @@ def test_decide_command_writes_llm_only_decision_and_filtered_context(tmp_path, 
     monkeypatch.setenv("GITHUB_REPOSITORY", EVENT.repo)
     monkeypatch.setenv("GITHUB_RUN_ID", "run-55")
     monkeypatch.setenv("GITHUB_SHA", "a" * 40)
-    monkeypatch.setenv("GH_TOKEN", "credential")
+    monkeypatch.setenv("GH_TOKEN", "gh-secret")
     monkeypatch.setenv("TIER2_ALLOWED", "true")
-    monkeypatch.setenv("GATE_CANARY", "canary-value")
+    monkeypatch.setenv("GATE_CANARY", "canary-secret")
+    monkeypatch.setenv("LLM_API_KEY", "llm-secret")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
 
     assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
@@ -336,6 +608,7 @@ def test_decide_command_writes_llm_only_decision_and_filtered_context(tmp_path, 
     artifact = json.loads(decision_path.read_text())
     context = context_path.read_text()
     assert artifact["mode"] == "llm-only"
+    assert artifact["escalate"] is None
     assert artifact["answers"] == {}
     assert artifact["run_id"] == "run-55"
     assert artifact["base_sha"] == "a" * 40
@@ -346,6 +619,12 @@ def test_decide_command_writes_llm_only_decision_and_filtered_context(tmp_path, 
     assert "tier2=true" in outputs
     assert "tier2-global-name=tier2-" in outputs
     assert "tier2-author-name=tier2-" in outputs
+    stderr = capsys.readouterr().err
+    for secret in ("gh-secret", "llm-secret", "canary-secret"):
+        assert secret not in stderr
+        assert secret not in decision_path.read_text()
+        assert secret not in context_path.read_text()
+        assert secret not in outputs
 
 
 @pytest.mark.parametrize(
@@ -356,7 +635,7 @@ def test_decide_command_writes_llm_only_decision_and_filtered_context(tmp_path, 
     ],
 )
 def test_tier0_stops_before_system_one_for_missing_fields_or_security(
-    tmp_path, monkeypatch, body, expected_security, expected_needs_info
+    tmp_path, monkeypatch, capsys, body, expected_security, expected_needs_info
 ):
     from agent_repo.commands import decide as command
 
@@ -398,10 +677,11 @@ def test_tier0_stops_before_system_one_for_missing_fields_or_security(
     monkeypatch.setenv("GITHUB_REPOSITORY", EVENT.repo)
     monkeypatch.setenv("GITHUB_RUN_ID", "run-56")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
-    monkeypatch.setenv("GH_TOKEN", "credential")
+    monkeypatch.setenv("GH_TOKEN", "gh-tier0-secret")
     monkeypatch.setenv("TIER2_ALLOWED", "true")
     monkeypatch.setenv("SYSTEM_ONE_BASE_URL", "https://systemone.example")
-    monkeypatch.setenv("LLM_API_KEY", "credential")
+    monkeypatch.setenv("LLM_API_KEY", "llm-tier0-secret")
+    monkeypatch.setenv("GATE_CANARY", "tier0-canary")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
 
     decision_path = tmp_path / "decision.json"
@@ -413,3 +693,154 @@ def test_tier0_stops_before_system_one_for_missing_fields_or_security(
     assert artifact["security"] is expected_security
     assert (artifact["needs_info"] is not None) is expected_needs_info
     assert validate(artifact, load_schema("decision")) == []
+    stderr = capsys.readouterr().err
+    outputs = (tmp_path / "output").read_text()
+    for secret in ("gh-tier0-secret", "llm-tier0-secret", "tier0-canary"):
+        assert secret not in stderr
+        assert secret not in decision_path.read_text()
+        assert secret not in context_path.read_text()
+        assert secret not in outputs
+
+
+@pytest.mark.parametrize("body", ["### Summary\nExports are slow", "Exports are slow"])
+def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body):
+    from agent_repo.commands import decide as command
+
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(tmp_path, body)
+    calls = []
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            assert token == "gh-secret"
+            assert repo == EVENT.repo
+
+        def request(self, method, path, *, params=None):
+            assert path == "/search/issues"
+            return {"items": []}
+
+        def paginate(self, path):
+            return []
+
+    def answer_questions(_config, _base_url, _key, _prompt, questions):
+        calls.append([question.id for question in questions])
+        selected = {
+            "type": "feature",
+            "area": "core",
+            "priority": "P3",
+            "needs_info": "no",
+            "out_of_scope": "no",
+            "docs_ref": "none",
+            "security_sensitive": "no",
+        }
+        return {
+            question.id: Answer(question.id, selected[question.id], 0.95) for question in questions
+        }
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(command, "ask", answer_questions)
+    set_command_environment(monkeypatch, tmp_path, event_path)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+    artifact = json.loads(decision_path.read_text())
+
+    assert artifact["tier"] == 1
+    assert calls
+
+
+def test_command_rechecks_next_utc_day_cap_before_tier2_upload(tmp_path, monkeypatch):
+    from agent_repo.commands import decide as command
+
+    now = datetime(2026, 10, 15, 0, 0, 1, tzinfo=UTC)
+    names = tier2_counter_artifact_names(EVENT.author, now)
+    artifacts = [
+        {"name": names[1], "workflow_run": {"repository_id": 7, "head_repository_id": 7}}
+        for _ in range(GATE_LIMITS["tier2_per_author_per_day"])
+    ]
+    queried_names = []
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path, "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app", llm_only=True
+    )
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is UTC
+            return now
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            assert token == "gh-secret"
+            assert repo == EVENT.repo
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {"items": []}
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == "actions/artifacts":
+                name = params["name"]
+                queried_names.append(name)
+                return {"artifacts": [item for item in artifacts if item["name"] == name]}
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    monkeypatch.setattr(command, "datetime", FixedDateTime)
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(
+        command, "ask", lambda *args, **kwargs: pytest.fail("LLM-only called System One")
+    )
+    set_command_environment(monkeypatch, tmp_path, event_path)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+    outputs = (tmp_path / "output").read_text()
+    artifact = json.loads(decision_path.read_text())
+
+    assert "tier2=false" in outputs
+    assert "tier2-counter-file=" not in outputs
+    assert "tier2-global-name=" not in outputs
+    assert "tier2-author-name=" not in outputs
+    assert queried_names == list(names)
+    assert "needs-maintainer" in artifact["labels"]
+    assert artifact["escalate"]["reason"].endswith("tier2-cap")
+
+
+def test_system_one_error_cannot_leak_credentials_or_canary(tmp_path, monkeypatch, capsys):
+    from agent_repo.commands import decide as command
+
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path, "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app"
+    )
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            assert token == "gh-secret"
+            assert repo == EVENT.repo
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {"items": []}
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == "actions/artifacts":
+                return {"artifacts": []}
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    def broken_ask(*args, **kwargs):
+        raise SystemOneError("provider detail included llm-secret and canary-secret")
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(command, "ask", broken_ask)
+    set_command_environment(monkeypatch, tmp_path, event_path)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+    stderr = capsys.readouterr().err
+    output = (tmp_path / "output").read_text()
+    surfaces = [stderr, decision_path.read_text(), context_path.read_text(), output]
+
+    for secret in ("gh-secret", "llm-secret", "canary-secret"):
+        assert all(secret not in surface for surface in surfaces)

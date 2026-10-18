@@ -4,6 +4,7 @@ import secrets
 import sys
 import tempfile
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -14,6 +15,7 @@ from agent_repo.decide import (
     build_questions,
     model_context,
     route,
+    tier2_cap_available,
     tier2_counter_artifact_names,
     to_decision,
 )
@@ -22,23 +24,32 @@ from agent_repo.github import GitHub, GitHubError
 from agent_repo.prompting import render_prompt
 from agent_repo.schema import load_schema, validate
 from agent_repo.systemone import Answer, ProviderConfig, Question, SystemOneError, ask
-from agent_repo.tier0 import Candidate, duplicate_candidates, missing_fields, security_hit
+from agent_repo.tier0 import (
+    Candidate,
+    duplicate_candidates,
+    has_field_heading,
+    missing_fields,
+    security_hit,
+)
 from agent_repo.yamljson import load_yaml
 
 
-def _required_fields(checkout: Path) -> tuple[str, ...]:
+def _issue_form_fields(checkout: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
     raw = load_yaml(checkout / ".github/ISSUE_TEMPLATE/bug.yml")
     if not isinstance(raw, dict) or not isinstance(raw.get("body"), list):
         raise ValueError("bug issue form must contain a body list")
     required = []
+    headings = []
     for field in raw["body"]:
-        if not isinstance(field, dict) or field.get("validations", {}).get("required") is not True:
+        if not isinstance(field, dict):
             continue
         attributes = field.get("attributes")
         label = attributes.get("label") if isinstance(attributes, dict) else None
         if isinstance(label, str) and label:
-            required.append(label)
-    return tuple(required)
+            headings.append(label)
+            if field.get("validations", {}).get("required") is True:
+                required.append(label)
+    return tuple(required), tuple(headings)
 
 
 def _writer_checker(gh: GitHub) -> Callable[[str], bool]:
@@ -121,7 +132,11 @@ def _model_answers(
 
 
 def _write_outputs(
-    proposal: Proposal, event: Event, tier2_allowed: bool, context_path: Path
+    proposal: Proposal,
+    event: Event,
+    tier2_allowed: bool,
+    context_path: Path,
+    counter_time: datetime | None = None,
 ) -> None:
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
@@ -129,7 +144,7 @@ def _write_outputs(
     tier2 = proposal.escalate and tier2_allowed and not proposal.security
     values = {"tier2": str(tier2).lower(), "context-file": str(context_path)}
     if tier2:
-        global_name, author_name = tier2_counter_artifact_names(event.author)
+        global_name, author_name = tier2_counter_artifact_names(event.author, counter_time)
         counter_file = Path(tempfile.gettempdir()) / "agent-repo-tier2-counter"
         counter_file.write_bytes(b"")
         values.update(
@@ -161,18 +176,23 @@ def main(argv: list[str]) -> int:
         return 2
     try:
         checkout, decision_path, context_path = map(Path, argv)
+        counter_time = None
         event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
         if event.name not in {"issues", "issue_comment"} or event.is_pr:
             raise ValueError("decide requires an issue event")
         config = load_config(checkout / ".agents")
         charter_text = (checkout / ".agents/charter.md").read_text(encoding="utf-8")
         charter = parse_charter(charter_text)
-        required = _required_fields(checkout)
+        required, form_headings = _issue_form_fields(checkout)
         run_id = os.environ["GITHUB_RUN_ID"]
         base_sha = os.environ["GITHUB_SHA"]
         tier2_allowed = os.environ.get("TIER2_ALLOWED") == "true"
         gh = GitHub(os.environ["GH_TOKEN"], os.environ.get("GITHUB_REPOSITORY", event.repo))
-        missing = missing_fields(event.body, required)
+        missing = (
+            missing_fields(event.body, required)
+            if has_field_heading(event.body, form_headings)
+            else []
+        )
         security = security_hit(f"{event.title}\n{event.body}")
         if security:
             proposal = Proposal(
@@ -198,6 +218,11 @@ def main(argv: list[str]) -> int:
             canary = os.environ.get("GATE_CANARY") or secrets.token_hex(16)
             answers = _model_answers(config, charter_text, issue_context, questions, canary)
             proposal = route(answers, config, event, tier2_allowed, candidates)
+            if proposal.escalate and tier2_allowed:
+                counter_time = datetime.now(UTC)
+                if not tier2_cap_available(gh, config, event, counter_time):
+                    tier2_allowed = False
+                    proposal = route(answers, config, event, tier2_allowed, candidates)
             tier = 1
         context_path.parent.mkdir(parents=True, exist_ok=True)
         if not context_path.exists():
@@ -216,7 +241,7 @@ def main(argv: list[str]) -> int:
         if security:
             artifact["notes"] = ["Security reports should use SECURITY.md for private reporting."]
         _write_decision(decision_path, artifact)
-        _write_outputs(proposal, event, tier2_allowed, context_path)
+        _write_outputs(proposal, event, tier2_allowed, context_path, counter_time)
     except (ConfigError, OSError, ValueError, KeyError, TypeError, AttributeError, SystemOneError):
         print("Decision input could not be loaded or validated.", file=sys.stderr)
         return 1

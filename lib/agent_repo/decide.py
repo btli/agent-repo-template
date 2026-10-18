@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from agent_repo.charter import Charter
 from agent_repo.config import RepoConfig
 from agent_repo.event import Event
+from agent_repo.gate import _Budget, _items, _mapping
 from agent_repo.github import GitHub
 from agent_repo.systemone import Answer, Question
 from agent_repo.tier0 import Candidate
@@ -180,7 +181,13 @@ def route(
     duplicate = next(
         (candidate for candidate in candidates if duplicate_value == f"#{candidate.number}"), None
     )
-    if config.raw["close"]["enabled"] and duplicate and duplicate_p >= thresholds["close_min"]:
+    close_enabled = config.raw["close"]["enabled"]
+    close_suggestion = False
+    if close_enabled and duplicate:
+        close_suggestion = duplicate_p < thresholds["close_min"] or (
+            duplicate.similarity < thresholds["close_lexical_min"]
+        )
+    if close_enabled and duplicate and duplicate_p >= thresholds["close_min"]:
         if duplicate.similarity >= thresholds["close_lexical_min"]:
             close = {
                 "kind": "duplicate",
@@ -192,6 +199,11 @@ def route(
             }
     out_of_scope, out_of_scope_p = _value(answers, "out_of_scope")
     docs_ref, docs_ref_p = _value(answers, "docs_ref")
+    out_of_scope_selected = (
+        out_of_scope is True and isinstance(docs_ref, str) and docs_ref != "none"
+    )
+    if close_enabled and out_of_scope_selected and close is None:
+        close_suggestion = True
     if (
         close is None
         and config.raw["close"]["enabled"]
@@ -219,6 +231,9 @@ def route(
             labels.append("needs-maintainer")
     if security:
         needs_tier2 = False
+    if close_suggestion:
+        labels.append("needs-maintainer")
+        unique_reasons.append("close-suggestion")
 
     return Proposal(
         tuple(dict.fromkeys(labels)),
@@ -263,6 +278,17 @@ def to_decision(
         )
     if proposal.rca_candidate:
         notes.append("This sufficiently specified bug is a candidate for root cause analysis.")
+    if proposal.security:
+        escalate = {"to": "maintainer", "reason": "security"}
+    elif "close-suggestion" in proposal.escalate_reasons:
+        escalate = {"to": "maintainer", "reason": "close-suggestion"}
+    elif "tier2-cap" in proposal.escalate_reasons and "needs-maintainer" in proposal.labels:
+        escalate = {
+            "to": "maintainer",
+            "reason": ", ".join(proposal.escalate_reasons)[:500] or "Decision requires review.",
+        }
+    else:
+        escalate = None
     return {
         "schema_version": "1",
         "run_id": run_id,
@@ -281,12 +307,7 @@ def to_decision(
         else None,
         "rca": None,
         "close": proposal.close,
-        "escalate": {
-            "to": "maintainer",
-            "reason": ", ".join(proposal.escalate_reasons)[:500] or "Decision requires review.",
-        }
-        if proposal.escalate or "tier2-cap" in proposal.escalate_reasons or proposal.security
-        else None,
+        "escalate": escalate,
         "security": proposal.security,
         "notes": notes[:20],
     }
@@ -316,3 +337,31 @@ def model_context(gh: GitHub, event: Event, is_writer: Callable[[str], bool]) ->
 def tier2_counter_artifact_names(author: str, now: datetime | None = None) -> tuple[str, str]:
     day = (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y%m%d")
     return f"tier2-{day}", f"tier2-{day}-{author.casefold()}"
+
+
+def tier2_cap_available(gh: GitHub, config: RepoConfig, event: Event, now: datetime) -> bool:
+    """Check current-day counters again immediately before routing to Tier 2."""
+    try:
+        counter_gh = _Budget(gh)
+        repository_id = _mapping(counter_gh.request("GET", f"/repos/{event.repo}"))["id"]
+        global_name, author_name = tier2_counter_artifact_names(event.author, now)
+        limits = config.raw["limits"]
+        for name, limit in (
+            (global_name, limits["tier2_per_day"]),
+            (author_name, limits["tier2_per_author_per_day"]),
+        ):
+            count = 0
+            for artifact in _items(counter_gh, "actions/artifacts", "artifacts", {"name": name}):
+                if artifact["name"] != name:
+                    continue
+                run = _mapping(artifact["workflow_run"])
+                if (
+                    run["repository_id"] == repository_id
+                    and run["head_repository_id"] == repository_id
+                ):
+                    count += 1
+                    if count >= limit:
+                        return False
+    except Exception:
+        return False
+    return True
