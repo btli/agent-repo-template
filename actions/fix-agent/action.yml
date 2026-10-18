@@ -12,7 +12,9 @@ inputs:
       test and lint commands must not depend on HOME.
     required: true
   policy-path:
-    description: Separate default-branch checkout with .agents/, AGENTS.md and CONTRIBUTING.md.
+    description: >-
+      Separate default-branch checkout with .agents/, AGENTS.md and CONTRIBUTING.md, checked
+      out with persist-credentials false.
     required: true
   base-sha:
     description: Commit checked out at work-path; fix.json echoes it.

@@ -329,6 +329,9 @@ REFUSALS = {
     "include_path_token": "persisted credentials",
     "include_if_gitdir": "persisted credentials",
     "include_path": "persisted credentials",
+    "remote_url_token": "persisted credentials",
+    "insteadof_token": "persisted credentials",
+    "policy_checkout_token": "persisted credentials",
     "key_in_issue": "credential in prompt",
     "oversized_issue": "prompt byte cap exceeded",
 }
@@ -362,6 +365,14 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         included.write_text(token if problem.endswith("_token") else "[core]\n\tautocrlf = false\n")
         key = "include.path" if "path" in problem else f"includeIf.gitdir:{work}/.git.path"
         git(work, "config", key, str(included))
+    elif problem == "remote_url_token":
+        git(work, "remote", "add", "origin", "https://x-access-token:tok3n@example.test/o/r")
+    elif problem == "insteadof_token":
+        git(work, "config", "url.https://x:tok3n@example.test/.insteadOf", "https://example.test/")
+    elif problem == "policy_checkout_token":
+        policy = Path(env["POLICY_PATH"])
+        git(policy, "init", "-q")
+        git(policy, "config", "http.extraheader", "basic eHg=")
     elif problem == "key_in_issue":
         Path(env["ISSUE_FILE"]).write_text(f"Please use {KEY} to reproduce.")
     else:

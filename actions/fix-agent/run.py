@@ -34,6 +34,17 @@ def checkouts() -> tuple[Path, Path]:
     return work, policy
 
 
+def refuse_persisted_credentials(tree: Path, git_dir: Path) -> None:
+    # Read before any move so includeIf.gitdir still matches; includes are refused outright.
+    entries = run_git(tree, git_dir, "config", "--local", "--includes", "--list", "-z").decode()
+    pattern = r"http(\..*)?\.extraheader|credential\..*|include\.path|includeif\..*\.path"
+    for entry in entries.split("\0"):
+        name = entry.partition("\n")[0]
+        # A token can also sit in URL userinfo, in a value or in an insteadOf key name.
+        if re.fullmatch(pattern, name) or re.search(r"://[^/]*@", entry):
+            raise Refused("checkout persisted credentials; use persist-credentials: false")
+
+
 def setup() -> int:
     try:
         work, policy = checkouts()
@@ -84,17 +95,14 @@ def run_agent(output: Path, canary: str) -> str:
     )
     if preflight.returncode != 0:
         raise Refused("bwrap sandbox unavailable")
+    if (policy / ".git").exists():
+        refuse_persisted_credentials(policy, policy / ".git")
     config = load_config(policy / ".agents")
     scratch = Path(tempfile.mkdtemp(prefix="agent-fix-", dir=temp))
     dot_git = work / ".git"
     if dot_git.is_symlink() or not dot_git.is_dir():
         raise Refused("work tree must be a plain git checkout")
-    # Read before the move so includeIf.gitdir still matches; includes are refused outright.
-    names = run_git(work, dot_git, "config", "--local", "--includes", "--name-only", "--list")
-    names = names.decode()
-    pattern = r"http(\..*)?\.extraheader|credential\..*|include\.path|includeif\..*\.path"
-    if any(re.fullmatch(pattern, name) for name in names.splitlines()):
-        raise Refused("checkout persisted credentials; use persist-credentials: false")
+    refuse_persisted_credentials(work, dot_git)
     head = subprocess.run(
         ["git", f"--git-dir={dot_git}", "rev-parse", "--verify", "HEAD^{commit}"],
         capture_output=True,
