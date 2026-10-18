@@ -24,10 +24,10 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
 
     assert set(workflow["on"]) == {"pull_request_target", "issue_comment"}
     assert set(workflow["jobs"]) == {"agent-propose-review", "agent-apply-review"}
-    assert workflow["jobs"]["agent-apply-review"]["permissions"]["pull-requests"] == "write"
     assert workflow["jobs"]["agent-propose-review"]["permissions"]["pull-requests"] == "read"
     assert workflow["jobs"]["agent-propose-review"]["environment"] == "agent-propose-review"
     apply_job = workflow["jobs"]["agent-apply-review"]
+    assert apply_job["permissions"] == {"actions": "read", "contents": "read"}
     assert apply_job["environment"] == "agent-apply"
     assert "issues" not in apply_job["permissions"]
     propose_action = next(

@@ -1,3 +1,4 @@
+import pytest
 from agent_repo.config import Area, RepoConfig
 from agent_repo.diff import diff_index, summary_only
 
@@ -15,6 +16,18 @@ index 1111111..2222222 100644
 """
 
     assert diff_index(diff) == {"src/file.py": {2, 3, 4}}
+
+
+def test_diff_index_parses_crlf_lines():
+    diff = (
+        "diff --git a/src/file.py b/src/file.py\r\n"
+        "--- a/src/file.py\r\n"
+        "+++ b/src/file.py\r\n"
+        "@@ -0,0 +1 @@\r\n"
+        "+added\r\n"
+    )
+
+    assert diff_index(diff) == {"src/file.py": {1}}
 
 
 def test_diff_index_uses_renamed_path():
@@ -116,6 +129,74 @@ def test_summary_only_detects_sensitive_path_with_spaces():
 @@ -1 +1 @@
 -old
 +new
+"""
+
+    assert diff_index(diff) == {".github/workflows/a b.yml": {1}}
+
+    limited, reason = summary_only(diff, config)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+@pytest.mark.parametrize("separator", ["\x0c", "\u2028", "\x1c", "\x85"])
+@pytest.mark.parametrize("new_file", [False, True])
+def test_summary_only_keeps_separator_injection_in_sensitive_workflow(separator, new_file):
+    config = RepoConfig(
+        {"limits": {"review_max_lines": 1500}},
+        (Area("security", "CI", (".github/**",), (), True),),
+        (),
+    )
+    path = ".github/workflows/new.yml" if new_file else ".github/workflows/ci.yml"
+    old_path = "/dev/null" if new_file else f"a/{path}"
+    new_path = f"b/{path}"
+    hunk = "@@ -0,0 +1 @@\n" if new_file else "@@ -1 +1 @@\n-old\n"
+    diff = (
+        f"diff --git a/{path} b/{path}\n--- {old_path}\n+++ {new_path}\n"
+        f"{hunk}+y{separator}--- /dev/null{separator}+++ b/src/ok.py\n"
+    )
+
+    assert diff_index(diff) == {path: {1}}
+
+    limited, reason = summary_only(diff, config)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_summary_only_counts_lines_using_newline_only():
+    config = RepoConfig({"limits": {"review_max_lines": 1}}, (), ())
+
+    limited, reason = summary_only("first\u2028second", config)
+
+    assert limited is False
+    assert reason == ""
+
+
+@pytest.mark.parametrize("header", ["--- a/src/other.py", "+++ b/src/other.py"])
+@pytest.mark.parametrize("after_hunk", [False, True])
+def test_summary_only_fails_closed_for_repeated_or_late_file_headers(header, after_hunk):
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    diff = "diff --git a/src/file.py b/src/file.py\n--- a/src/file.py\n+++ b/src/file.py\n"
+    if after_hunk:
+        diff += f"@@ -0,0 +1 @@\n+added\n{header}\n"
+    else:
+        diff += f"{header}\n@@ -0,0 +1 @@\n+added\n"
+
+    limited, reason = summary_only(diff, config)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_summary_only_fails_closed_for_garbage_inside_hunk():
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    diff = """diff --git a/src/file.py b/src/file.py
+--- a/src/file.py
++++ b/src/file.py
+@@ -0,0 +1,2 @@
++valid row
+garbage row
 """
 
     limited, reason = summary_only(diff, config)

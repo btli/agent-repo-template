@@ -94,6 +94,13 @@ def _git_header_paths(line: str) -> tuple[str | None, str | None] | None:
     return left, right
 
 
+def _diff_lines(diff: str) -> list[str]:
+    lines = diff.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line.removesuffix("\r") for line in lines]
+
+
 def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
     index: dict[str, set[int]] = {}
     paths: set[str] = set()
@@ -101,6 +108,7 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
     file_open = False
     file_header_paths = False
     left_header_seen = right_header_seen = False
+    hunk_started = False
     left_path = None
     right_path = None
     renamed_from = None
@@ -111,6 +119,7 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
 
     def finish_file() -> None:
         nonlocal invalid, file_open, file_header_paths, left_header_seen, right_header_seen
+        nonlocal hunk_started
         nonlocal left_path, right_path
         nonlocal renamed_from, renamed_to
         if not file_open:
@@ -133,11 +142,12 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
         file_open = False
         file_header_paths = False
         left_header_seen = right_header_seen = False
+        hunk_started = False
         left_path = right_path = None
         renamed_from = renamed_to = None
 
     current_header = ""
-    for line in diff.splitlines():
+    for line in _diff_lines(diff):
         if in_hunk:
             if old_remaining == 0 and new_remaining == 0:
                 in_hunk = False
@@ -171,6 +181,9 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
             current_header = line
             file_open = True
         elif line.startswith("--- ") and file_open:
+            if hunk_started or left_header_seen:
+                invalid = True
+                continue
             parsed = _path(line[4:])
             if parsed is None and line[4:].partition("\t")[0] != "/dev/null":
                 invalid = True
@@ -178,6 +191,9 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
             file_header_paths = True
             left_header_seen = True
         elif line.startswith("+++ ") and file_open:
+            if hunk_started or right_header_seen:
+                invalid = True
+                continue
             parsed = _path(line[4:])
             if parsed is None and line[4:].partition("\t")[0] != "/dev/null":
                 invalid = True
@@ -193,6 +209,7 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
             if renamed_to is None:
                 invalid = True
         elif line.startswith("@@"):
+            hunk_started = True
             match = _HUNK.match(line)
             if match is None or right_path is None:
                 invalid = True
@@ -215,7 +232,7 @@ def diff_index(diff: str) -> dict[str, set[int]]:
 
 def summary_only(diff: str, config) -> tuple[bool, str]:
     maximum = config.raw["limits"]["review_max_lines"]
-    line_count = len(diff.splitlines())
+    line_count = len(_diff_lines(diff))
     if line_count > maximum:
         return True, f"Diff has {line_count} lines; review_max_lines is {maximum}."
     byte_count = len(diff.encode("utf-8"))
