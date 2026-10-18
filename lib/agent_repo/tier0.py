@@ -18,7 +18,10 @@ def missing_fields(body: str, required: tuple[str, ...]) -> list[str]:
         for match, next_start in _heading_spans(body)
     }
     return [
-        field for field in required if sections.get(field, "").strip().casefold() == "_no response_"
+        field
+        for field in required
+        if sections.get(field, "").strip().casefold() == "_no response_"
+        or not sections.get(field, "").strip()
     ]
 
 

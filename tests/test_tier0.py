@@ -20,6 +20,11 @@ def test_missing_fields_detects_issue_form_no_response():
     assert missing_fields(body, ("Summary", "Version")) == ["Version"]
 
 
+@pytest.mark.parametrize("body", ["", "### Version\n"])
+def test_missing_fields_treats_absent_or_blank_required_sections_as_missing(body):
+    assert missing_fields(body, ("Version",)) == ["Version"]
+
+
 @pytest.mark.parametrize("text", ["CVE-2024-1234", "remote code execution", "exploit"])
 def test_security_hit_recognizes_security_reports(text):
     assert security_hit(text)
