@@ -38,7 +38,12 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
     assert propose_action["with"]["expected-head-sha"] == "${{ steps.gate.outputs.head_sha }}"
     token_step = next(step for step in apply_job["steps"] if step.get("id") == "app-token")
     assert token_step["uses"].startswith("actions/create-github-app-token@")
-    assert token_step["with"]["permission-pull-requests"] == "write"
+    permission_inputs = {
+        key.removeprefix("permission-"): value
+        for key, value in token_step["with"].items()
+        if key.startswith("permission-")
+    }
+    assert permission_inputs == {"contents": "read", "pull-requests": "write"}
     assert token_step["with"]["client-id"] == "${{ vars.AGENT_APP_CLIENT_ID }}"
     assert token_step["with"]["private-key"] == "${{ secrets.AGENT_APP_PRIVATE_KEY }}"
     assert token_step["uses"] == (

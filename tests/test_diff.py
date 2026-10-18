@@ -1,6 +1,6 @@
 import pytest
 from agent_repo.config import Area, RepoConfig
-from agent_repo.diff import diff_index, summary_only
+from agent_repo.diff import _parse_diff, diff_index, summary_only
 
 
 def test_diff_index_includes_added_and_context_lines_but_not_removed_lines():
@@ -187,6 +187,40 @@ def test_summary_only_fails_closed_for_repeated_or_late_file_headers(header, aft
 
     assert limited is True
     assert "needs-maintainer" in reason
+
+
+def test_summary_only_ignores_first_added_header_after_hunk():
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    diff = """diff --git a/src/file.py b/src/file.py
+--- a/src/file.py
+@@ -0,0 +1 @@
++added
++++ b/src/late.py
+"""
+
+    limited, reason = summary_only(diff, config)
+    _, paths, _ = _parse_diff(diff)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+    assert paths == {"src/file.py"}
+
+
+def test_summary_only_ignores_first_removed_header_after_hunk():
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    diff = """diff --git a/src/file.py b/src/file.py
++++ b/src/file.py
+@@ -0,0 +1 @@
++added
+--- a/src/late.py
+"""
+
+    limited, reason = summary_only(diff, config)
+    _, paths, _ = _parse_diff(diff)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+    assert paths == {"src/file.py"}
 
 
 def test_summary_only_fails_closed_for_garbage_inside_hunk():
