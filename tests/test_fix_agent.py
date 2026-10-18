@@ -25,6 +25,7 @@ spec = json.loads((pathlib.Path(sys.argv[2]) / "config.yaml").read_text())
 work = pathlib.Path.cwd()
 record = {"spec": spec, "prompt": prompt, "git": (work / ".git").exists()}
 record["env"] = sorted(os.environ)
+record["home"] = os.environ["HOME"]
 with (home / "calls.jsonl").open("a") as stream:
     stream.write(json.dumps(record) + "\\n")
 mode = (home / "mode").read_text()
@@ -323,6 +324,11 @@ REFUSALS = {
     "output_inside_work": "outside the work tree",
     "persisted_extraheader": "persisted credentials",
     "credential_helper": "persisted credentials",
+    "unscoped_extraheader": "persisted credentials",
+    "include_if_gitdir_token": "persisted credentials",
+    "include_path_token": "persisted credentials",
+    "include_if_gitdir": "persisted credentials",
+    "include_path": "persisted credentials",
     "key_in_issue": "credential in prompt",
     "oversized_issue": "prompt byte cap exceeded",
 }
@@ -347,6 +353,15 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         git(work, "config", "http.https://example.test/.extraheader", "basic e30=")
     elif problem == "credential_helper":
         git(work, "config", "credential.helper", "store")
+    elif problem == "unscoped_extraheader":
+        git(work, "config", "http.extraheader", "basic eHg=")
+    elif problem.startswith("include"):
+        # Checkout keeps the token in a separate file under the runner temp directory.
+        included = tmp_path / "included.config"
+        token = "[http]\n\textraheader = basic eHg=\n"
+        included.write_text(token if problem.endswith("_token") else "[core]\n\tautocrlf = false\n")
+        key = "include.path" if "path" in problem else f"includeIf.gitdir:{work}/.git.path"
+        git(work, "config", key, str(included))
     elif problem == "key_in_issue":
         Path(env["ISSUE_FILE"]).write_text(f"Please use {KEY} to reproduce.")
     else:
@@ -385,3 +400,19 @@ def test_setup_runs_default_branch_command_without_key(action):
     assert not any(f"{name}=" in environment for name in commands)
     home = Path((action["work"] / "home.txt").read_text().strip())
     assert home != action["home"] and home.name.startswith("agent-setup-home-")
+
+
+def test_setup_home_is_discarded_before_the_agent(action):
+    policy = Path(action["env"]["POLICY_PATH"]) / ".agents"
+    command = (
+        'mkdir "$HOME/.cache" && echo dep > "$HOME/.cache/dep"; echo "$HOME" > "$RUNNER_TEMP/home"'
+    )
+    config = (policy / "config.yml").read_text()
+    config = config.replace('setup: "echo default > source.txt"', f"setup: {json.dumps(command)}")
+    (policy / "config.yml").write_text(config)
+    assert run_action(action, "setup").returncode == 0
+    setup_home = Path((Path(action["env"]["RUNNER_TEMP"]) / "home").read_text().strip())
+    result = run_action(action, "agent")
+    assert result.returncode == 0, result.stderr
+    assert not (setup_home / ".cache" / "dep").exists()
+    assert Path(calls(action)[0]["home"]) != setup_home

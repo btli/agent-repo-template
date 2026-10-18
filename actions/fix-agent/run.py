@@ -89,8 +89,10 @@ def run_agent(output: Path, canary: str) -> str:
     dot_git = work / ".git"
     if dot_git.is_symlink() or not dot_git.is_dir():
         raise Refused("work tree must be a plain git checkout")
-    names = run_git(work, dot_git, "config", "--local", "--name-only", "--list").decode()
-    pattern = r"http\..*\.extraheader|credential\..*"
+    # Read before the move so includeIf.gitdir still matches; includes are refused outright.
+    names = run_git(work, dot_git, "config", "--local", "--includes", "--name-only", "--list")
+    names = names.decode()
+    pattern = r"http(\..*)?\.extraheader|credential\..*|include\.path|includeif\..*\.path"
     if any(re.fullmatch(pattern, name) for name in names.splitlines()):
         raise Refused("checkout persisted credentials; use persist-credentials: false")
     head = subprocess.run(

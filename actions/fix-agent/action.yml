@@ -7,7 +7,9 @@ inputs:
   work-path:
     description: >-
       Agent-branch checkout the agent edits, checked out at base-sha with
-      persist-credentials false.
+      persist-credentials false. commands.setup must install everything the offline agent
+      needs inside it (gitignored, such as a project .venv); setup's HOME is discarded, so
+      test and lint commands must not depend on HOME.
     required: true
   policy-path:
     description: Separate default-branch checkout with .agents/, AGENTS.md and CONTRIBUTING.md.
