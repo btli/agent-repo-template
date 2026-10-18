@@ -3,32 +3,38 @@ import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 
+import pytest
 from agent_repo.commands.fetch_diff import _pull, fetch
 from agent_repo.event import load_event
 from agent_repo.github import GitHub
 
 
 class API:
-    def __init__(self, *, base_ref="main", base_sha="a" * 40, head_sha="b" * 40, head_reads=None):
+    def __init__(
+        self,
+        *,
+        base_ref="main",
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        head_reads=None,
+        diff=None,
+    ):
         self.calls = []
         self.base_ref = base_ref
         self.base_sha = base_sha
         self.head_sha = head_sha
         self.head_reads = iter(head_reads or ())
+        self.diff = diff or (
+            b"diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
+            b"@@ -1 +1 @@\n-old\n+new\n"
+        )
 
     def __call__(self, request, timeout):
         path = urlparse(request.full_url).path
         accept = request.get_header("Accept")
         self.calls.append((request.method, path, accept))
         if accept == "application/vnd.github.diff":
-            return (
-                200,
-                {},
-                (
-                    b"diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
-                    b"@@ -1 +1 @@\n-old\n+new\n"
-                ),
-            )
+            return (200, {}, self.diff)
         return (
             200,
             {},
@@ -79,6 +85,42 @@ def test_fetch_diff_uses_api_diff_and_never_checks_out_code(tmp_path, monkeypatc
     assert diff_path.read_text().startswith("diff --git")
     assert any(call[2] == "application/vnd.github.diff" for call in transport.calls)
     assert not any(call[0] == "checkout" for call in transport.calls)
+
+
+@pytest.mark.parametrize(
+    "diff",
+    [
+        b"diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
+        b"--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-old\n+new\n",
+        b"diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
+        b"@@ -1 +1 @@\n-old\n+new\n+extra\n",
+        b"diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
+        b"@@ -1 +1 @@\n-old\n+new\ngarbage\n",
+    ],
+    ids=["mismatched-paths", "surplus-hunk-row", "garbage-row"],
+)
+def test_fetch_routes_ambiguous_diff_to_summary_only(tmp_path, monkeypatch, diff):
+    event_path = _event_file(tmp_path)
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+    areas = config_dir / "areas.yml"
+    areas.write_text(
+        "areas:\n  - name: workflows\n    description: Workflows\n"
+        "    paths:\n      - .github/**\n    owners: []\n    sensitive: true\n"
+    )
+    transport = API(diff=diff)
+    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    _, _, limited, reason = fetch(tmp_path / "diff.patch", config_dir)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
 
 
 def _event_file(
@@ -376,6 +418,25 @@ def test_review_apply_main_requires_scan_keys(tmp_path, monkeypatch):
 
     assert command.main([str(review_path), str(diff_path)]) == 1
     assert not any(method == "POST" for method, _ in api.calls)
+
+
+def test_review_apply_drops_finding_that_contains_github_token(tmp_path, monkeypatch):
+    api = ReviewApplyAPI()
+    command, review_path, diff_path, summary = _review_apply_setup(tmp_path, monkeypatch, api=api)
+    review_value = json.loads(review_path.read_text())
+    review_value["findings"] = [
+        {
+            "severity": "high",
+            "path": "src/app.py",
+            "line": 1,
+            "body": "Leaked test-token",
+        }
+    ]
+    review_path.write_text(json.dumps(review_value))
+
+    assert command.main([str(review_path), str(diff_path)]) == 0
+    assert not any(method == "POST" and path == "pulls/24/reviews" for method, path in api.calls)
+    assert "test-token" not in summary.read_text()
 
 
 def test_pull_refuses_nondefault_base_before_diff_request(tmp_path):

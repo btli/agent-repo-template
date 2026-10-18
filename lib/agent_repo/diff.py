@@ -124,17 +124,28 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
         nonlocal renamed_from, renamed_to
         if not file_open:
             return
+        header_paths = _git_header_paths(current_header)
         if file_header_paths:
             if not left_header_seen or not right_header_seen:
+                invalid = True
+            expected_left = left_path if left_path is not None else right_path
+            expected_right = right_path if right_path is not None else left_path
+            if expected_left is None or expected_right is None:
+                invalid = True
+            elif header_paths is not None:
+                if header_paths != (expected_left, expected_right):
+                    invalid = True
+            elif current_header != f"diff --git a/{expected_left} b/{expected_right}":
                 invalid = True
             if left_path is not None:
                 paths.add(left_path)
             if right_path is not None:
                 paths.add(right_path)
         elif renamed_from is not None and renamed_to is not None:
+            if header_paths != (renamed_from, renamed_to):
+                invalid = True
             paths.update((renamed_from, renamed_to))
         else:
-            header_paths = _git_header_paths(current_header)
             if header_paths is None:
                 invalid = True
             else:
@@ -165,7 +176,7 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
                     right_line += 1
                 elif line.startswith("-"):
                     old_remaining -= 1
-                elif line.startswith("\\"):
+                elif line == "\\ No newline at end of file":
                     continue
                 else:
                     invalid = True
@@ -200,24 +211,56 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
             right_path = parsed
             file_header_paths = True
             right_header_seen = True
-        elif line.startswith("rename from ") and file_open:
-            renamed_from = _path(line.removeprefix("rename from "), strip_prefix=False)
-            if renamed_from is None:
-                invalid = True
-        elif line.startswith("rename to ") and file_open:
-            renamed_to = _path(line.removeprefix("rename to "), strip_prefix=False)
-            if renamed_to is None:
-                invalid = True
         elif line.startswith("@@"):
             hunk_started = True
             match = _HUNK.match(line)
-            if match is None or right_path is None:
+            if match is None:
+                invalid = True
+                continue
+            new_start = int(match[3])
+            new_count = int(match[4] or "1")
+            if right_path is None and not (
+                left_path is not None and new_start == 0 and new_count == 0
+            ):
                 invalid = True
                 continue
             right_line = int(match[3])
             old_remaining = int(match[2] or "1")
             new_remaining = int(match[4] or "1")
             in_hunk = old_remaining > 0 or new_remaining > 0
+        elif line == "\\ No newline at end of file" and hunk_started:
+            continue
+        elif (
+            file_open
+            and not hunk_started
+            and any(
+                line.startswith(prefix)
+                for prefix in (
+                    "index ",
+                    "old mode ",
+                    "new mode ",
+                    "deleted file mode ",
+                    "new file mode ",
+                    "similarity index ",
+                    "dissimilarity index ",
+                    "rename from ",
+                    "rename to ",
+                    "copy from ",
+                    "copy to ",
+                    "Binary files ",
+                )
+            )
+        ):
+            if line.startswith("rename from "):
+                renamed_from = _path(line.removeprefix("rename from "), strip_prefix=False)
+                if renamed_from is None:
+                    invalid = True
+            elif line.startswith("rename to "):
+                renamed_to = _path(line.removeprefix("rename to "), strip_prefix=False)
+                if renamed_to is None:
+                    invalid = True
+        else:
+            invalid = True
     if in_hunk and (old_remaining or new_remaining):
         invalid = True
     finish_file()

@@ -175,14 +175,18 @@ def test_head_sha_mismatch_does_not_plan_a_review():
 def test_apply_posts_review_with_comment_event(tmp_path):
     api = ReviewAPI()
     summary = tmp_path / "summary.md"
+    artifact = review(
+        findings=[{"severity": "low", "path": "src/file.py", "line": 1, "body": "Looks good."}]
+    )
 
-    alerts = apply_review(review(), context(api), {}, api.gh, "live", summary)
+    alerts = apply_review(artifact, context(api), {"src/file.py": {1}}, api.gh, "live", summary)
 
     posts = [call for call in api.writes if call[1] == "pulls/7/reviews"]
     assert not alerts
     assert len(posts) == 1
     assert posts[0][2]["event"] == "COMMENT"
     assert posts[0][2]["commit_id"] == "b" * 40
+    assert posts[0][2]["comments"][0]["side"] == "RIGHT"
 
 
 def test_apply_refuses_to_post_when_pr_head_moved(tmp_path):

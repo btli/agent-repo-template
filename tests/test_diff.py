@@ -165,9 +165,13 @@ def test_summary_only_keeps_separator_injection_in_sensitive_workflow(separator,
 
 
 def test_summary_only_counts_lines_using_newline_only():
-    config = RepoConfig({"limits": {"review_max_lines": 1}}, (), ())
+    config = RepoConfig({"limits": {"review_max_lines": 5}}, (), ())
+    diff = (
+        "diff --git a/src/file.py b/src/file.py\n--- a/src/file.py\n"
+        "+++ b/src/file.py\n@@ -0,0 +1 @@\n+first\u2028second\n"
+    )
 
-    limited, reason = summary_only("first\u2028second", config)
+    limited, reason = summary_only(diff, config)
 
     assert limited is False
     assert reason == ""
@@ -262,3 +266,39 @@ def test_summary_only_for_diff_over_prompt_byte_budget():
 
     assert limited is True
     assert "byte" in reason.lower()
+
+
+def test_diff_index_keeps_modified_file_when_neighbor_file_is_deleted():
+    diff = """diff --git a/src/app.py b/src/app.py
+--- a/src/app.py
++++ b/src/app.py
+@@ -1 +1 @@
+-old
++new
+diff --git a/src/old.py b/src/old.py
+deleted file mode 100644
+--- a/src/old.py
++++ /dev/null
+@@ -1 +0,0 @@
+-removed
+"""
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+
+    assert diff_index(diff) == {"src/app.py": {1}}
+    assert summary_only(diff, config) == (False, "")
+
+
+def test_summary_only_fails_closed_for_truncated_hunk():
+    diff = """diff --git a/src/file.py b/src/file.py
+--- a/src/file.py
++++ b/src/file.py
+@@ -1,2 +1,2 @@
+-old
++new
+"""
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+
+    limited, reason = summary_only(diff, config)
+
+    assert limited is True
+    assert "needs-maintainer" in reason

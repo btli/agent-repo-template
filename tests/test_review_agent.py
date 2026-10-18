@@ -47,10 +47,14 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
     assert token_step["with"]["client-id"] == "${{ vars.AGENT_APP_CLIENT_ID }}"
     assert token_step["with"]["private-key"] == "${{ secrets.AGENT_APP_PRIVATE_KEY }}"
     assert token_step["uses"] == (
-        "actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42"
+        "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
     )
     assert (
-        "uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v3.3.0"
+        "uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0"
+        in Path("consumer/.github/workflows/agent-review.yml").read_text()
+    )
+    assert (
+        "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2"
         in Path("consumer/.github/workflows/agent-review.yml").read_text()
     )
     apply_step = next(step for step in apply_job["steps"] if step.get("name") == "Apply review")
