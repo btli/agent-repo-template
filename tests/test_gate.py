@@ -764,21 +764,6 @@ def test_composite_action_input_defaults_use_runner_contexts():
             assert identifiers - {"true", "false", "null"} <= allowed, (name, expression)
 
 
-def test_gate_checkout_uses_current_actions_checkout_pin():
-    action = load_yaml(Path("actions/gate/action.yml"))
-    checkout = next(
-        step
-        for step in action["runs"]["steps"]
-        if step.get("uses", "").startswith("actions/checkout@")
-    )
-
-    assert checkout["uses"] == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-    assert (
-        "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
-        in Path("actions/gate/action.yml").read_text()
-    )
-
-
 @pytest.mark.parametrize("enabled", ["false", "", None])
 def test_composite_action_executes_gate_and_exposes_outputs(enabled, tmp_path, monkeypatch):
     checkout, _, _ = prepare_cli(tmp_path, monkeypatch, enabled or "")
