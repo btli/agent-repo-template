@@ -193,7 +193,11 @@ def main(argv: list[str]) -> int:
             if has_field_heading(event.body, form_headings)
             else []
         )
-        security = security_hit(f"{event.title}\n{event.body}")
+        try:
+            issue_context = model_context(gh, event, _writer_checker(gh))
+        except GitHubError:
+            issue_context = f"Title: {event.title}\n\nIssue body:\n{event.body}"
+        security = security_hit(issue_context)
         if security:
             proposal = Proposal(
                 ("needs-maintainer",), None, False, False, ("security",), False, None, True, True
@@ -208,10 +212,6 @@ def main(argv: list[str]) -> int:
             issue_context = ""
         else:
             candidates = _candidate_list(gh, event)
-            try:
-                issue_context = model_context(gh, event, _writer_checker(gh))
-            except GitHubError:
-                issue_context = f"Title: {event.title}\n\nIssue body:\n{event.body}"
             context_path.parent.mkdir(parents=True, exist_ok=True)
             context_path.write_text(issue_context, encoding="utf-8")
             questions = build_questions(charter, config, candidates)

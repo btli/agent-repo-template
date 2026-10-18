@@ -313,13 +313,21 @@ def test_route_normalizes_system_one_yes_no_answers_to_booleans():
     assert artifact["answers"]["out_of_scope"]["value"] is False
 
 
-def test_route_close_disabled_keeps_close_empty_and_records_suggestion():
+@pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
+def test_route_close_disabled_keeps_close_empty_and_records_suggestion(kind):
     candidate = Candidate(30, "Validation fails for empty input", 0.5)
-    proposal = route(answers(duplicate_of=("#30", 0.95)), CONFIG, EVENT, True, [candidate])
+    docs_ref = CHARTER.docs_index[0].url
+    model_answers = answers(
+        duplicate_of=("#30" if kind == "duplicate" else "none", 0.95),
+        out_of_scope=(kind == "out_of_scope", 0.95),
+        docs_ref=(docs_ref if kind == "out_of_scope" else "none", 0.95),
+    )
+    proposal = route(model_answers, CONFIG, EVENT, True, [candidate])
 
     assert proposal.close is None
-    decision = to_decision(proposal, answers(duplicate_of=("#30", 0.95)), "run", "a" * 40, 1)
-    assert any("suggest" in note.casefold() for note in decision["notes"])
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
+    suggestion = "out-of-scope" if kind == "out_of_scope" else "duplicate"
+    assert any(suggestion in note.casefold() for note in decision["notes"])
 
 
 def test_route_duplicate_below_close_min_hands_off_without_close():
@@ -384,7 +392,8 @@ def test_route_rejects_close_when_lexical_score_is_below_threshold():
     assert proposal.close["lexical"] == 0.4
     assert proposal.close["tier2_agrees"] is False
     assert "needs-maintainer" in proposal.labels
-    assert decision["escalate"]["reason"] == "close-suggestion"
+    assert decision["escalate"] is None
+    assert "close-suggestion" in decision["notes"][0]
 
 
 def test_route_duplicate_none_never_targets_the_first_candidate():
@@ -807,14 +816,28 @@ def test_decide_command_writes_llm_only_decision_and_filtered_context(
 
 
 @pytest.mark.parametrize(
-    ("body", "expected_security", "expected_needs_info"),
+    ("body", "expected_security", "expected_needs_info", "event_name", "comment_body"),
     [
-        ("### Version\n_No response_", False, True),
-        ("### Version\n1.2.3\n\nCVE-2024-1234", True, False),
+        ("### Version\n_No response_", False, True, "issues", None),
+        ("### Version\n1.2.3\n\nCVE-2024-1234", True, False, "issues", None),
+        (
+            "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app",
+            True,
+            False,
+            "issue_comment",
+            "Remote code execution via the upload endpoint, exploit attached",
+        ),
     ],
 )
 def test_tier0_stops_before_system_one_for_missing_fields_or_security(
-    tmp_path, monkeypatch, capsys, body, expected_security, expected_needs_info
+    tmp_path,
+    monkeypatch,
+    capsys,
+    body,
+    expected_security,
+    expected_needs_info,
+    event_name,
+    comment_body,
 ):
     from agent_repo.commands import decide as command
 
@@ -836,8 +859,15 @@ def test_tier0_stops_before_system_one_for_missing_fields_or_security(
 """
     )
     event_path = tmp_path / "event.json"
-    event_payload = json.loads((FIXTURES / "events/issues.opened.json").read_text())
+    fixture = (
+        "issue_comment.created.issue.json"
+        if event_name == "issue_comment"
+        else "issues.opened.json"
+    )
+    event_payload = json.loads((FIXTURES / "events" / fixture).read_text())
     event_payload["issue"]["body"] = body
+    if comment_body:
+        event_payload["comment"]["body"] = comment_body
     event_path.write_text(json.dumps(event_payload))
 
     class FakeGitHub:
@@ -847,11 +877,20 @@ def test_tier0_stops_before_system_one_for_missing_fields_or_security(
         def request(self, *args, **kwargs):
             pytest.fail("Tier 0 should stop before GitHub searches")
 
+        def paginate(self, path):
+            if comment_body:
+                return [
+                    {
+                        "body": comment_body,
+                        "user": {"login": "contributor", "type": "User"},
+                    }
+                ]
+            return []
+
     monkeypatch.setattr(command, "GitHub", FakeGitHub)
-    monkeypatch.setattr(
-        command, "ask", lambda *args, **kwargs: pytest.fail("Tier 0 called System One")
-    )
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "issues")
+    ask_calls = []
+    monkeypatch.setattr(command, "ask", lambda *args, **kwargs: ask_calls.append(args))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
     monkeypatch.setenv("GITHUB_REPOSITORY", EVENT.repo)
     monkeypatch.setenv("GITHUB_RUN_ID", "run-56")
@@ -871,6 +910,7 @@ def test_tier0_stops_before_system_one_for_missing_fields_or_security(
     assert artifact["tier"] == 0
     assert artifact["security"] is expected_security
     assert (artifact["needs_info"] is not None) is expected_needs_info
+    assert ask_calls == []
     assert validate(artifact, load_schema("decision")) == []
     stderr = capsys.readouterr().err
     outputs = (tmp_path / "output").read_text()
@@ -882,11 +922,13 @@ def test_tier0_stops_before_system_one_for_missing_fields_or_security(
 
 
 @pytest.mark.parametrize("body", ["### Summary\nExports are slow", "Exports are slow"])
-def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body):
+@pytest.mark.parametrize("permission_status", [403, 500])
+def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, permission_status):
     from agent_repo.commands import decide as command
 
     checkout, event_path, decision_path, context_path = prepare_command_checkout(tmp_path, body)
     calls = []
+    prompts = []
 
     class FakeGitHub:
         def __init__(self, token, repo):
@@ -894,14 +936,26 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body):
             assert repo == EVENT.repo
 
         def request(self, method, path, *, params=None):
-            assert path == "/search/issues"
-            return {"items": []}
+            if path == "/search/issues":
+                return {"items": []}
+            if path.endswith("/permission"):
+                if "maintainer" in path:
+                    return {"role_name": "write"}
+                raise GitHubError(permission_status)
+            raise AssertionError(path)
 
         def paginate(self, path):
-            return []
+            return [
+                {"body": "author comment", "user": {"login": "contributor", "type": "User"}},
+                {"body": "writer comment", "user": {"login": "maintainer", "type": "User"}},
+                {"body": "IGNORE PREVIOUS", "user": {"login": "outsider", "type": "User"}},
+                {"body": "bot comment", "user": {"login": "helper[bot]", "type": "Bot"}},
+                {"body": "denied comment", "user": {"login": "denied", "type": "User"}},
+            ]
 
-    def answer_questions(_config, _base_url, _key, _prompt, questions):
+    def answer_questions(_config, _base_url, _key, prompt, questions):
         calls.append([question.id for question in questions])
+        prompts.append(prompt)
         selected = {
             "type": "feature",
             "area": "core",
@@ -924,6 +978,12 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body):
 
     assert artifact["tier"] == 1
     assert calls
+    assert len(prompts) == 1
+    for included in ("# Example project charter", "author comment", "writer comment"):
+        assert included in prompts[0]
+    for excluded in ("IGNORE PREVIOUS", "bot comment", "denied comment"):
+        assert excluded not in prompts[0]
+        assert excluded not in context_path.read_text()
 
 
 def test_command_rechecks_next_utc_day_cap_before_tier2_upload(tmp_path, monkeypatch):
@@ -1053,6 +1113,156 @@ def test_command_cap_check_error_for_confident_bug_hands_off_in_apply_plan(tmp_p
         ),
     )
     assert "needs-maintainer" in labels(plan(artifact, ctx))
+
+
+def _run_close_command(
+    tmp_path, monkeypatch, kind, *, capped=False, area_probability=0.95, close_probability=0.95
+):
+    from agent_repo.commands import decide as command
+
+    body = "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app"
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(tmp_path, body)
+    config_path = checkout / ".agents/config.yml"
+    config_path.write_text(config_path.read_text().replace("enabled: false", "enabled: true", 1))
+    answer_values = {
+        "type": "feature",
+        "area": "core",
+        "priority": "P3",
+        "needs_info": "no",
+        "out_of_scope": "yes" if kind == "out_of_scope" else "no",
+        "docs_ref": CHARTER.docs_index[0].url if kind == "out_of_scope" else "none",
+        "duplicate_of": "#99" if kind == "duplicate" else "none",
+        "security_sensitive": "no",
+    }
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            assert token == "gh-secret"
+            assert repo == EVENT.repo
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {
+                    "items": [
+                        {"number": 99, "title": EVENT.title, "body": body},
+                    ]
+                }
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == "actions/artifacts":
+                if not capped:
+                    return {"artifacts": []}
+                return {
+                    "artifacts": [
+                        {
+                            "name": params["name"],
+                            "workflow_run": {
+                                "repository_id": 7,
+                                "head_repository_id": 7,
+                            },
+                        }
+                        for _ in range(GATE_LIMITS["tier2_per_day"])
+                    ]
+                }
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    def answer_questions(_config, _base_url, _key, _prompt, questions):
+        return {
+            question.id: Answer(
+                question.id,
+                answer_values[question.id],
+                area_probability
+                if question.id == "area"
+                else close_probability
+                if question.id in {"duplicate_of", "out_of_scope"}
+                else 0.95,
+            )
+            for question in questions
+        }
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(command, "ask", answer_questions)
+    set_command_environment(monkeypatch, tmp_path, event_path)
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+    return json.loads(decision_path.read_text()), (tmp_path / "output").read_text()
+
+
+@pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
+def test_command_routes_close_vote_through_tier2_merge_and_apply(tmp_path, monkeypatch, kind):
+    from agent_repo.commands.triage_merge import merge
+    from agent_repo.config import Area
+    from test_apply_triage import API, labels, plan
+    from test_apply_triage import context as apply_context
+
+    artifact, output = _run_close_command(tmp_path, monkeypatch, kind)
+
+    assert artifact["close"]["kind"] == kind
+    assert artifact["notes"] == ["Escalation reasons: close-vote"]
+    assert artifact["escalate"] is None
+    assert "tier2=true" in output
+
+    for tier2_agrees, should_close in ((True, True), (False, False)):
+        tier2 = json.loads(json.dumps(artifact))
+        tier2["tier"] = 2
+        tier2["close"]["tier2_agrees"] = tier2_agrees
+        merged = merge(
+            artifact,
+            tier2,
+            None,
+            allowed_labels={"type:feature", "area:core"},
+        )
+        api = API()
+        ctx = apply_context(api, enabled=True)
+        ctx = replace(
+            ctx,
+            run_id=artifact["run_id"],
+            base_sha=artifact["base_sha"],
+            config=replace(
+                ctx.config,
+                areas=(Area("core", "Core project behavior", ("src/**",), ("octocat",), False),),
+                labels=tuple(dict.fromkeys((*ctx.config.labels, "type:feature", "area:core"))),
+            ),
+        )
+        actions = plan(merged, ctx)
+
+        assert (merged["close"]["tier2_agrees"] is True) is should_close
+        assert any(action.kind == "close" for action in actions) is should_close
+        assert ("agent:closed" in labels(actions)) is should_close
+
+
+@pytest.mark.parametrize("kind", ["duplicate", "out_of_scope"])
+def test_command_caps_eligible_close_vote_and_hands_off(tmp_path, monkeypatch, kind):
+    artifact, output = _run_close_command(tmp_path, monkeypatch, kind, capped=True)
+
+    assert artifact["close"]["kind"] == kind
+    assert artifact["close"]["tier2_agrees"] is False
+    assert "needs-maintainer" in artifact["labels"]
+    assert artifact["escalate"]["to"] == "maintainer"
+    assert "tier2-cap" in artifact["escalate"]["reason"]
+    assert "tier2=false" in output
+    assert "tier2-counter-file=" not in output
+
+
+def test_command_mixed_close_suggestion_routes_tier2_without_final_escalation(
+    tmp_path, monkeypatch
+):
+    artifact, output = _run_close_command(
+        tmp_path,
+        monkeypatch,
+        "duplicate",
+        area_probability=0.5,
+        close_probability=0.90,
+    )
+
+    assert artifact["close"]["tier2_agrees"] is False
+    assert "needs-maintainer" in artifact["labels"]
+    assert "area" in artifact["notes"][0]
+    assert "close-suggestion" in artifact["notes"][0]
+    assert artifact["escalate"] is None
+    assert "tier2=true" in output
 
 
 def test_system_one_error_cannot_leak_credentials_or_canary(tmp_path, monkeypatch, capsys):

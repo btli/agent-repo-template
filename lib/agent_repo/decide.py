@@ -216,13 +216,16 @@ def route(
             "lexical": None,
             "tier2_agrees": False,
         }
+    close_vote = close is not None and close_enabled and not close_suggestion
+    if close_vote:
+        reasons.append("close-vote")
 
     unique_reasons = list(dict.fromkeys(reasons))
     needs_tier2 = bool(unique_reasons)
     if needs_tier2 and not tier2_allowed and not security:
         unique_reasons.append("tier2-check-failed" if tier2_check_failed else "tier2-cap")
         needs_tier2 = False
-        if tier2_check_failed or low_action_answer or suggest_priority:
+        if tier2_check_failed or low_action_answer or suggest_priority or close_vote:
             labels.append("needs-maintainer")
     if security:
         needs_tier2 = False
@@ -275,8 +278,8 @@ def to_decision(
         notes.append("This sufficiently specified bug is a candidate for root cause analysis.")
     if proposal.security:
         escalate = {"to": "maintainer", "reason": "security"}
-    elif "close-suggestion" in proposal.escalate_reasons:
-        escalate = {"to": "maintainer", "reason": "close-suggestion"}
+    elif proposal.escalate:
+        escalate = None
     elif {"tier2-cap", "tier2-check-failed"} & set(
         proposal.escalate_reasons
     ) and "needs-maintainer" in proposal.labels:
@@ -284,6 +287,8 @@ def to_decision(
             "to": "maintainer",
             "reason": ", ".join(proposal.escalate_reasons)[:500] or "Decision requires review.",
         }
+    elif "close-suggestion" in proposal.escalate_reasons:
+        escalate = {"to": "maintainer", "reason": "close-suggestion"}
     else:
         escalate = None
     return {
