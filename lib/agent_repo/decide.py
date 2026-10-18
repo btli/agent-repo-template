@@ -187,11 +187,7 @@ def route(
     close_enabled = config.raw["close"]["enabled"]
     close_suggestion = False
     if close_enabled and duplicate:
-        close_suggestion = duplicate_p < thresholds["close_min"] or (
-            duplicate.similarity < thresholds["close_lexical_min"]
-        )
-    if close_enabled and duplicate:
-        close_suggestion = close_suggestion or (
+        close_suggestion = (
             duplicate_p < thresholds["close_min"]
             or duplicate.similarity < thresholds["close_lexical_min"]
         )
@@ -226,7 +222,7 @@ def route(
     if needs_tier2 and not tier2_allowed and not security:
         unique_reasons.append("tier2-check-failed" if tier2_check_failed else "tier2-cap")
         needs_tier2 = False
-        if low_action_answer or suggest_priority:
+        if tier2_check_failed or low_action_answer or suggest_priority:
             labels.append("needs-maintainer")
     if security:
         needs_tier2 = False

@@ -207,6 +207,19 @@ def test_rca_routed_to_tier2_does_not_escalate_when_tier2_is_capped():
     assert decision["escalate"] is None
 
 
+def test_rca_routed_to_tier2_escalates_when_cap_check_fails():
+    model_answers = answers(type=("bug", 0.95), needs_info=(False, 0.95))
+
+    proposal = route(model_answers, CONFIG, EVENT, False, [], tier2_check_failed=True)
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
+
+    assert not proposal.escalate
+    assert "tier2-check-failed" in proposal.escalate_reasons
+    assert "needs-maintainer" in proposal.labels
+    assert decision["escalate"]["to"] == "maintainer"
+    assert "tier2-check-failed" in decision["escalate"]["reason"]
+
+
 def test_route_tier2_cap_escalates_p0_priority():
     proposal = route(answers(priority=("P0", 0.9)), CONFIG, EVENT, False, [])
     decision = to_decision(proposal, answers(priority=("P0", 0.9)), "run", "a" * 40, 1)
@@ -404,12 +417,13 @@ def test_route_out_of_scope_below_close_min_hands_off_without_close():
     assert not any("suggested out-of-scope close" in note.casefold() for note in decision["notes"])
 
 
-def test_route_out_of_scope_below_close_min_emits_close_suggestion():
+@pytest.mark.parametrize(("out_of_scope_p", "docs_ref_p"), [(0.91, 0.95), (0.95, 0.90)])
+def test_route_out_of_scope_below_close_min_emits_close_suggestion(out_of_scope_p, docs_ref_p):
     config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
     docs_ref = CHARTER.docs_index[0].url
 
     proposal = route(
-        answers(out_of_scope=(True, 0.91), docs_ref=(docs_ref, 0.95)),
+        answers(out_of_scope=(True, out_of_scope_p), docs_ref=(docs_ref, docs_ref_p)),
         config,
         EVENT,
         True,
@@ -417,20 +431,21 @@ def test_route_out_of_scope_below_close_min_emits_close_suggestion():
     )
 
     assert proposal.close is not None
-    assert proposal.close["p"] == 0.91
+    assert proposal.close["p"] == min(out_of_scope_p, docs_ref_p)
     assert proposal.close["tier2_agrees"] is False
     assert "needs-maintainer" in proposal.labels
 
 
 @pytest.mark.parametrize(
-    ("kind", "probability", "lexical"),
+    ("kind", "probability", "lexical", "should_close"),
     [
-        ("duplicate", 0.90, 0.5),
-        ("duplicate", 0.95, 0.4),
-        ("out_of_scope", 0.90, None),
+        ("duplicate", 0.90, 0.5, False),
+        ("duplicate", 0.95, 0.4, False),
+        ("out_of_scope", 0.90, None, False),
+        ("duplicate", 0.95, 0.5, True),
     ],
 )
-def test_rejected_decide_close_becomes_apply_suggestion(kind, probability, lexical):
+def test_decide_close_matches_apply_after_tier2_agreement(kind, probability, lexical, should_close):
     from agent_repo.config import Area
     from test_apply_triage import API, bodies, labels, plan
     from test_apply_triage import context as apply_context
@@ -458,6 +473,7 @@ def test_rejected_decide_close_becomes_apply_suggestion(kind, probability, lexic
         [candidate] if kind == "duplicate" else [],
     )
     artifact = to_decision(proposal, model_answers, "run-1", "a" * 40, 1)
+    artifact["close"]["tier2_agrees"] = True
 
     api = API()
     ctx = apply_context(api, enabled=True)
@@ -472,10 +488,14 @@ def test_rejected_decide_close_becomes_apply_suggestion(kind, probability, lexic
     actions = plan(artifact, ctx)
 
     assert artifact["close"] is not None
-    assert not any(action.kind == "close" for action in actions)
-    assert "agent:closed" not in labels(actions)
-    assert "needs-maintainer" in labels(actions)
-    assert "Suggested closure requires maintainer confirmation." in bodies(actions)
+    assert any(action.kind == "close" for action in actions) is should_close
+    assert ("agent:closed" in labels(actions)) is should_close
+    if should_close:
+        assert "needs-maintainer" not in artifact["labels"]
+    else:
+        assert "needs-maintainer" in artifact["labels"]
+        assert "needs-maintainer" in labels(actions)
+        assert "Suggested closure requires maintainer confirmation." in bodies(actions)
 
 
 @pytest.mark.parametrize(
@@ -965,14 +985,31 @@ def test_command_rechecks_next_utc_day_cap_before_tier2_upload(tmp_path, monkeyp
     assert artifact["escalate"]["reason"].endswith("tier2-cap")
 
 
-def test_command_reports_tier2_cap_check_failure_separately(tmp_path, monkeypatch):
+def test_command_cap_check_error_for_confident_bug_hands_off_in_apply_plan(tmp_path, monkeypatch):
     from agent_repo.commands import decide as command
+    from agent_repo.config import Area
+    from test_apply_triage import API, labels, plan
+    from test_apply_triage import context as apply_context
 
     checkout, event_path, decision_path, context_path = prepare_command_checkout(
         tmp_path,
         "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app",
-        llm_only=True,
     )
+
+    def confident_bug_answers(_config, _base_url, _key, _prompt, questions):
+        values = {
+            "type": "bug",
+            "area": "core",
+            "priority": "P3",
+            "needs_info": "no",
+            "out_of_scope": "no",
+            "docs_ref": "none",
+            "duplicate_of": "none",
+            "security_sensitive": "no",
+        }
+        return {
+            question.id: Answer(question.id, values[question.id], 0.95) for question in questions
+        }
 
     class FakeGitHub:
         def __init__(self, token, repo):
@@ -992,9 +1029,7 @@ def test_command_reports_tier2_cap_check_failure_separately(tmp_path, monkeypatc
             return []
 
     monkeypatch.setattr(command, "GitHub", FakeGitHub)
-    monkeypatch.setattr(
-        command, "ask", lambda *args, **kwargs: pytest.fail("LLM-only called System One")
-    )
+    monkeypatch.setattr(command, "ask", confident_bug_answers)
     set_command_environment(monkeypatch, tmp_path, event_path)
 
     assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
@@ -1006,6 +1041,18 @@ def test_command_reports_tier2_cap_check_failure_separately(tmp_path, monkeypatc
     assert "needs-maintainer" in artifact["labels"]
     assert "tier2=false" in output
     assert "tier2-counter-file=" not in output
+
+    api = API()
+    ctx = apply_context(api, enabled=True)
+    ctx = replace(
+        ctx,
+        config=replace(
+            ctx.config,
+            areas=(Area("core", "Core project behavior", ("src/**",), ("octocat",), False),),
+            labels=tuple(dict.fromkeys((*ctx.config.labels, "area:core"))),
+        ),
+    )
+    assert "needs-maintainer" in labels(plan(artifact, ctx))
 
 
 def test_system_one_error_cannot_leak_credentials_or_canary(tmp_path, monkeypatch, capsys):
