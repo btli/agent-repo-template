@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from agent_repo.charter import Charter
 from agent_repo.config import RepoConfig
@@ -105,6 +106,8 @@ def route(
     event: Event,
     tier2_allowed: bool,
     candidates: list[Candidate],
+    *,
+    tier2_check_failed: bool = False,
 ) -> Proposal:
     thresholds = config.raw["thresholds"]
     apply_min = thresholds["apply_min"]
@@ -187,32 +190,28 @@ def route(
         close_suggestion = duplicate_p < thresholds["close_min"] or (
             duplicate.similarity < thresholds["close_lexical_min"]
         )
-    if close_enabled and duplicate and duplicate_p >= thresholds["close_min"]:
-        if duplicate.similarity >= thresholds["close_lexical_min"]:
-            close = {
-                "kind": "duplicate",
-                "target": duplicate.number,
-                "docs_ref": None,
-                "p": duplicate_p,
-                "lexical": duplicate.similarity,
-                "tier2_agrees": False,
-            }
+    if close_enabled and duplicate:
+        close_suggestion = close_suggestion or (
+            duplicate_p < thresholds["close_min"]
+            or duplicate.similarity < thresholds["close_lexical_min"]
+        )
+        close = {
+            "kind": "duplicate",
+            "target": duplicate.number,
+            "docs_ref": None,
+            "p": duplicate_p,
+            "lexical": duplicate.similarity,
+            "tier2_agrees": False,
+        }
     out_of_scope, out_of_scope_p = _value(answers, "out_of_scope")
     docs_ref, docs_ref_p = _value(answers, "docs_ref")
     out_of_scope_selected = (
         out_of_scope is True and isinstance(docs_ref, str) and docs_ref != "none"
     )
     if close_enabled and out_of_scope_selected and close is None:
-        close_suggestion = True
-    if (
-        close is None
-        and config.raw["close"]["enabled"]
-        and out_of_scope is True
-        and out_of_scope_p >= thresholds["close_min"]
-        and isinstance(docs_ref, str)
-        and docs_ref != "none"
-        and docs_ref_p >= thresholds["close_min"]
-    ):
+        close_suggestion = (
+            out_of_scope_p < thresholds["close_min"] or docs_ref_p < thresholds["close_min"]
+        )
         close = {
             "kind": "out_of_scope",
             "target": None,
@@ -225,7 +224,7 @@ def route(
     unique_reasons = list(dict.fromkeys(reasons))
     needs_tier2 = bool(unique_reasons)
     if needs_tier2 and not tier2_allowed and not security:
-        unique_reasons.append("tier2-cap")
+        unique_reasons.append("tier2-check-failed" if tier2_check_failed else "tier2-cap")
         needs_tier2 = False
         if low_action_answer or suggest_priority:
             labels.append("needs-maintainer")
@@ -282,7 +281,9 @@ def to_decision(
         escalate = {"to": "maintainer", "reason": "security"}
     elif "close-suggestion" in proposal.escalate_reasons:
         escalate = {"to": "maintainer", "reason": "close-suggestion"}
-    elif "tier2-cap" in proposal.escalate_reasons and "needs-maintainer" in proposal.labels:
+    elif {"tier2-cap", "tier2-check-failed"} & set(
+        proposal.escalate_reasons
+    ) and "needs-maintainer" in proposal.labels:
         escalate = {
             "to": "maintainer",
             "reason": ", ".join(proposal.escalate_reasons)[:500] or "Decision requires review.",
@@ -339,8 +340,10 @@ def tier2_counter_artifact_names(author: str, now: datetime | None = None) -> tu
     return f"tier2-{day}", f"tier2-{day}-{author.casefold()}"
 
 
-def tier2_cap_available(gh: GitHub, config: RepoConfig, event: Event, now: datetime) -> bool:
-    """Check current-day counters again immediately before routing to Tier 2."""
+def tier2_cap_status(
+    gh: GitHub, config: RepoConfig, event: Event, now: datetime
+) -> Literal["available", "capped", "error"]:
+    """Distinguish a real daily cap from a failed preflight check."""
     try:
         counter_gh = _Budget(gh)
         repository_id = _mapping(counter_gh.request("GET", f"/repos/{event.repo}"))["id"]
@@ -361,7 +364,12 @@ def tier2_cap_available(gh: GitHub, config: RepoConfig, event: Event, now: datet
                 ):
                     count += 1
                     if count >= limit:
-                        return False
+                        return "capped"
     except Exception:
-        return False
-    return True
+        return "error"
+    return "available"
+
+
+def tier2_cap_available(gh: GitHub, config: RepoConfig, event: Event, now: datetime) -> bool:
+    """Check current-day counters again immediately before routing to Tier 2."""
+    return tier2_cap_status(gh, config, event, now) == "available"

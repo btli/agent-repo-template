@@ -9,11 +9,13 @@ from agent_repo.config import load_config
 from agent_repo.decide import (
     build_questions,
     route,
+    tier2_cap_available,
     tier2_counter_artifact_names,
     to_decision,
 )
 from agent_repo.event import load_event
 from agent_repo.gate import GateContext, evaluate
+from agent_repo.github import GitHubError
 from agent_repo.schema import load_schema, validate
 from agent_repo.systemone import Answer, Question, SystemOneError
 from agent_repo.tier0 import Candidate
@@ -315,19 +317,28 @@ def test_route_duplicate_below_close_min_hands_off_without_close():
     proposal = route(model_answers, config, EVENT, True, [candidate])
     decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
 
-    assert proposal.close is None
+    assert proposal.close == {
+        "kind": "duplicate",
+        "target": 30,
+        "docs_ref": None,
+        "p": 0.90,
+        "lexical": 0.5,
+        "tier2_agrees": False,
+    }
     assert "needs-maintainer" in proposal.labels
     assert decision["escalate"] == {"to": "maintainer", "reason": "close-suggestion"}
-    assert any("suggested duplicate" in note.casefold() for note in decision["notes"])
+    assert not any("suggested duplicate" in note.casefold() for note in decision["notes"])
 
 
-def test_route_duplicate_p91_below_close_min_never_emits_close():
+def test_route_duplicate_p91_below_close_min_emits_close_suggestion():
     config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
     candidate = Candidate(30, "Validation fails for empty input", 0.5)
 
     proposal = route(answers(duplicate_of=("#30", 0.91)), config, EVENT, True, [candidate])
 
-    assert proposal.close is None
+    assert proposal.close is not None
+    assert proposal.close["p"] == 0.91
+    assert proposal.close["tier2_agrees"] is False
     assert "needs-maintainer" in proposal.labels
 
 
@@ -355,7 +366,10 @@ def test_route_rejects_close_when_lexical_score_is_below_threshold():
     proposal = route(model_answers, config, EVENT, True, [candidate])
     decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
 
-    assert proposal.close is None
+    assert proposal.close is not None
+    assert proposal.close["p"] == 0.95
+    assert proposal.close["lexical"] == 0.4
+    assert proposal.close["tier2_agrees"] is False
     assert "needs-maintainer" in proposal.labels
     assert decision["escalate"]["reason"] == "close-suggestion"
 
@@ -377,13 +391,20 @@ def test_route_out_of_scope_below_close_min_hands_off_without_close():
     proposal = route(model_answers, config, EVENT, True, [])
     decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
 
-    assert proposal.close is None
+    assert proposal.close == {
+        "kind": "out_of_scope",
+        "target": None,
+        "docs_ref": docs_ref,
+        "p": 0.90,
+        "lexical": None,
+        "tier2_agrees": False,
+    }
     assert "needs-maintainer" in proposal.labels
     assert decision["escalate"]["reason"] == "close-suggestion"
-    assert any("suggested out-of-scope close" in note.casefold() for note in decision["notes"])
+    assert not any("suggested out-of-scope close" in note.casefold() for note in decision["notes"])
 
 
-def test_route_out_of_scope_below_close_min_does_not_propose_close():
+def test_route_out_of_scope_below_close_min_emits_close_suggestion():
     config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
     docs_ref = CHARTER.docs_index[0].url
 
@@ -395,8 +416,146 @@ def test_route_out_of_scope_below_close_min_does_not_propose_close():
         [],
     )
 
-    assert proposal.close is None
+    assert proposal.close is not None
+    assert proposal.close["p"] == 0.91
+    assert proposal.close["tier2_agrees"] is False
     assert "needs-maintainer" in proposal.labels
+
+
+@pytest.mark.parametrize(
+    ("kind", "probability", "lexical"),
+    [
+        ("duplicate", 0.90, 0.5),
+        ("duplicate", 0.95, 0.4),
+        ("out_of_scope", 0.90, None),
+    ],
+)
+def test_rejected_decide_close_becomes_apply_suggestion(kind, probability, lexical):
+    from agent_repo.config import Area
+    from test_apply_triage import API, bodies, labels, plan
+    from test_apply_triage import context as apply_context
+
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    candidate = Candidate(99, "Validation fails for empty input", lexical or 0.5)
+    docs_ref = CHARTER.docs_index[0].url
+    answer_values = {
+        "type": ("bug", 0.95),
+        "area": ("core", 0.95),
+        "priority": ("P2", 0.95),
+        "needs_info": (False, 0.95),
+        "out_of_scope": (kind == "out_of_scope", probability),
+        "docs_ref": (docs_ref if kind == "out_of_scope" else "none", 0.95),
+        "security_sensitive": (False, 0.95),
+    }
+    if kind == "duplicate":
+        answer_values["duplicate_of"] = ("#99", probability)
+    model_answers = answers(**answer_values)
+    proposal = route(
+        model_answers,
+        config,
+        EVENT,
+        True,
+        [candidate] if kind == "duplicate" else [],
+    )
+    artifact = to_decision(proposal, model_answers, "run-1", "a" * 40, 1)
+
+    api = API()
+    ctx = apply_context(api, enabled=True)
+    ctx = replace(
+        ctx,
+        config=replace(
+            ctx.config,
+            areas=(Area("core", "Core project behavior", ("src/**",), ("octocat",), False),),
+            labels=tuple(dict.fromkeys((*ctx.config.labels, "area:core"))),
+        ),
+    )
+    actions = plan(artifact, ctx)
+
+    assert artifact["close"] is not None
+    assert not any(action.kind == "close" for action in actions)
+    assert "agent:closed" not in labels(actions)
+    assert "needs-maintainer" in labels(actions)
+    assert "Suggested closure requires maintainer confirmation." in bodies(actions)
+
+
+@pytest.mark.parametrize(
+    ("artifacts", "expected_available"),
+    [
+        ("matching", True),
+        ("wrong-name", True),
+        ("foreign-repository", True),
+        ("foreign-head-repository", True),
+        ("below-limit", True),
+        ("at-limit", False),
+    ],
+)
+def test_decide_tier2_cap_counting_matches_gate(artifacts, expected_available, monkeypatch):
+    monkeypatch.setenv(
+        "GITHUB_WORKFLOW_REF",
+        f"{EVENT.repo}/.github/workflows/agent-triage.yml@refs/heads/main",
+    )
+    now = datetime(2026, 10, 14, 12, tzinfo=UTC)
+    event = replace(EVENT, author="CoNtRiBuToR")
+    _, author_name = tier2_counter_artifact_names(event.author, now)
+    valid = {"name": author_name, "workflow_run": {"repository_id": 7, "head_repository_id": 7}}
+    foreign_repo = {
+        "name": author_name,
+        "workflow_run": {"repository_id": 8, "head_repository_id": 7},
+    }
+    foreign_head = {
+        "name": author_name,
+        "workflow_run": {"repository_id": 7, "head_repository_id": 8},
+    }
+    wrong_name = {
+        "name": "unrelated-artifact",
+        "workflow_run": {"repository_id": 7, "head_repository_id": 7},
+    }
+    listings = {
+        "matching": [valid],
+        "wrong-name": [wrong_name, wrong_name],
+        "foreign-repository": [valid, foreign_repo],
+        "foreign-head-repository": [valid, foreign_head],
+        "below-limit": [valid],
+        "at-limit": [valid, valid],
+    }
+
+    class FakeGitHub:
+        def request(self, method, path, *, params=None):
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == f"issues/{event.number}/comments":
+                return []
+            if path == "actions/artifacts":
+                return {"artifacts": listings[artifacts]}
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    limits = {
+        "triage_runs_per_issue": 3,
+        "edit_debounce_minutes": 10,
+        "tier2_per_day": 25,
+        "tier2_per_author_per_day": 2,
+    }
+    config = replace(CONFIG, raw={"limits": limits})
+    gh = FakeGitHub()
+    gate = GateContext(
+        workflow="triage",
+        enabled=True,
+        bot_login="helper[bot]",
+        config=config,
+        gh=gh,
+        now=now,
+        maintainers=frozenset(),
+        run_id="99",
+    )
+
+    gate_available = evaluate(event, gate).tier2_allowed
+    decide_available = tier2_cap_available(gh, config, event, now)
+
+    assert gate_available is expected_available
+    assert decide_available is expected_available
 
 
 def test_to_decision_emits_schema_valid_artifact_with_input_identity():
@@ -804,6 +963,49 @@ def test_command_rechecks_next_utc_day_cap_before_tier2_upload(tmp_path, monkeyp
     assert queried_names == list(names)
     assert "needs-maintainer" in artifact["labels"]
     assert artifact["escalate"]["reason"].endswith("tier2-cap")
+
+
+def test_command_reports_tier2_cap_check_failure_separately(tmp_path, monkeypatch):
+    from agent_repo.commands import decide as command
+
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path,
+        "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app",
+        llm_only=True,
+    )
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            assert token == "gh-secret"
+            assert repo == EVENT.repo
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {"items": []}
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == "actions/artifacts":
+                raise GitHubError(403)
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(
+        command, "ask", lambda *args, **kwargs: pytest.fail("LLM-only called System One")
+    )
+    set_command_environment(monkeypatch, tmp_path, event_path)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+    artifact = json.loads(decision_path.read_text())
+    output = (tmp_path / "output").read_text()
+
+    assert artifact["escalate"]["reason"].endswith("tier2-check-failed")
+    assert "tier2-cap" not in artifact["escalate"]["reason"]
+    assert "needs-maintainer" in artifact["labels"]
+    assert "tier2=false" in output
+    assert "tier2-counter-file=" not in output
 
 
 def test_system_one_error_cannot_leak_credentials_or_canary(tmp_path, monkeypatch, capsys):

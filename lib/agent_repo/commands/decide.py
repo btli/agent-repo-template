@@ -15,7 +15,7 @@ from agent_repo.decide import (
     build_questions,
     model_context,
     route,
-    tier2_cap_available,
+    tier2_cap_status,
     tier2_counter_artifact_names,
     to_decision,
 )
@@ -220,9 +220,17 @@ def main(argv: list[str]) -> int:
             proposal = route(answers, config, event, tier2_allowed, candidates)
             if proposal.escalate and tier2_allowed:
                 counter_time = datetime.now(UTC)
-                if not tier2_cap_available(gh, config, event, counter_time):
+                cap_status = tier2_cap_status(gh, config, event, counter_time)
+                if cap_status != "available":
                     tier2_allowed = False
-                    proposal = route(answers, config, event, tier2_allowed, candidates)
+                    proposal = route(
+                        answers,
+                        config,
+                        event,
+                        tier2_allowed,
+                        candidates,
+                        tier2_check_failed=cap_status == "error",
+                    )
             tier = 1
         context_path.parent.mkdir(parents=True, exist_ok=True)
         if not context_path.exists():
