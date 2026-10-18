@@ -302,3 +302,130 @@ def test_summary_only_fails_closed_for_truncated_hunk():
 
     assert limited is True
     assert "needs-maintainer" in reason
+
+
+@pytest.mark.parametrize(
+    "diff",
+    [
+        """diff --git a/src/a.py b/src/a.py
+rename from src/a.py
+rename to .github/workflows/ci.yml
+""",
+        """diff --git a/src/a.py b/src/src b.py
+--- a/src/a.py
++++ b/src/a.py
+""",
+        """diff --git a/src/a.py b/src/a.py
+--- /dev/null
++++ /dev/null
+""",
+    ],
+    ids=[
+        "rename-target-disagrees-with-header",
+        "spaced-file-header-disagrees",
+        "both-null",
+    ],
+)
+def test_diff_index_rejects_inconsistent_file_paths(diff):
+    assert diff_index(diff) == {}
+
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    limited, reason = summary_only(diff, config)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+@pytest.mark.parametrize(
+    "diff",
+    [
+        """diff --git a/src/file.py b/src/file.py
+--- a/src/file.py
++++ b/src/file.py
+@@ -0,0 +1,2 @@
++valid row
+\\ evil
++second row
+""",
+        """diff --git a/src/file.py b/src/file.py
+--- a/src/file.py
++++ b/src/file.py
+@@ -0,0 +1 @@
++added
+index 1111111..2222222 100644
+""",
+        """diff --git a/src/file.py b/src/file.py
+--- a/src/file.py
++++ /dev/null
+@@ -1 +0,2 @@
+-removed
++unexpected one
++unexpected two
+""",
+    ],
+    ids=["backslash-garbage-in-hunk", "extended-header-after-hunk", "invalid-deletion-hunk-counts"],
+)
+def test_diff_index_rejects_malformed_hunk_rows(diff):
+    assert diff_index(diff) == {}
+
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    limited, reason = summary_only(diff, config)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_diff_index_accepts_exact_no_newline_marker():
+    diff = """diff --git a/src/file.py b/src/file.py
+--- a/src/file.py
++++ b/src/file.py
+@@ -1 +1 @@
+-old
++new
+\\ No newline at end of file
+"""
+
+    assert diff_index(diff) == {"src/file.py": {1}}
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    assert summary_only(diff, config) == (False, "")
+
+
+def test_diff_index_keeps_text_edit_when_binary_file_is_also_present():
+    diff = """diff --git a/assets/image.bin b/assets/image.bin
+Binary files a/assets/image.bin and b/assets/image.bin differ
+diff --git a/src/file.py b/src/file.py
+--- a/src/file.py
++++ b/src/file.py
+@@ -1 +1 @@
+-old
++new
+"""
+
+    assert diff_index(diff) == {"src/file.py": {1}}
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    assert summary_only(diff, config) == (False, "")
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    ["rename from src/file.py\n", "copy to src/file.py\n"],
+    ids=["incomplete-rename", "incomplete-copy"],
+)
+def test_diff_index_rejects_incomplete_move_metadata(metadata):
+    diff = f"diff --git a/src/file.py b/src/file.py\n{metadata}"
+
+    assert diff_index(diff) == {}
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    assert summary_only(diff, config)[0] is True
+
+
+def test_diff_index_rejects_deletion_hunk_without_old_file_path():
+    diff = """diff --git a/src/file.py b/src/file.py
+deleted file mode 100644
+@@ -1 +0,0 @@
+-removed
+"""
+
+    assert diff_index(diff) == {}
+    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
+    assert summary_only(diff, config)[0] is True

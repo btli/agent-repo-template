@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 import pytest
 from agent_repo.commands.fetch_diff import _pull, fetch
+from agent_repo.diff import _parse_diff
 from agent_repo.event import load_event
 from agent_repo.github import GitHub
 
@@ -121,6 +122,110 @@ def test_fetch_routes_ambiguous_diff_to_summary_only(tmp_path, monkeypatch, diff
 
     assert limited is True
     assert "needs-maintainer" in reason
+
+
+@pytest.mark.parametrize("metadata", ["rename", "copy"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["conflicting-all-headers", "header-conflicts", "file-headers-conflict"],
+)
+def test_fetch_routes_conflicting_sensitive_source_metadata_to_summary_only(
+    tmp_path, monkeypatch, metadata, scenario
+):
+    if scenario == "conflicting-all-headers":
+        header_from = header_to = file_from = file_to = "src/a.py"
+    elif scenario == "header-conflicts":
+        header_from = header_to = "src/a.py"
+        file_from = ".github/workflows/ci.yml"
+        file_to = "src/a.py"
+    else:
+        header_from = ".github/workflows/ci.yml"
+        header_to = file_to = "src/a.py"
+        file_from = "src/a.py"
+    diff = (
+        f"diff --git a/{header_from} b/{header_to}\n"
+        f"{metadata} from .github/workflows/ci.yml\n"
+        f"{metadata} to src/a.py\n"
+        f"--- a/{file_from}\n+++ b/{file_to}\n@@ -1 +1 @@\n-old\n+new\n"
+    ).encode()
+    event_path = _event_file(tmp_path)
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+    (config_dir / "areas.yml").write_text(
+        "areas:\n  - name: workflows\n    description: Workflows\n"
+        "    paths:\n      - .github/**\n    owners: []\n    sensitive: true\n"
+    )
+    transport = API(diff=diff)
+    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    _, _, limited, reason = fetch(tmp_path / "diff.patch", config_dir)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_fetch_accepts_spaced_path_rename_and_indexes_both_paths(tmp_path, monkeypatch):
+    diff = (
+        b"diff --git a/docs/a b.md b/docs/c d.md\n"
+        b"similarity index 100%\n"
+        b"rename from docs/a b.md\n"
+        b"rename to docs/c d.md\n"
+    )
+    event_path = _event_file(tmp_path)
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+    (config_dir / "areas.yml").write_text("areas: []\n")
+    transport = API(diff=diff)
+    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    _, _, limited, reason = fetch(tmp_path / "diff.patch", config_dir)
+    _, paths, invalid = _parse_diff(diff.decode())
+
+    assert limited is False
+    assert reason == ""
+    assert invalid is False
+    assert paths == {"docs/a b.md", "docs/c d.md"}
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "old mode 100644\nnew mode 100755\n",
+        "Binary files a/img/a b.png and b/img/a b.png differ\n",
+    ],
+    ids=["mode-only", "binary"],
+)
+def test_fetch_accepts_header_only_spaced_paths(tmp_path, monkeypatch, metadata):
+    diff = f"diff --git a/img/a b.png b/img/a b.png\n{metadata}".encode()
+    event_path = _event_file(tmp_path)
+    output = tmp_path / "output"
+    output.write_text("")
+    config_dir = tmp_path / "agents"
+    shutil.copytree("tests/fixtures/agents", config_dir)
+    (config_dir / "areas.yml").write_text("areas: []\n")
+    transport = API(diff=diff)
+    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
+    monkeypatch.setattr(
+        "agent_repo.commands.fetch_diff.GitHub",
+        lambda token, repo: GitHub(token, repo, transport=transport),
+    )
+
+    _, _, limited, reason = fetch(tmp_path / "diff.patch", config_dir)
+
+    assert limited is False
+    assert reason == ""
 
 
 def _event_file(

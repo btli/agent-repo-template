@@ -94,6 +94,21 @@ def _git_header_paths(line: str) -> tuple[str | None, str | None] | None:
     return left, right
 
 
+def _identical_spaced_header_paths(line: str) -> tuple[str, str] | None:
+    prefix = "diff --git a/"
+    if not line.startswith(prefix):
+        return None
+    value = line.removeprefix(prefix)
+    matches = []
+    start = 0
+    while (separator := value.find(" b/", start)) >= 0:
+        left, right = value[:separator], value[separator + 3 :]
+        if left and left == right:
+            matches.append((left, right))
+        start = separator + 1
+    return matches[0] if len(matches) == 1 else None
+
+
 def _diff_lines(diff: str) -> list[str]:
     lines = diff.split("\n")
     if lines and lines[-1] == "":
@@ -113,6 +128,10 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
     right_path = None
     renamed_from = None
     renamed_to = None
+    copied_from = None
+    copied_to = None
+    rename_from_seen = rename_to_seen = False
+    copy_from_seen = copy_to_seen = False
     in_hunk = False
     old_remaining = new_remaining = 0
     right_line = 0
@@ -122,9 +141,13 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
         nonlocal hunk_started
         nonlocal left_path, right_path
         nonlocal renamed_from, renamed_to
+        nonlocal copied_from, copied_to
+        nonlocal rename_from_seen, rename_to_seen, copy_from_seen, copy_to_seen
         if not file_open:
             return
         header_paths = _git_header_paths(current_header)
+        if header_paths is not None:
+            paths.update(header_paths)
         if file_header_paths:
             if not left_header_seen or not right_header_seen:
                 invalid = True
@@ -141,21 +164,44 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
                 paths.add(left_path)
             if right_path is not None:
                 paths.add(right_path)
-        elif renamed_from is not None and renamed_to is not None:
-            if header_paths != (renamed_from, renamed_to):
-                invalid = True
-            paths.update((renamed_from, renamed_to))
         else:
-            if header_paths is None:
+            if not (rename_from_seen or rename_to_seen or copy_from_seen or copy_to_seen):
+                if header_paths is None:
+                    header_paths = _identical_spaced_header_paths(current_header)
+                    if header_paths is not None:
+                        paths.update(header_paths)
+                if header_paths is None:
+                    invalid = True
+                else:
+                    paths.update(header_paths)
+
+        for from_seen, to_seen, from_path, to_path in (
+            (rename_from_seen, rename_to_seen, renamed_from, renamed_to),
+            (copy_from_seen, copy_to_seen, copied_from, copied_to),
+        ):
+            if not (from_seen or to_seen):
+                continue
+            if not (from_seen and to_seen and from_path is not None and to_path is not None):
                 invalid = True
             else:
-                paths.update(header_paths)
+                metadata_paths = (from_path, to_path)
+                if header_paths is not None:
+                    if header_paths != metadata_paths:
+                        invalid = True
+                elif current_header != f"diff --git a/{from_path} b/{to_path}":
+                    invalid = True
+                if file_header_paths and (left_path, right_path) != metadata_paths:
+                    invalid = True
+                paths.update(metadata_paths)
         file_open = False
         file_header_paths = False
         left_header_seen = right_header_seen = False
         hunk_started = False
         left_path = right_path = None
         renamed_from = renamed_to = None
+        copied_from = copied_to = None
+        rename_from_seen = rename_to_seen = False
+        copy_from_seen = copy_to_seen = False
 
     current_header = ""
     for line in _diff_lines(diff):
@@ -252,12 +298,32 @@ def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
             )
         ):
             if line.startswith("rename from "):
+                if rename_from_seen:
+                    invalid = True
+                rename_from_seen = True
                 renamed_from = _path(line.removeprefix("rename from "), strip_prefix=False)
                 if renamed_from is None:
                     invalid = True
             elif line.startswith("rename to "):
+                if rename_to_seen:
+                    invalid = True
+                rename_to_seen = True
                 renamed_to = _path(line.removeprefix("rename to "), strip_prefix=False)
                 if renamed_to is None:
+                    invalid = True
+            elif line.startswith("copy from "):
+                if copy_from_seen:
+                    invalid = True
+                copy_from_seen = True
+                copied_from = _path(line.removeprefix("copy from "), strip_prefix=False)
+                if copied_from is None:
+                    invalid = True
+            elif line.startswith("copy to "):
+                if copy_to_seen:
+                    invalid = True
+                copy_to_seen = True
+                copied_to = _path(line.removeprefix("copy to "), strip_prefix=False)
+                if copied_to is None:
                     invalid = True
         else:
             invalid = True
