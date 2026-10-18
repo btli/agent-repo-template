@@ -8,12 +8,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from agent_repo.commands.fix_artifact import build_artifact, run_git, write_artifact
+from agent_repo.commands.fix_artifact import build_artifact, local_config, run_git, write_artifact
 from agent_repo.commands.fix_spec import render_spec
 from agent_repo.config import ConfigError, load_config
 from agent_repo.policies import agent_environment
 from agent_repo.prompting import extract_json, render_prompt
-from agent_repo.scan import encodings
+from agent_repo.scan import find_leaks
 from agent_repo.schema import load_schema
 from agent_repo.yamljson import YamlError
 
@@ -36,9 +36,8 @@ def checkouts() -> tuple[Path, Path]:
 
 def refuse_persisted_credentials(tree: Path, git_dir: Path) -> None:
     # Read before any move so includeIf.gitdir still matches; includes are refused outright.
-    entries = run_git(tree, git_dir, "config", "--local", "--includes", "--list", "-z").decode()
     pattern = r"http(\..*)?\.extraheader|credential\..*|include\.path|includeif\..*\.path"
-    for entry in entries.split("\0"):
+    for entry in local_config(tree, git_dir):
         name = entry.partition("\n")[0]
         # A token can also sit in URL userinfo, in a value or in an insteadOf key name.
         if re.fullmatch(pattern, name) or re.search(r"://[^/]*@", entry):
@@ -48,8 +47,15 @@ def refuse_persisted_credentials(tree: Path, git_dir: Path) -> None:
 def setup() -> int:
     try:
         work, policy = checkouts()
+        # Setup runs unsandboxed, so a persisted token must be refused before it starts.
+        refuse_persisted_credentials(work, work / ".git")
+        if (policy / ".git").exists():
+            refuse_persisted_credentials(policy, policy / ".git")
         command = load_config(policy / ".agents").raw["commands"]["setup"]
-    except (KeyError, OSError, Refused, ConfigError):
+    except Refused as exc:
+        print(f"Project setup refused: {exc}.", file=sys.stderr)
+        return 1
+    except (KeyError, OSError, ConfigError, subprocess.SubprocessError):
         print("Project setup failed: trusted configuration unavailable.", file=sys.stderr)
         return 1
     if not command.strip():
@@ -160,7 +166,11 @@ def run_agent(output: Path, canary: str) -> str:
     except ValueError:
         raise Refused("agent output rejected") from None
     text = json.dumps(artifact, ensure_ascii=False) + (patch or "")
-    if any(form in text for value in (key, canary) for form in encodings(value)):
+    # Separator-aware scan; output too large to scan fails closed as well.
+    leaks = find_leaks(text, [key], canary)
+    if leaks == ["scan_budget"]:
+        raise Refused("agent output exceeds the outbound scan budget")
+    if leaks:
         raise Refused("credential or canary in agent output")
     write_artifact(output, artifact, patch)
     return artifact["status"]

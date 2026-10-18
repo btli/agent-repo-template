@@ -118,6 +118,72 @@ def test_repository_diff_and_monitor_hooks_never_run(tmp_path):
     assert sorted(path.name for path in tmp_path.glob("*.ran")) == []
 
 
+def marker_script(tmp_path: Path) -> Path:
+    script = tmp_path / "filter.sh"
+    script.write_text(f"#!/bin/bash\ntouch {tmp_path / 'filter.ran'}\ncat\n")
+    script.chmod(0o755)
+    return script
+
+
+@pytest.mark.parametrize("kind", ["clean", "process"])
+def test_configured_filter_never_runs_on_edited_attributes(tmp_path, kind):
+    repo = tmp_path / "repo"
+    base_sha = make_repo(repo)
+    git(repo, "config", f"filter.hooked.{kind}", str(marker_script(tmp_path)))
+    plant_fix(repo)
+    (repo / ".gitattributes").write_text("*.py filter=hooked\n")
+    with pytest.raises(ValueError, match="filters"):
+        build_artifact(repo, base_sha, "run-1", answer(base_sha))
+    assert not (tmp_path / "filter.ran").exists()
+
+
+def test_nested_repository_filter_never_runs(tmp_path):
+    repo = tmp_path / "repo"
+    base_sha = make_repo(repo)
+    vendor = repo / "vendor"
+    make_repo(vendor)
+    (vendor / ".gitattributes").write_text("*.py filter=x\n")
+    git(vendor, "add", ".gitattributes")
+    git(vendor, "commit", "-q", "-m", "attributes")
+    git(vendor, "config", "filter.x.clean", str(marker_script(tmp_path)))
+    # A same-size edit makes git hash the file, which runs the nested clean filter.
+    (vendor / "lib.py").write_text("def add(a, b):\n    return a + b\n")
+    git_dir = tmp_path / "git"
+    shutil.move(repo / ".git", git_dir)
+    with pytest.raises(ValueError) as refused:
+        build_artifact(repo, base_sha, "run-1", answer(base_sha), git_dir=git_dir)
+    assert not (tmp_path / "filter.ran").exists()
+    assert "git metadata" in str(refused.value)
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_any_dot_git_entry_is_refused(tmp_path, kind):
+    repo = tmp_path / "repo"
+    base_sha = make_repo(repo)
+    plant_fix(repo)
+    git_dir = tmp_path / "git"
+    shutil.move(repo / ".git", git_dir)
+    planted = repo / "tests" / ".git"
+    if kind == "file":
+        planted.write_text(f"gitdir: {git_dir}\n")
+    else:
+        planted.symlink_to(git_dir)
+    with pytest.raises(ValueError, match="git metadata"):
+        build_artifact(repo, base_sha, "run-1", answer(base_sha), git_dir=git_dir)
+
+
+def test_gitlink_in_patch_is_refused(tmp_path):
+    repo = tmp_path / "repo"
+    make_repo(repo)
+    gitlink = f"160000,{git(repo, 'rev-parse', 'HEAD').strip()},vendor"
+    git(repo, "update-index", "--add", "--cacheinfo", gitlink)
+    git(repo, "commit", "-q", "-m", "submodule")
+    base_sha = git(repo, "rev-parse", "HEAD").strip()
+    plant_fix(repo)
+    with pytest.raises(ValueError, match="gitlink"):
+        build_artifact(repo, base_sha, "run-1", answer(base_sha))
+
+
 def test_oversized_patch_is_refused(tmp_path):
     repo = tmp_path / "repo"
     base_sha = make_repo(repo)

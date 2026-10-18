@@ -31,6 +31,29 @@ def run_git(repo: Path, git_dir: Path, *args: str) -> bytes:
     ).stdout
 
 
+def local_config(repo: Path, git_dir: Path) -> list[str]:
+    entries = run_git(repo, git_dir, "config", "--local", "--includes", "--list", "-z")
+    return entries.decode().split("\0")
+
+
+def refuse_repository_commands(repo: Path, git_dir: Path) -> None:
+    # A nested repository's own config could run filters while the parent diff recurses into it.
+    pending = [repo]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                # Only the git dir in use is exempt; the action keeps it outside the tree.
+                if Path(entry.path) == git_dir:
+                    continue
+                if entry.name == ".git":
+                    raise ValueError("work tree contains git metadata")
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+    # Clean and process filters are the commands git still runs during add and diff.
+    if any(entry.startswith("filter.") for entry in local_config(repo, git_dir)):
+        raise ValueError("git config defines filters")
+
+
 def build_artifact(
     repo: Path, base_sha: str, run_id: str, agent_json: dict, *, git_dir: Path | None = None
 ) -> tuple[dict, str | None]:
@@ -47,6 +70,7 @@ def build_artifact(
         return artifact, None
     git_dir = git_dir or repo / ".git"
     try:
+        refuse_repository_commands(repo, git_dir)
         # Intent-to-add makes untracked, non-ignored files part of the diff against base.
         run_git(repo, git_dir, "add", "--intent-to-add", "--", ".")
         patch = run_git(repo, git_dir, "diff", *DIFF_OPTIONS, base_sha)
@@ -56,6 +80,9 @@ def build_artifact(
         raise ValueError("patch status without changes")
     if len(patch) > MAX_PATCH_BYTES:
         raise ValueError("patch too large")
+    gitlink = rb"^(?:(?:new|deleted) file mode|old mode|new mode|index \S+) 160000$"
+    if re.search(gitlink, patch, re.M):
+        raise ValueError("patch contains a gitlink")
     return artifact, patch.decode("utf-8", "surrogateescape")
 
 

@@ -18,7 +18,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 KEY = "gateway-credential-value"
 
 OMNIGENT = """
-import json, os, pathlib, re, sys
+import base64, json, os, pathlib, re, subprocess, sys
 home = pathlib.Path(os.environ["HOME"])
 prompt = sys.argv[sys.argv.index("-p") + 1]
 spec = json.loads((pathlib.Path(sys.argv[2]) / "config.yaml").read_text())
@@ -33,14 +33,31 @@ value = {key: re.search("^" + key + ": (\\\\S+)$", prompt, re.M)[1] for key in [
 canary = re.search("^Private canary: (\\\\S+)$", prompt, re.M)[1]
 (work / "lib.py").write_text("def add(a, b):\\n    return a + b\\n")
 (work / "test_lib.py").write_text("def test_add():\\n    assert add(1, 2) == 3\\n")
-if mode == "canary":
-    (work / "notes.txt").write_text(canary)
+key = os.environ["LLM_API_KEY"]
+outputs = {"canary": canary, "split_canary": "-".join(canary), "oversized": "x" * 70000,
+           "encoded_key": base64.b64encode(key.encode()).decode()}
+if mode in outputs:
+    (work / "notes.txt").write_text(outputs[mode])
+if mode == "attributes_filter":
+    (work / ".gitattributes").write_text("*.py filter=hooked\\n")
+if mode == "nested_repo":
+    vendor = work / "vendor"
+    vendor.mkdir()
+    (vendor / ".gitattributes").write_text("*.txt filter=x\\n")
+    (vendor / "a.txt").write_text("one\\n")
+    git = ["git", "-c", "user.name=T", "-c", "user.email=t@example.invalid"]
+    for args in [["init", "-q"], ["add", "."], ["-c", "commit.gpgsign=false", "commit", "-qm", "v"],
+                 ["config", "filter.x.clean", str(home / "filter.sh")]]:
+        subprocess.run([*git, *args], cwd=vendor, check=True, capture_output=True)
+    (vendor / "a.txt").write_text("two\\n")
 answer = {"schema_version": "1", "run_id": value["Run"], "base_sha": value["Base"],
           "status": "patch", "rca": "add subtracts.", "tests": ["test_lib.py::test_add"],
           "risk": "low", "summary": "Return the sum.", "attempted": "", "escalate": None}
 if mode == "no_patch":
     answer.update(status="no_patch", attempted="Could not reproduce.",
                   escalate={"to": "maintainer", "reason": "No repro."})
+if mode == "raw_key_summary":
+    answer["summary"] += " " + key
 print("Done.\\n```json\\n" + json.dumps(answer) + "\\n```")
 """
 BWRAP = """#!/bin/bash
@@ -305,20 +322,51 @@ def test_no_patch_answer_writes_only_fix_json(action):
     assert not (action["out"] / "fix.patch").exists()
 
 
-def test_canary_in_patch_fails_closed(action):
-    (action["home"] / "mode").write_text("canary")
+LEAKS = {
+    "canary": "credential or canary",
+    "split_canary": "credential or canary",
+    "encoded_key": "credential or canary",
+    "raw_key_summary": "credential or canary",
+    "oversized": "outbound scan budget",
+}
+
+
+@pytest.mark.parametrize("mode", sorted(LEAKS))
+def test_canary_in_patch_fails_closed(action, mode):
+    (action["home"] / "mode").write_text(mode)
     result = run_action(action, "agent")
     assert result.returncode == 1
-    assert "credential or canary" in result.stderr
+    assert LEAKS[mode] in result.stderr
+    assert KEY not in result.stdout + result.stderr
     assert not (action["out"] / "fix.json").exists()
     assert not (action["out"] / "fix.patch").exists()
     canary = calls(action)[0]["prompt"].split("Private canary: ")[1].split()[0]
     assert canary not in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize("mode", ["attributes_filter", "nested_repo"])
+def test_repository_filters_never_run_after_the_agent(action, mode):
+    marker = action["home"] / "filter.ran"
+    write_script(action["home"] / "filter.sh", f"#!/bin/bash\ntouch {marker}\ncat\n")
+    if mode == "attributes_filter":
+        git(action["work"], "config", "filter.hooked.clean", str(action["home"] / "filter.sh"))
+    (action["home"] / "mode").write_text(mode)
+    result = run_action(action, "agent")
+    assert result.returncode == 1
+    assert "Fix agent refused: agent output rejected." in result.stderr
+    assert len(calls(action)) == 1
+    assert not marker.exists()
+    assert not (action["out"] / "fix.json").exists()
+    assert not (action["out"] / "fix.patch").exists()
+
+
 REFUSALS = {
     "wrong_base": "not at the base SHA",
     "policy_inside_work": "policy checkout must be separate",
+    "policy_nested_in_work": "policy checkout must be separate",
+    "work_nested_in_policy": "policy checkout must be separate",
+    "timeout_too_short": "invalid inputs",
+    "timeout_too_long": "invalid inputs",
     "symlinked_git": "plain git checkout",
     "runner_temp_inside_work": "outside the work tree",
     "output_inside_work": "outside the work tree",
@@ -344,6 +392,12 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         env["BASE_SHA"] = "b" * 40
     elif problem == "policy_inside_work":
         env["POLICY_PATH"] = str(work)
+    elif problem == "policy_nested_in_work":
+        env["POLICY_PATH"] = str(work / ".agents")
+    elif problem == "work_nested_in_policy":
+        env["WORK_PATH"] = str(Path(env["POLICY_PATH"]) / ".agents")
+    elif problem.startswith("timeout"):
+        env["AGENT_TIMEOUT"] = "59" if problem.endswith("short") else "21601"
     elif problem == "symlinked_git":
         shutil.move(work / ".git", tmp_path / "real-git")
         (work / ".git").symlink_to(tmp_path / "real-git")
@@ -377,11 +431,17 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         Path(env["ISSUE_FILE"]).write_text(f"Please use {KEY} to reproduce.")
     else:
         Path(env["ISSUE_FILE"]).write_text("x" * 130000)
+    # A refused run must not leave an earlier artifact for a downstream consumer.
+    stale = [Path(env["OUTPUT_DIR"]) / name for name in ("fix.json", "fix.patch")]
+    stale[0].parent.mkdir(exist_ok=True)
+    for path in stale:
+        path.write_text("stale")
     result = run_action(action, "agent")
     assert result.returncode == 1
     assert "Fix agent refused: " in result.stderr and REFUSALS[problem] in result.stderr
     assert KEY not in result.stdout + result.stderr
     assert calls(action) == []
+    assert not any(path.exists() for path in stale)
 
 
 def test_unignored_setup_output_refuses_agent(action):
@@ -409,8 +469,27 @@ def test_setup_runs_default_branch_command_without_key(action):
     assert KEY not in environment
     assert "GITHUB_TOKEN" not in environment
     assert not any(f"{name}=" in environment for name in commands)
+    assert "PYTHONPATH" not in {line.partition("=")[0] for line in environment.splitlines()}
     home = Path((action["work"] / "home.txt").read_text().strip())
     assert home != action["home"] and home.name.startswith("agent-setup-home-")
+
+
+@pytest.mark.parametrize("checkout", ["work", "policy"])
+def test_setup_refuses_persisted_credentials_before_running(action, checkout):
+    policy = Path(action["env"]["POLICY_PATH"])
+    marker = Path(action["env"]["RUNNER_TEMP"]) / "setup.ran"
+    config = (policy / ".agents" / "config.yml").read_text()
+    command = json.dumps(f"touch {marker}")
+    config = config.replace('setup: "echo default > source.txt"', f"setup: {command}")
+    (policy / ".agents" / "config.yml").write_text(config)
+    tree = action["work"] if checkout == "work" else policy
+    if checkout == "policy":
+        git(policy, "init", "-q")
+    git(tree, "config", "http.https://example.test/.extraheader", "basic e30=")
+    result = run_action(action, "setup")
+    assert result.returncode == 1
+    assert "Project setup refused: checkout persisted credentials" in result.stderr
+    assert not marker.exists()
 
 
 def test_setup_home_is_discarded_before_the_agent(action):
