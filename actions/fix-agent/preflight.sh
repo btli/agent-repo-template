@@ -7,8 +7,13 @@ probe() {
 }
 
 if ! command -v bwrap >/dev/null 2>&1; then
+  # The install reaches the distro mirror only if the job's egress allowlist includes it.
   sudo apt-get update -qq >/dev/null || true
   sudo apt-get install -y -qq --no-install-recommends bubblewrap >/dev/null || true
+  if ! command -v bwrap >/dev/null 2>&1; then
+    echo "::error::bwrap is not installed; preinstall bubblewrap or allow the distro mirror." >&2
+    exit 1
+  fi
 fi
 if probe; then
   echo "bwrap preflight passed."
@@ -23,5 +28,5 @@ if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = "
     exit 0
   fi
 fi
-echo "::error::bwrap sandbox is unavailable; the fix agent never runs unsandboxed." >&2
+echo "::error::bwrap cannot create user namespaces; the fix agent never runs unsandboxed." >&2
 exit 1

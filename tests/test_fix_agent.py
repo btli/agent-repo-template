@@ -47,6 +47,11 @@ here="$(dirname "$0")"
 echo "$*" >> "$here/bwrap.calls"
 [ "$(cat "$here/bwrap.mode")" = pass ]
 """
+TIMEOUT = """#!/bin/bash
+echo "$*" >> "${0%/*}/timeout.calls"
+shift 3
+exec "$@"
+"""
 SYSCTL = """#!/bin/bash
 here="$(dirname "$0")"
 if [ "$1" = -n ]; then echo 1; exit 0; fi
@@ -73,7 +78,7 @@ def action(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     write_script(bin_dir / "omnigent", f"#!{sys.executable}\n{OMNIGENT}")
-    write_script(bin_dir / "timeout", '#!/bin/bash\nshift 3\nexec "$@"\n')
+    write_script(bin_dir / "timeout", TIMEOUT)
     write_script(bin_dir / "bwrap", BWRAP)
     write_script(bin_dir / "sysctl", SYSCTL)
     write_script(bin_dir / "sudo", '#!/bin/bash\nexec "$@"\n')
@@ -104,6 +109,7 @@ def action(tmp_path):
         "POLICY_PATH": str(policy),
         "BASE_SHA": git(work, "rev-parse", "HEAD").strip(),
         "RUN_ID": "1234",
+        "AGENT_TIMEOUT": "600",
         "ISSUE_FILE": str(issue),
         "OUTPUT_DIR": str(tmp_path / "out"),
         "API_KEY_ENV": "ROLE_KEY",
@@ -111,6 +117,12 @@ def action(tmp_path):
         "GITHUB_TOKEN": "github-sentinel",
     }
     return {"env": env, "bin": bin_dir, "home": home, "work": work, "out": tmp_path / "out"}
+
+
+def run_preflight(path: str) -> subprocess.CompletedProcess:
+    script = ROOT / "actions" / "fix-agent" / "preflight.sh"
+    command = [shutil.which("bash"), str(script)]
+    return subprocess.run(command, env={"PATH": path}, capture_output=True, text=True)
 
 
 def run_action(action: dict, mode: str) -> subprocess.CompletedProcess:
@@ -189,16 +201,59 @@ def test_rendered_spec_never_weakens_sandbox(tmp_path, sandbox):
     assert not (tmp_path / "unsafe").exists()
 
 
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("  cwd: .\n", "  cwd: ..\n"),
+        ("  type: caller_process\n", "  type: remote_process\n"),
+        ("  cwd: .\n", "  cwd: .\n  fork: true\n"),
+    ],
+)
+def test_rendered_spec_refuses_drifted_os_env(tmp_path, old, new):
+    agents_dir(tmp_path / "agents", "")
+    drifted = tmp_path / "drifted"
+    shutil.copytree(TEMPLATE, drifted)
+    original = (TEMPLATE / "config.yaml").read_text()
+    (drifted / "config.yaml").write_text(original.replace(old, new, 1))
+    with pytest.raises(ValueError, match="cwd"):
+        render_spec(drifted, load_config(tmp_path / "agents"), tmp_path / "unsafe")
+    assert not (tmp_path / "unsafe").exists()
+
+
+def test_harden_runner_is_the_first_step():
+    steps = load_yaml(ROOT / "actions" / "fix-agent" / "action.yml")["runs"]["steps"]
+    assert steps[0]["uses"].startswith("step-security/harden-runner@")
+    assert steps[0]["with"]["egress-policy"] == "block"
+    assert [step.get("name") for step in steps[1:]] == [
+        "Sandbox preflight",
+        "Project setup",
+        "Run fix agent",
+    ]
+    assert not any("if" in step or "continue-on-error" in step for step in steps)
+
+
+def test_preflight_reports_missing_bwrap_distinctly(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_script(bin_dir / "sudo", '#!/bin/bash\nexec "$@"\n')
+    write_script(bin_dir / "apt-get", '#!/bin/bash\necho "$*" >> "${0%/*}/apt.calls"\n')
+    write_script(bin_dir / "sysctl", "#!/bin/bash\necho 1\n")
+    preflight = run_preflight(str(bin_dir))
+    assert preflight.returncode != 0
+    assert "::error::bwrap is not installed" in preflight.stderr
+    assert "user namespaces" not in preflight.stderr
+    assert (bin_dir / "apt.calls").read_text().splitlines() == [
+        "update -qq",
+        "install -y -qq --no-install-recommends bubblewrap",
+    ]
+
+
 def test_preflight_fails_closed_and_agent_never_starts(action):
     (action["bin"] / "bwrap.mode").write_text("fail")
-    preflight = subprocess.run(
-        ["bash", str(ROOT / "actions" / "fix-agent" / "preflight.sh")],
-        env={"PATH": action["env"]["PATH"]},
-        capture_output=True,
-        text=True,
-    )
+    preflight = run_preflight(action["env"]["PATH"])
     assert preflight.returncode != 0
-    assert "never runs unsandboxed" in preflight.stderr
+    assert "::error::bwrap cannot create user namespaces" in preflight.stderr
+    assert "not installed" not in preflight.stderr
     assert (action["bin"] / "bwrap.calls").read_text().splitlines() == [
         "--unshare-pid --proc /proc --ro-bind / / true"
     ] * 2
@@ -215,12 +270,7 @@ def test_preflight_fails_closed_and_agent_never_starts(action):
 
 def test_preflight_retries_once_after_apparmor_change(action):
     (action["bin"] / "bwrap.mode").write_text("fail-once")
-    preflight = subprocess.run(
-        ["bash", str(ROOT / "actions" / "fix-agent" / "preflight.sh")],
-        env={"PATH": action["env"]["PATH"]},
-        capture_output=True,
-        text=True,
-    )
+    preflight = run_preflight(action["env"]["PATH"])
     assert preflight.returncode == 0
     assert len((action["bin"] / "bwrap.calls").read_text().splitlines()) == 2
 
@@ -242,6 +292,8 @@ def test_agent_reads_policy_from_default_branch_checkout(action):
     patch = (action["out"] / "fix.patch").read_text()
     assert "diff --git a/lib.py b/lib.py" in patch and "b/test_lib.py\nnew file mode" in patch
     assert KEY not in result.stdout + result.stderr + patch + json.dumps(artifact)
+    wrapper = (action["bin"] / "timeout.calls").read_text()
+    assert wrapper.startswith("-k 15 600 omnigent run ") and wrapper.count(" --no-session ") == 1
 
 
 def test_no_patch_answer_writes_only_fix_json(action):
@@ -263,28 +315,73 @@ def test_canary_in_patch_fails_closed(action):
     assert canary not in result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("problem", ["wrong_base", "policy_inside_work"])
-def test_untrusted_checkout_layout_is_refused(action, problem):
+REFUSALS = {
+    "wrong_base": "not at the base SHA",
+    "policy_inside_work": "policy checkout must be separate",
+    "symlinked_git": "plain git checkout",
+    "runner_temp_inside_work": "outside the work tree",
+    "output_inside_work": "outside the work tree",
+    "persisted_extraheader": "persisted credentials",
+    "credential_helper": "persisted credentials",
+    "key_in_issue": "credential in prompt",
+    "oversized_issue": "prompt byte cap exceeded",
+}
+
+
+@pytest.mark.parametrize("problem", sorted(REFUSALS))
+def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
+    work, env = action["work"], action["env"]
     if problem == "wrong_base":
-        action["env"]["BASE_SHA"] = "b" * 40
+        env["BASE_SHA"] = "b" * 40
+    elif problem == "policy_inside_work":
+        env["POLICY_PATH"] = str(work)
+    elif problem == "symlinked_git":
+        shutil.move(work / ".git", tmp_path / "real-git")
+        (work / ".git").symlink_to(tmp_path / "real-git")
+    elif problem == "runner_temp_inside_work":
+        (work / "runner").mkdir()
+        env["RUNNER_TEMP"] = str(work / "runner")
+    elif problem == "output_inside_work":
+        env["OUTPUT_DIR"] = str(work / "out")
+    elif problem == "persisted_extraheader":
+        git(work, "config", "http.https://example.test/.extraheader", "basic e30=")
+    elif problem == "credential_helper":
+        git(work, "config", "credential.helper", "store")
+    elif problem == "key_in_issue":
+        Path(env["ISSUE_FILE"]).write_text(f"Please use {KEY} to reproduce.")
     else:
-        action["env"]["POLICY_PATH"] = str(action["work"])
+        Path(env["ISSUE_FILE"]).write_text("x" * 130000)
     result = run_action(action, "agent")
     assert result.returncode == 1
-    assert "Fix agent refused" in result.stderr
+    assert "Fix agent refused: " in result.stderr and REFUSALS[problem] in result.stderr
+    assert KEY not in result.stdout + result.stderr
+    assert calls(action) == []
+
+
+def test_unignored_setup_output_refuses_agent(action):
+    assert run_action(action, "setup").returncode == 0
+    assert (action["work"] / "source.txt").read_text() == "default\n"
+    result = run_action(action, "agent")
+    assert result.returncode == 1
+    assert "Fix agent refused: work tree is not clean after setup" in result.stderr
     assert calls(action) == []
 
 
 def test_setup_runs_default_branch_command_without_key(action):
     policy = Path(action["env"]["POLICY_PATH"]) / ".agents"
     config = (policy / "config.yml").read_text()
-    command = "echo default > source.txt; env > setup-env.txt"
+    command = 'echo default > source.txt; env > setup-env.txt; echo "$HOME" > home.txt'
     config = config.replace('setup: "echo default > source.txt"', f"setup: {json.dumps(command)}")
     (policy / "config.yml").write_text(config)
     action["env"]["LLM_API_KEY"] = KEY
+    commands = ["GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "GITHUB_STATE"]
+    action["env"].update({name: str(action["home"] / name.lower()) for name in commands})
     result = run_action(action, "setup")
     assert result.returncode == 0, result.stderr
     assert (action["work"] / "source.txt").read_text() == "default\n"
     environment = (action["work"] / "setup-env.txt").read_text()
     assert KEY not in environment
     assert "GITHUB_TOKEN" not in environment
+    assert not any(f"{name}=" in environment for name in commands)
+    home = Path((action["work"] / "home.txt").read_text().strip())
+    assert home != action["home"] and home.name.startswith("agent-setup-home-")

@@ -8,7 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from agent_repo.commands.fix_artifact import build_artifact, write_artifact
+from agent_repo.commands.fix_artifact import build_artifact, run_git, write_artifact
 from agent_repo.commands.fix_spec import render_spec
 from agent_repo.config import ConfigError, load_config
 from agent_repo.policies import agent_environment
@@ -44,11 +44,14 @@ def setup() -> int:
     if not command.strip():
         print("No project setup command configured.")
         return 0
+    # The allowlist drops the key and runner file-command paths; a fresh HOME hides user state.
     env = agent_environment(dict(os.environ), tool=True)
     env.pop("PYTHONPATH", None)
-    return subprocess.run(
-        ["bash", "-c", command], cwd=work, env=env, stdin=subprocess.DEVNULL
-    ).returncode
+    with tempfile.TemporaryDirectory(prefix="agent-setup-home-") as home:
+        env["HOME"] = home
+        return subprocess.run(
+            ["bash", "-c", command], cwd=work, env=env, stdin=subprocess.DEVNULL
+        ).returncode
 
 
 def read_optional(path: Path) -> str:
@@ -86,6 +89,10 @@ def run_agent(output: Path, canary: str) -> str:
     dot_git = work / ".git"
     if dot_git.is_symlink() or not dot_git.is_dir():
         raise Refused("work tree must be a plain git checkout")
+    names = run_git(work, dot_git, "config", "--local", "--name-only", "--list").decode()
+    pattern = r"http\..*\.extraheader|credential\..*"
+    if any(re.fullmatch(pattern, name) for name in names.splitlines()):
+        raise Refused("checkout persisted credentials; use persist-credentials: false")
     head = subprocess.run(
         ["git", f"--git-dir={dot_git}", "rev-parse", "--verify", "HEAD^{commit}"],
         capture_output=True,
@@ -94,6 +101,9 @@ def run_agent(output: Path, canary: str) -> str:
     )
     if head.returncode != 0 or head.stdout.strip() != base_sha:
         raise Refused("work tree is not at the base SHA")
+    # Setup output that is not gitignored would otherwise land in the patch as agent work.
+    if run_git(work, dot_git, "status", "--porcelain", "-z", "--untracked-files=all"):
+        raise Refused("work tree is not clean after setup; gitignore setup outputs")
     # Git metadata leaves the sandbox root so the agent cannot plant config the diff would run.
     git_dir = scratch / "git"
     shutil.move(dot_git, git_dir)

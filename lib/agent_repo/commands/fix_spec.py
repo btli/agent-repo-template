@@ -6,11 +6,15 @@ from pathlib import Path
 from agent_repo.config import ConfigError, RepoConfig, load_config
 from agent_repo.yamljson import YamlError, load_yaml
 
-SANDBOX = {
-    "type": "linux_bwrap",
-    "write_paths": ["."],
-    "allow_network": False,
-    "env_passthrough": [],
+OS_ENV = {
+    "type": "caller_process",
+    "cwd": ".",
+    "sandbox": {
+        "type": "linux_bwrap",
+        "write_paths": ["."],
+        "allow_network": False,
+        "env_passthrough": [],
+    },
 }
 
 
@@ -18,10 +22,9 @@ def render_spec(template: Path, config: RepoConfig, output: Path) -> Path:
     spec = load_yaml(template / "config.yaml")
     if not isinstance(spec, dict):
         raise ValueError("invalid fix agent spec")
-    # A drifted template must never run with a weaker sandbox, least of all type none.
-    os_env = spec.get("os_env")
-    if not isinstance(os_env, dict) or os_env.get("sandbox") != SANDBOX:
-        raise ValueError("fix agent spec must use the linux_bwrap sandbox")
+    # A drifted template must never widen the agent root or weaken the sandbox (type none).
+    if spec.get("os_env") != OS_ENV:
+        raise ValueError("fix agent spec must keep cwd . and the linux_bwrap sandbox")
     budget = spec["guardrails"]["policies"]["tool_budget"]["function"]["arguments"]
     budget["limit"] = config.raw["limits"]["fix_max_turns"]
     output.mkdir(parents=True, exist_ok=True)

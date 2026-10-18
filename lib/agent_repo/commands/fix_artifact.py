@@ -11,7 +11,7 @@ MAX_PATCH_BYTES = 1_000_000
 DIFF_OPTIONS = ("--binary", "--full-index", "--no-ext-diff", "--no-textconv")
 
 
-def _git(repo: Path, git_dir: Path, *args: str) -> bytes:
+def run_git(repo: Path, git_dir: Path, *args: str) -> bytes:
     # Global and system config are ignored so runner-wide filters cannot change the patch.
     env = {
         "PATH": os.environ.get("PATH", ""),
@@ -48,8 +48,8 @@ def build_artifact(
     git_dir = git_dir or repo / ".git"
     try:
         # Intent-to-add makes untracked, non-ignored files part of the diff against base.
-        _git(repo, git_dir, "add", "--intent-to-add", "--", ".")
-        patch = _git(repo, git_dir, "diff", *DIFF_OPTIONS, base_sha)
+        run_git(repo, git_dir, "add", "--intent-to-add", "--", ".")
+        patch = run_git(repo, git_dir, "diff", *DIFF_OPTIONS, base_sha)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError("cannot build patch") from exc
     if not patch:

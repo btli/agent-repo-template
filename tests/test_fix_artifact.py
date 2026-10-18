@@ -1,11 +1,12 @@
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 from agent_repo.cli import main
-from agent_repo.commands.fix_artifact import build_artifact
+from agent_repo.commands.fix_artifact import MAX_PATCH_BYTES, build_artifact
 from agent_repo.schema import load_schema, validate
 
 
@@ -75,6 +76,55 @@ def test_patch_uses_detached_git_dir(tmp_path):
     _, patch = build_artifact(repo, base_sha, "run-1", answer(base_sha), git_dir=git_dir)
     assert "b/tests/test_lib.py" in patch
     assert not (repo / ".git").exists()
+
+
+def test_runner_git_config_cannot_change_the_patch(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    base_sha = make_repo(repo)
+    plant_fix(repo)
+    hostile = tmp_path / "hostile"
+    hostile.mkdir()
+    (hostile / "ignore").write_text("tests/\n")
+    (hostile / ".gitconfig").write_text("[diff]\n\tnoprefix = true\n")
+    (hostile / "system").write_text(f"[core]\n\texcludesFile = {hostile / 'ignore'}\n")
+    wrapper = tmp_path / "bin"
+    wrapper.mkdir()
+    (wrapper / "git").write_text(
+        f"#!/bin/bash\nexport HOME={hostile} GIT_CONFIG_SYSTEM={hostile / 'system'}\n"
+        f'exec {shutil.which("git")} "$@"\n'
+    )
+    (wrapper / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{wrapper}:{os.environ['PATH']}")
+    _, patch = build_artifact(repo, base_sha, "run-1", answer(base_sha))
+    assert "diff --git a/lib.py b/lib.py" in patch
+    assert "diff --git a/tests/test_lib.py b/tests/test_lib.py" in patch
+
+
+def test_repository_diff_and_monitor_hooks_never_run(tmp_path):
+    repo = tmp_path / "repo"
+    base_sha = make_repo(repo)
+    plant_fix(repo)
+    hooks = {}
+    for name in ["fsmonitor", "external", "textconv"]:
+        hooks[name] = tmp_path / f"{name}.sh"
+        hooks[name].write_text(f"#!/bin/bash\ntouch {tmp_path / name}.ran\necho HOOK\n")
+        hooks[name].chmod(0o755)
+    (repo / ".gitattributes").write_text("*.py diff=conv\n")
+    git(repo, "config", "core.fsmonitor", str(hooks["fsmonitor"]))
+    git(repo, "config", "diff.external", str(hooks["external"]))
+    git(repo, "config", "diff.conv.textconv", str(hooks["textconv"]))
+    _, patch = build_artifact(repo, base_sha, "run-1", answer(base_sha))
+    assert "+    return a + b" in patch
+    assert sorted(path.name for path in tmp_path.glob("*.ran")) == []
+
+
+def test_oversized_patch_is_refused(tmp_path):
+    repo = tmp_path / "repo"
+    base_sha = make_repo(repo)
+    plant_fix(repo)
+    (repo / "data.txt").write_text("x\n" * (MAX_PATCH_BYTES // 2))
+    with pytest.raises(ValueError, match="too large"):
+        build_artifact(repo, base_sha, "run-1", answer(base_sha))
 
 
 def test_no_patch_produces_no_patch_and_requires_attempted(tmp_path):
