@@ -79,14 +79,9 @@ def build_questions(
     return questions
 
 
-def _answer(answers: dict[str, Answer | None], question: str) -> Answer | None:
-    answer = answers.get(question)
-    return answer if isinstance(answer, Answer) else None
-
-
 def _value(answers: dict[str, Answer | None], question: str) -> tuple[object, float]:
-    answer = _answer(answers, question)
-    if answer is None:
+    answer = answers.get(question)
+    if not isinstance(answer, Answer):
         return None, 0.0
     value: object = answer.value
     if question in {"needs_info", "out_of_scope", "security_sensitive"}:
@@ -110,7 +105,8 @@ def route(
     tier2_allowed: bool,
     candidates: list[Candidate],
 ) -> Proposal:
-    apply_min = config.raw["thresholds"]["apply_min"]
+    thresholds = config.raw["thresholds"]
+    apply_min = thresholds["apply_min"]
     labels: list[str] = []
     reasons: list[str] = []
     low_action_answer = False
@@ -141,7 +137,7 @@ def route(
     elif priority in {"P0", "P1"}:
         suggest_priority = priority
         reasons.append("priority")
-    elif priority in {"P2", "P3"} and priority in config.labels:
+    elif priority in config.labels:
         labels.append(priority)
 
     needs_info_value, needs_info_p = _value(answers, "needs_info")
@@ -184,7 +180,6 @@ def route(
     duplicate = next(
         (candidate for candidate in candidates if duplicate_value == f"#{candidate.number}"), None
     )
-    thresholds = config.raw["thresholds"]
     if config.raw["close"]["enabled"] and duplicate and duplicate_p >= thresholds["close_min"]:
         if duplicate.similarity >= thresholds["close_lexical_min"]:
             close = {
@@ -230,7 +225,7 @@ def route(
         suggest_priority,
         needs_info,
         needs_tier2,
-        tuple(dict.fromkeys(unique_reasons)),
+        tuple(unique_reasons),
         rca_candidate,
         close,
         security,
@@ -298,9 +293,24 @@ def to_decision(
 
 
 def model_context(gh: GitHub, event: Event, is_writer: Callable[[str], bool]) -> str:
-    from agent_repo.tier0 import model_context as filtered_context
-
-    return filtered_context(gh, event, is_writer)
+    lines = [f"Title: {event.title}", "", "Issue body:", event.body]
+    for comment in gh.paginate(f"issues/{event.number}/comments"):
+        if not isinstance(comment, dict) or not isinstance(comment.get("user"), dict):
+            continue
+        user = comment["user"]
+        login = user.get("login")
+        if (
+            not isinstance(login, str)
+            or user.get("type") == "Bot"
+            or login.casefold().endswith("[bot]")
+        ):
+            continue
+        if login.casefold() != event.author.casefold() and not is_writer(login):
+            continue
+        body = comment.get("body")
+        if isinstance(body, str):
+            lines.extend(("", f"Comment by {login}:", body))
+    return "\n".join(lines).strip()
 
 
 def tier2_counter_artifact_names(author: str, now: datetime | None = None) -> tuple[str, str]:

@@ -19,6 +19,7 @@ from agent_repo.decide import (
 )
 from agent_repo.event import Event, load_event
 from agent_repo.github import GitHub, GitHubError
+from agent_repo.prompting import render_prompt
 from agent_repo.schema import load_schema, validate
 from agent_repo.systemone import Answer, ProviderConfig, Question, SystemOneError, ask
 from agent_repo.tier0 import Candidate, duplicate_candidates, missing_fields, security_hit
@@ -80,8 +81,6 @@ def _model_answers(
         "Charter:\n{{context:charter}}\n\n"
         "Filtered issue context:\n{{block:issue}}"
     )
-    from agent_repo.prompting import render_prompt
-
     rendered = render_prompt(
         prompt,
         canary=canary,
@@ -166,7 +165,8 @@ def main(argv: list[str]) -> int:
         if event.name not in {"issues", "issue_comment"} or event.is_pr:
             raise ValueError("decide requires an issue event")
         config = load_config(checkout / ".agents")
-        charter = parse_charter((checkout / ".agents/charter.md").read_text(encoding="utf-8"))
+        charter_text = (checkout / ".agents/charter.md").read_text(encoding="utf-8")
+        charter = parse_charter(charter_text)
         required = _required_fields(checkout)
         run_id = os.environ["GITHUB_RUN_ID"]
         base_sha = os.environ["GITHUB_SHA"]
@@ -196,13 +196,7 @@ def main(argv: list[str]) -> int:
             context_path.write_text(issue_context, encoding="utf-8")
             questions = build_questions(charter, config, candidates)
             canary = os.environ.get("GATE_CANARY") or secrets.token_hex(16)
-            answers = _model_answers(
-                config,
-                (checkout / ".agents/charter.md").read_text(encoding="utf-8"),
-                issue_context,
-                questions,
-                canary,
-            )
+            answers = _model_answers(config, charter_text, issue_context, questions, canary)
             proposal = route(answers, config, event, tier2_allowed, candidates)
             tier = 1
         context_path.parent.mkdir(parents=True, exist_ok=True)

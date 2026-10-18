@@ -18,10 +18,7 @@ def missing_fields(body: str, required: tuple[str, ...]) -> list[str]:
         for match, next_start in _heading_spans(body)
     }
     return [
-        field
-        for field in required
-        if sections.get(field, "").strip().casefold() == "_no response_"
-        or not sections.get(field, "").strip()
+        field for field in required if sections.get(field, "").casefold() in {"", "_no response_"}
     ]
 
 
@@ -83,28 +80,3 @@ def duplicate_candidates(gh: GitHub, event: Event, k: int = 5) -> list[Candidate
             candidates.append(Candidate(number, title, similarity))
     candidates.sort(key=lambda candidate: (-candidate.similarity, candidate.number))
     return candidates[:k]
-
-
-def model_context(gh: GitHub, event: Event, is_writer) -> str:
-    lines = [f"Title: {event.title}", "", "Issue body:", event.body]
-    comments = gh.paginate(f"issues/{event.number}/comments")
-    selected = []
-    for comment in comments:
-        if not isinstance(comment, dict) or not isinstance(comment.get("user"), dict):
-            continue
-        user = comment["user"]
-        login = user.get("login")
-        if (
-            not isinstance(login, str)
-            or user.get("type") == "Bot"
-            or login.casefold().endswith("[bot]")
-        ):
-            continue
-        if login.casefold() != event.author.casefold() and not is_writer(login):
-            continue
-        body = comment.get("body")
-        if isinstance(body, str):
-            selected.append((login, body))
-    for login, body in selected:
-        lines.extend(("", f"Comment by {login}:", body))
-    return "\n".join(lines).strip()
