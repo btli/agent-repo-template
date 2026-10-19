@@ -246,6 +246,7 @@ def test_harden_runner_is_the_first_step():
         "Run fix agent",
     ]
     assert not any("if" in step or "continue-on-error" in step for step in steps)
+    assert steps[2]["env"]["BASE_SHA"] == steps[3]["env"]["BASE_SHA"] == "${{ inputs.base-sha }}"
 
 
 def test_preflight_reports_missing_bwrap_distinctly(tmp_path):
@@ -502,6 +503,35 @@ def test_setup_refuses_persisted_credentials_before_running(action, checkout):
     assert result.returncode == 1
     assert "Project setup refused: checkout persisted credentials" in result.stderr
     assert not marker.exists()
+
+
+SETUP_REFUSALS = {
+    "commit_after_base": "work tree is not at the base SHA",
+    "missing_base": "invalid inputs",
+    "malformed_base": "invalid inputs",
+}
+
+
+@pytest.mark.parametrize("problem", sorted(SETUP_REFUSALS))
+def test_setup_never_runs_code_outside_base_sha(action, problem):
+    work, env = action["work"], action["env"]
+    policy = Path(env["POLICY_PATH"]) / ".agents"
+    marker = Path(env["RUNNER_TEMP"]) / "untrusted-ran"
+    (work / "bootstrap.sh").write_text('touch "$RUNNER_TEMP/untrusted-ran"\n')
+    config = (policy / "config.yml").read_text()
+    config = config.replace('setup: "echo default > source.txt"', 'setup: "bash bootstrap.sh"')
+    (policy / "config.yml").write_text(config)
+    if problem == "commit_after_base":
+        git(work, "add", "bootstrap.sh")
+        git(work, "commit", "-q", "-m", "after base")
+    elif problem == "missing_base":
+        del env["BASE_SHA"]
+    else:
+        env["BASE_SHA"] = env["BASE_SHA"][:39] + "G"
+    result = run_action(action, "setup")
+    assert not marker.exists()
+    assert result.returncode == 1
+    assert f"Project setup refused: {SETUP_REFUSALS[problem]}." in result.stderr
 
 
 def test_setup_home_is_discarded_before_the_agent(action):

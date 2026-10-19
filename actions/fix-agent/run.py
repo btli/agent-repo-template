@@ -50,6 +50,18 @@ def refuse_persisted_credentials(tree: Path, git_dir: Path) -> None:
             raise Refused("checkout persisted credentials; use persist-credentials: false")
 
 
+def refuse_unexpected_head(git_dir: Path, base_sha: str) -> None:
+    # rev-parse reads only the git dir, not the work tree, so it may run before the filter guard.
+    head = subprocess.run(
+        ["git", f"--git-dir={git_dir}", "rev-parse", "--verify", "HEAD^{commit}"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    if head.returncode != 0 or head.stdout.strip() != base_sha:
+        raise Refused("work tree is not at the base SHA")
+
+
 def setup() -> int:
     try:
         work, policy = checkouts()
@@ -57,6 +69,11 @@ def setup() -> int:
         refuse_persisted_credentials(work, work / ".git")
         if (policy / ".git").exists():
             refuse_persisted_credentials(policy, policy / ".git")
+        # Setup trusts only base_sha code, so a checkout at any other commit never runs it.
+        base_sha = os.environ.get("BASE_SHA", "")
+        if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
+            raise Refused("invalid inputs")
+        refuse_unexpected_head(work / ".git", base_sha)
         command = load_config(policy / ".agents").raw["commands"]["setup"]
     except Refused as exc:
         print(f"Project setup refused: {exc}.", file=sys.stderr)
@@ -115,14 +132,7 @@ def run_agent(output: Path, canary: str) -> str:
     if dot_git.is_symlink() or not dot_git.is_dir():
         raise Refused("work tree must be a plain git checkout")
     refuse_persisted_credentials(work, dot_git)
-    head = subprocess.run(
-        ["git", f"--git-dir={dot_git}", "rev-parse", "--verify", "HEAD^{commit}"],
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-    )
-    if head.returncode != 0 or head.stdout.strip() != base_sha:
-        raise Refused("work tree is not at the base SHA")
+    refuse_unexpected_head(dot_git, base_sha)
     # Status hashes modified files, so filters and nested repositories are refused first.
     try:
         refuse_repository_commands(work, dot_git)

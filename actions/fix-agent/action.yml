@@ -46,6 +46,8 @@ outputs:
 runs:
   using: composite
   steps:
+    # The runner hoists pre steps of nested actions to job start (runner ADR 1144), so the block
+    # covers the consumer's earlier checkout steps too.
     - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
       with:
         egress-policy: block
@@ -60,6 +62,7 @@ runs:
       env:
         WORK_PATH: ${{ inputs.work-path }}
         POLICY_PATH: ${{ inputs.policy-path }}
+        BASE_SHA: ${{ inputs.base-sha }}
       run: |
         set -euo pipefail
         template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
