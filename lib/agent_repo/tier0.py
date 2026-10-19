@@ -59,10 +59,10 @@ def duplicate_candidates(gh: GitHub, event: Event, k: int = 5) -> list[Candidate
     k = min(k, 5)
     if k <= 0:
         return []
-    terms = list(dict.fromkeys(re.findall(r"[a-z0-9]+", event.title.casefold())))[:8]
+    terms = list(dict.fromkeys(re.findall(r"[a-z0-9]+", event.title.casefold())))[:4]
     query = f"repo:{event.repo} is:issue is:open"
     if terms:
-        query += " " + " ".join(terms)
+        query += " (" + " OR ".join(terms) + ")"
     result = gh.request(
         "GET",
         "/search/issues",

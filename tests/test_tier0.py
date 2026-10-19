@@ -98,10 +98,11 @@ def test_duplicate_candidates_excludes_self_and_sorts_top_five():
         def request(self, method, path, *, params=None):
             assert method == "GET"
             assert path == "/search/issues"
-            assert (
-                "repo:your-org/project is:issue is:open validation fails for empty input"
-                in parse_qs(urlparse("https://example.test/?" + urlencode(params)).query)["q"][0]
+            query = parse_qs(urlparse("https://example.test/?" + urlencode(params)).query)["q"][0]
+            assert query == (
+                "repo:your-org/project is:issue is:open (validation OR fails OR for OR empty)"
             )
+            assert query.count(" OR ") == 3
             return {"items": issues}
 
     candidates = duplicate_candidates(FakeGitHub(), event)
@@ -125,7 +126,9 @@ def test_duplicate_candidate_search_uses_github_repo_and_limits_results():
     duplicate_candidates(GitHub("token", event.repo, transport=transport), event)
 
     assert calls[0]["per_page"] == ["100"]
-    assert calls[0]["q"] == [f"repo:{event.repo} is:issue is:open validation fails for empty input"]
+    assert calls[0]["q"] == [
+        f"repo:{event.repo} is:issue is:open (validation OR fails OR for OR empty)"
+    ]
 
 
 def test_duplicate_candidates_never_returns_more_than_five_when_k_is_larger():

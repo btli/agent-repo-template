@@ -218,6 +218,9 @@ def main(argv: list[str]) -> int:
             canary = os.environ.get("GATE_CANARY") or secrets.token_hex(16)
             answers = _model_answers(config, charter_text, issue_context, questions, canary)
             proposal = route(answers, config, event, tier2_allowed, candidates)
+            if "security-uncertain" in proposal.escalate_reasons:
+                issue_context = ""
+                context_path.write_text(issue_context, encoding="utf-8")
             if proposal.escalate and tier2_allowed:
                 counter_time = datetime.now(UTC)
                 cap_status = tier2_cap_status(gh, config, event, counter_time)

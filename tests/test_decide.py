@@ -246,26 +246,58 @@ def test_tier1_security_answer_is_terminal_without_tier2_routing():
     assert decision["escalate"] == {"to": "maintainer", "reason": "security"}
 
 
+@pytest.mark.parametrize(
+    ("security_answer", "type_probability", "tier2_expected"),
+    [
+        (None, 0.9, False),
+        ((False, 0.6), 0.5, False),
+        ((False, 0.9), 0.5, True),
+    ],
+)
+def test_uncertain_security_is_maintainer_final_and_confident_negative_routes_normally(
+    security_answer, type_probability, tier2_expected
+):
+    model_answers = answers(type=("bug", type_probability))
+    if security_answer is None:
+        model_answers["security_sensitive"] = None
+    else:
+        model_answers["security_sensitive"] = Answer(
+            "security_sensitive", security_answer[0], security_answer[1]
+        )
+
+    proposal = route(model_answers, CONFIG, EVENT, True, [])
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
+
+    assert proposal.escalate is tier2_expected
+    if tier2_expected:
+        assert decision["escalate"] is None
+        assert "type" in proposal.escalate_reasons
+    else:
+        assert "needs-maintainer" in proposal.labels
+        assert "security-uncertain" in proposal.escalate_reasons
+        assert proposal.close is None
+        assert decision["escalate"] == {
+            "to": "maintainer",
+            "reason": "security-uncertain",
+        }
+
+
 def test_route_missing_answers_escalate_fail_closed():
-    proposal = route(
-        {
-            key: None
-            for key in (
-                "type",
-                "area",
-                "priority",
-                "needs_info",
-                "out_of_scope",
-                "docs_ref",
-                "duplicate_of",
-                "security_sensitive",
-            )
-        },
-        CONFIG,
-        EVENT,
-        True,
-        [],
-    )
+    missing_answers = {
+        key: None
+        for key in (
+            "type",
+            "area",
+            "priority",
+            "needs_info",
+            "out_of_scope",
+            "docs_ref",
+            "duplicate_of",
+        )
+    }
+    missing_answers["security_sensitive"] = Answer("security_sensitive", False, 0.9)
+
+    proposal = route(missing_answers, CONFIG, EVENT, True, [])
 
     assert proposal.escalate
 
@@ -280,9 +312,9 @@ def test_system_one_failure_with_tier2_unavailable_escalates_to_maintainer():
             "needs_info",
             "out_of_scope",
             "docs_ref",
-            "security_sensitive",
         )
     }
+    missing_answers["security_sensitive"] = Answer("security_sensitive", False, 0.9)
 
     proposal = route(missing_answers, CONFIG, EVENT, False, [])
     decision = to_decision(proposal, missing_answers, "run", "a" * 40, 1)
@@ -403,6 +435,52 @@ def test_route_duplicate_none_never_targets_the_first_candidate():
     proposal = route(answers(duplicate_of=("none", 0.95)), config, EVENT, True, [candidate])
 
     assert proposal.close is None
+
+
+def test_route_close_with_none_docs_reference_does_not_propose_close_vote():
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    model_answers = answers(out_of_scope=(True, 0.99), docs_ref=("none", 0.99))
+
+    proposal = route(model_answers, config, EVENT, True, [])
+
+    assert proposal.close is None
+    assert "close-vote" not in proposal.escalate_reasons
+
+
+def test_route_duplicate_selection_targets_the_selected_candidate():
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    candidates = [Candidate(30, "First candidate", 0.8), Candidate(31, "Second candidate", 0.7)]
+
+    proposal = route(answers(duplicate_of=("#31", 0.95)), config, EVENT, True, candidates)
+
+    assert proposal.close["target"] == 31
+
+
+@pytest.mark.parametrize(
+    ("duplicate_probability", "expected_kind", "expected_target"),
+    [(0.2, "out_of_scope", None), (0.99, "duplicate", 3)],
+)
+def test_route_prefers_eligible_close_over_ineligible_selected_close(
+    duplicate_probability, expected_kind, expected_target
+):
+    config = replace(CONFIG, raw={**CONFIG.raw, "close": {"enabled": True}})
+    model_answers = answers(
+        duplicate_of=("#3", duplicate_probability),
+        out_of_scope=(True, 0.99),
+        docs_ref=(CHARTER.docs_index[0].url, 0.99),
+    )
+
+    proposal = route(
+        model_answers,
+        config,
+        EVENT,
+        True,
+        [Candidate(3, "Candidate", 0.5)],
+    )
+
+    assert proposal.close["kind"] == expected_kind
+    assert proposal.close["target"] == expected_target
+    assert "close-vote" in proposal.escalate_reasons
 
 
 def test_route_out_of_scope_below_close_min_hands_off_without_close():
@@ -663,7 +741,14 @@ def test_decide_counter_names_trip_gate_caps_for_mixed_case_author(
 
 
 @pytest.mark.parametrize(
-    "failure", ["system-one-error", "malformed-answer", "out-of-range-probability", "off-option"]
+    "failure",
+    [
+        "system-one-error",
+        "malformed-answer",
+        "out-of-range-probability",
+        "boolean-probability",
+        "off-option",
+    ],
 )
 def test_system_one_error_or_malformed_answer_becomes_none(monkeypatch, failure):
     from agent_repo.commands import decide as command
@@ -687,6 +772,10 @@ def test_system_one_error_or_malformed_answer_becomes_none(monkeypatch, failure)
         monkeypatch.setattr(
             command, "ask", lambda *args, **kwargs: {"type": Answer("type", "bug", 1.1)}
         )
+    elif failure == "boolean-probability":
+        monkeypatch.setattr(
+            command, "ask", lambda *args, **kwargs: {"type": Answer("type", "bug", True)}
+        )
     else:
         monkeypatch.setattr(
             command, "ask", lambda *args, **kwargs: {"type": Answer("type", "feature", 0.9)}
@@ -701,6 +790,7 @@ def test_system_one_error_or_malformed_answer_becomes_none(monkeypatch, failure)
     )
 
     assert answers_from_model == {"type": None}
+    answers_from_model["security_sensitive"] = Answer("security_sensitive", False, 0.9)
     assert route(answers_from_model, CONFIG, EVENT, True, []).escalate
 
 
@@ -911,6 +1001,8 @@ def test_tier0_stops_before_system_one_for_missing_fields_or_security(
     assert artifact["security"] is expected_security
     assert (artifact["needs_info"] is not None) is expected_needs_info
     assert ask_calls == []
+    if expected_security:
+        assert context_path.read_text() == ""
     assert validate(artifact, load_schema("decision")) == []
     stderr = capsys.readouterr().err
     outputs = (tmp_path / "output").read_text()
@@ -940,7 +1032,7 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
                 return {"items": []}
             if path.endswith("/permission"):
                 if "maintainer" in path:
-                    return {"role_name": "write"}
+                    return {"role_name": "maintain"}
                 raise GitHubError(permission_status)
             raise AssertionError(path)
 
@@ -1043,6 +1135,106 @@ def test_command_rechecks_next_utc_day_cap_before_tier2_upload(tmp_path, monkeyp
     assert queried_names == list(names)
     assert "needs-maintainer" in artifact["labels"]
     assert artifact["escalate"]["reason"].endswith("tier2-cap")
+
+
+def test_command_tier2_counter_artifacts_reuse_cap_check_timestamp(tmp_path, monkeypatch):
+    from agent_repo.commands import decide as command
+
+    timestamps = [
+        datetime(2026, 10, 15, 23, 59, 59, tzinfo=UTC),
+        datetime(2026, 10, 16, 0, 0, 1, tzinfo=UTC),
+    ]
+    now_calls = []
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path, "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app", llm_only=True
+    )
+
+    class MovingDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is UTC
+            now_calls.append(None)
+            return timestamps[min(len(now_calls) - 1, len(timestamps) - 1)]
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            pass
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {"items": []}
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == "actions/artifacts":
+                return {"artifacts": []}
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    monkeypatch.setattr(command, "datetime", MovingDateTime)
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(
+        command, "ask", lambda *args, **kwargs: pytest.fail("LLM-only called System One")
+    )
+    set_command_environment(monkeypatch, tmp_path, event_path)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+    output = (tmp_path / "output").read_text()
+
+    assert now_calls == [None]
+    assert "tier2=true" in output
+    assert "tier2-global-name=tier2-20261015" in output
+    assert f"tier2-author-name=tier2-20261015-{EVENT.author.casefold()}" in output
+
+
+def test_command_uncertain_security_clears_context_and_suppresses_tier2(tmp_path, monkeypatch):
+    from agent_repo.commands import decide as command
+
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path, "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app"
+    )
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            pass
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {"items": []}
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    def uncertain_answer(_config, _base_url, _key, _prompt, questions):
+        values = {
+            "type": "bug",
+            "area": "core",
+            "priority": "P3",
+            "needs_info": "no",
+            "out_of_scope": "no",
+            "docs_ref": "none",
+        }
+        return {
+            question.id: Answer(question.id, values[question.id], 0.95)
+            for question in questions
+            if question.id != "security_sensitive"
+        }
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(command, "ask", uncertain_answer)
+    set_command_environment(monkeypatch, tmp_path, event_path)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+
+    artifact = json.loads(decision_path.read_text())
+    output = (tmp_path / "output").read_text()
+    assert artifact["escalate"] == {"to": "maintainer", "reason": "security-uncertain"}
+    assert "needs-maintainer" in artifact["labels"]
+    assert artifact["close"] is None
+    assert context_path.read_text() == ""
+    assert "tier2=false" in output
 
 
 def test_command_cap_check_error_for_confident_bug_hands_off_in_apply_plan(tmp_path, monkeypatch):

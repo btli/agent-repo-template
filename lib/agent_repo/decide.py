@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from agent_repo.charter import Charter
-from agent_repo.config import RepoConfig
+from agent_repo.config import RepoConfig, is_llm_only
 from agent_repo.event import Event
 from agent_repo.gate import _Budget, _items, _mapping
 from agent_repo.github import GitHub
@@ -155,9 +155,15 @@ def route(
 
     security_value, security_p = _value(answers, "security_sensitive")
     security = security_value is True and security_p >= apply_min
+    security_uncertain = not is_llm_only(config) and (
+        security_value is None or (security_value is False and security_p < apply_min)
+    )
     if security:
         labels.append("needs-maintainer")
         reasons.append("security")
+    elif security_uncertain:
+        labels.append("needs-maintainer")
+        reasons.append("security-uncertain")
     elif security_p < apply_min or type(security_value) is not bool:
         low_action_answer = True
         reasons.append("security_sensitive")
@@ -186,42 +192,67 @@ def route(
     )
     close_enabled = config.raw["close"]["enabled"]
     close_suggestion = False
-    if close_enabled and duplicate:
-        close_suggestion = (
-            duplicate_p < thresholds["close_min"]
-            or duplicate.similarity < thresholds["close_lexical_min"]
-        )
-        close = {
-            "kind": "duplicate",
-            "target": duplicate.number,
-            "docs_ref": None,
-            "p": duplicate_p,
-            "lexical": duplicate.similarity,
-            "tier2_agrees": False,
-        }
     out_of_scope, out_of_scope_p = _value(answers, "out_of_scope")
     docs_ref, docs_ref_p = _value(answers, "docs_ref")
     out_of_scope_selected = (
         out_of_scope is True and isinstance(docs_ref, str) and docs_ref != "none"
     )
-    if close_enabled and out_of_scope_selected and close is None:
-        close_suggestion = (
-            out_of_scope_p < thresholds["close_min"] or docs_ref_p < thresholds["close_min"]
-        )
-        close = {
-            "kind": "out_of_scope",
-            "target": None,
-            "docs_ref": docs_ref,
-            "p": min(out_of_scope_p, docs_ref_p),
-            "lexical": None,
-            "tier2_agrees": False,
-        }
+    duplicate_selected = duplicate is not None
+    duplicate_eligible = (
+        duplicate_selected
+        and duplicate_p >= thresholds["close_min"]
+        and duplicate.similarity >= thresholds["close_lexical_min"]
+    )
+    out_of_scope_eligible = (
+        out_of_scope_selected
+        and out_of_scope_p >= thresholds["close_min"]
+        and docs_ref_p >= thresholds["close_min"]
+    )
+    if close_enabled and not security_uncertain:
+        if duplicate_eligible:
+            close = {
+                "kind": "duplicate",
+                "target": duplicate.number,
+                "docs_ref": None,
+                "p": duplicate_p,
+                "lexical": duplicate.similarity,
+                "tier2_agrees": False,
+            }
+        elif out_of_scope_eligible:
+            close = {
+                "kind": "out_of_scope",
+                "target": None,
+                "docs_ref": docs_ref,
+                "p": min(out_of_scope_p, docs_ref_p),
+                "lexical": None,
+                "tier2_agrees": False,
+            }
+        elif duplicate_selected:
+            close_suggestion = True
+            close = {
+                "kind": "duplicate",
+                "target": duplicate.number,
+                "docs_ref": None,
+                "p": duplicate_p,
+                "lexical": duplicate.similarity,
+                "tier2_agrees": False,
+            }
+        elif out_of_scope_selected:
+            close_suggestion = True
+            close = {
+                "kind": "out_of_scope",
+                "target": None,
+                "docs_ref": docs_ref,
+                "p": min(out_of_scope_p, docs_ref_p),
+                "lexical": None,
+                "tier2_agrees": False,
+            }
     close_vote = close is not None and close_enabled and not close_suggestion
     if close_vote:
         reasons.append("close-vote")
 
-    unique_reasons = list(dict.fromkeys(reasons))
-    needs_tier2 = bool(unique_reasons)
+    unique_reasons = ["security-uncertain"] if security_uncertain else list(dict.fromkeys(reasons))
+    needs_tier2 = bool(unique_reasons) and not security_uncertain
     if needs_tier2 and not tier2_allowed and not security:
         unique_reasons.append("tier2-check-failed" if tier2_check_failed else "tier2-cap")
         needs_tier2 = False
@@ -278,6 +309,8 @@ def to_decision(
         notes.append("This sufficiently specified bug is a candidate for root cause analysis.")
     if proposal.security:
         escalate = {"to": "maintainer", "reason": "security"}
+    elif "security-uncertain" in proposal.escalate_reasons:
+        escalate = {"to": "maintainer", "reason": "security-uncertain"}
     elif proposal.escalate:
         escalate = None
     elif {"tier2-cap", "tier2-check-failed"} & set(
