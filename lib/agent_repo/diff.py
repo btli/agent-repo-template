@@ -14,6 +14,10 @@ def _valid_path(value: object) -> bool:
         and bool(value)
         and not any(character in value for character in "\x00\r\n")
         and not value.startswith("/")
+        and "\\" not in value
+        and all(
+            component not in {"", ".", ".."} for component in value.removeprefix("/").split("/")
+        )
     )
 
 
@@ -77,7 +81,7 @@ def render_files(files: list[dict]) -> str:
     return json.dumps(rendered, indent=2, ensure_ascii=False) + "\n"
 
 
-def _parse_patch(patch: str) -> tuple[dict[int, None], bool]:
+def _parse_patch(patch: str) -> tuple[dict[int, None], int, int, bool]:
     index: dict[int, None] = {}
     lines = [line.removesuffix("\r") for line in patch.split("\n")]
     if lines and lines[-1] == "":
@@ -86,6 +90,7 @@ def _parse_patch(patch: str) -> tuple[dict[int, None], bool]:
     right_line = 0
     in_hunk = False
     saw_hunk = False
+    additions = deletions = 0
     invalid = False
     for line in lines:
         if in_hunk and old_remaining == 0 and new_remaining == 0:
@@ -114,10 +119,12 @@ def _parse_patch(patch: str) -> tuple[dict[int, None], bool]:
             right_line += 1
         elif line.startswith("+"):
             new_remaining -= 1
+            additions += 1
             index[right_line] = None
             right_line += 1
         elif line.startswith("-"):
             old_remaining -= 1
+            deletions += 1
         else:
             invalid = True
         if old_remaining < 0 or new_remaining < 0:
@@ -125,7 +132,7 @@ def _parse_patch(patch: str) -> tuple[dict[int, None], bool]:
             in_hunk = False
     if not saw_hunk or old_remaining or new_remaining:
         invalid = True
-    return index, invalid
+    return index, additions, deletions, invalid
 
 
 def diff_index(files: list[dict]) -> dict[str, set[int]]:
@@ -141,12 +148,8 @@ def diff_index(files: list[dict]) -> dict[str, set[int]]:
             if entry["changes"]:
                 return {}
             continue
-        if not patch:
-            if entry["changes"]:
-                return {}
-            continue
-        lines, invalid = _parse_patch(patch)
-        if invalid:
+        lines, additions, deletions, invalid = _parse_patch(patch)
+        if invalid or additions != entry["additions"] or deletions != entry["deletions"]:
             return {}
         index[entry["filename"]] = set(lines)
     return index
@@ -175,7 +178,12 @@ def summary_only(files: list[dict], config) -> tuple[bool, str]:
         area.name
         for area in config.areas
         if area.sensitive
-        and any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in area.paths)
+        and any(
+            fnmatch.fnmatchcase(path, pattern)
+            or (pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:]))
+            for path in paths
+            for pattern in area.paths
+        )
     ]
     if sensitive:
         names = ", ".join(dict.fromkeys(sensitive))
@@ -184,8 +192,8 @@ def summary_only(files: list[dict], config) -> tuple[bool, str]:
         patch = entry.get("patch")
         if entry["changes"] and patch is None:
             return True, f"Patch unavailable for {entry['filename']}; needs-maintainer."
-        if patch:
-            _, invalid = _parse_patch(patch)
-            if invalid:
+        if patch is not None:
+            _, additions, deletions, invalid = _parse_patch(patch)
+            if invalid or additions != entry["additions"] or deletions != entry["deletions"]:
                 return True, f"Invalid patch for {entry['filename']}; needs-maintainer."
     return False, ""

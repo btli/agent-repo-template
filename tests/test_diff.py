@@ -45,18 +45,67 @@ def test_diff_index_accepts_multiple_hunks_and_no_newline_marker():
     }
 
 
+def test_diff_index_accepts_crlf_no_newline_marker():
+    patch = "@@ -1 +1 @@\r\n-old\r\n+new\r\n\\ No newline at end of file\r\n"
+
+    assert diff_index([_file(patch)]) == {"src/file.py": {1}}
+
+
+def test_diff_index_indexes_renamed_file_at_new_path_only():
+    renamed = _file(
+        "@@ -1 +1 @@\n-old\n+new",
+        filename="src/new.py",
+        previous_filename="src/old.py",
+        status="renamed",
+    )
+
+    assert diff_index([renamed]) == {"src/new.py": {1}}
+
+
+def test_diff_index_accepts_pure_rename_without_patch():
+    renamed = _file(
+        None,
+        filename="src/new.py",
+        previous_filename="src/old.py",
+        status="renamed",
+        additions=0,
+        deletions=0,
+        changes=0,
+    )
+    renamed.pop("patch")
+
+    assert diff_index([renamed]) == {}
+    assert summary_only([renamed], _config()) == (False, "")
+
+
 @pytest.mark.parametrize(
-    "patch",
+    ("patch", "additions", "deletions"),
     [
-        "@@ -1, +1 @@\n-old\n+new",
-        "@@ -1,3 +1,3 @@\n-old\n+new",
-        "@@ -1 +1 @@\n-old\n+new\ngarbage",
-        "@@ -1 +1 @@\n-old\n+new\n\\ evil",
+        ("@@ -1, +1 @@\n-old\n+new", 1, 1),
+        ("@@ -1,3 +1,3 @@\n-old\n+new", 1, 1),
+        ("@@ -1 +1 @@\n-old\n+new\ngarbage", 1, 1),
+        ("@@ -1 +1 @@\n-old\n+new\n\\ evil", 1, 1),
+        ("@@ -0,0 +1 @@\nxjunk\n+a", 1, 0),
+        ("@@ -0,0 +1,2 @@\n+a\n@@ -0,0 +5 @@\n+b", 2, 0),
     ],
-    ids=["malformed-hunk-header", "short-hunk", "stray-row", "wrong-marker"],
+    ids=[
+        "malformed-hunk-header",
+        "short-hunk",
+        "stray-row",
+        "wrong-marker",
+        "unknown-row-prefix",
+        "header-before-hunk-exhausted",
+    ],
 )
-def test_malformed_file_patch_fails_closed(patch):
-    files = [_file(patch)]
+def test_malformed_file_patch_fails_closed(patch, additions, deletions):
+    files = [
+        _file(
+            patch,
+            additions=additions,
+            deletions=deletions,
+            changes=additions + deletions,
+        )
+    ]
 
     assert diff_index(files) == {}
     limited, reason = summary_only(files, _config())
@@ -65,14 +114,20 @@ def test_malformed_file_patch_fails_closed(patch):
 
 
 @pytest.mark.parametrize(
-    "entry",
+    "entries",
     [
-        _file("@@ -1 +1 @@\n-old\n+new", status="mystery"),
-        _file("@@ -1 +1 @@\n-old\n+new", status=[]),
-        _file("@@ -1 +1 @@\n-old\n+new", status="renamed"),
-        _file("@@ -1 +1 @@\n-old\n+new", additions=True),
-        _file("@@ -1 +1 @@\n-old\n+new", changes=3),
-        _file("@@ -1 +1 @@\n-old\n+new", patch=3),
+        [_file("@@ -1 +1 @@\n-old\n+new", status="mystery")],
+        [_file("@@ -1 +1 @@\n-old\n+new", status=[])],
+        [_file("@@ -1 +1 @@\n-old\n+new", status="renamed")],
+        [_file("@@ -1 +1 @@\n-old\n+new", additions=True)],
+        [_file("@@ -1 +1 @@\n-old\n+new", changes=3)],
+        [_file("@@ -1 +1 @@\n-old\n+new", patch=3)],
+        [_file("@@ -1 +1 @@\n-old\n+new", previous_filename="src/old.py")],
+        [_file("@@ -1 +1 @@\n-old\n+new", filename="/src/file.py")],
+        [
+            _file("@@ -1 +1 @@\n-old\n+new"),
+            _file("@@ -1 +1 @@\n-old\n+new"),
+        ],
     ],
     ids=[
         "unknown-status",
@@ -81,13 +136,73 @@ def test_malformed_file_patch_fails_closed(patch):
         "boolean-count",
         "count-mismatch",
         "nontext-patch",
+        "previous-filename-on-modified",
+        "absolute-path",
+        "duplicate-filename",
     ],
 )
-def test_invalid_file_entries_fail_closed(entry):
-    files = [entry]
-
+def test_invalid_file_entries_fail_closed(entries):
+    files = entries
     assert diff_index(files) == {}
     limited, reason = summary_only(files, _config())
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["../.github/workflows/ci.yml", "a//b", "./a", "a\\b", "/absolute/path"],
+    ids=["parent-component", "empty-component", "dot-component", "backslash", "absolute"],
+)
+def test_noncanonical_paths_fail_closed(filename):
+    entry = _file(
+        "@@ -0,0 +1 @@\n+new",
+        filename=filename,
+        additions=1,
+        deletions=0,
+        changes=1,
+    )
+
+    assert diff_index([entry]) == {}
+    limited, reason = summary_only([entry], _config())
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_noncanonical_previous_path_fails_closed():
+    entry = _file(
+        "@@ -0,0 +1 @@\n+new",
+        status="renamed",
+        previous_filename="../.github/workflows/ci.yml",
+        additions=1,
+        deletions=0,
+        changes=1,
+    )
+
+    assert diff_index([entry]) == {}
+    limited, reason = summary_only([entry], _config())
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+@pytest.mark.parametrize(
+    ("patch", "additions", "deletions"),
+    [
+        ("@@ -0,0 +1,1501 @@\n" + "+x\n" * 1501, 0, 0),
+        ("", 1, 0),
+    ],
+    ids=["patch-rows-exceed-metadata", "empty-patch-with-line-changes"],
+)
+def test_patch_row_counts_must_match_metadata(patch, additions, deletions):
+    entry = _file(
+        patch,
+        additions=additions,
+        deletions=deletions,
+        changes=additions + deletions,
+    )
+
+    assert diff_index([entry]) == {}
+    limited, reason = summary_only([entry], _config())
     assert limited is True
     assert "needs-maintainer" in reason
 
@@ -125,6 +240,19 @@ def test_summary_only_matches_both_current_and_previous_paths():
 
     assert limited is True
     assert "needs-maintainer" in reason
+
+
+def test_summary_only_matches_root_files_for_recursive_sensitive_patterns():
+    sensitive = Area("infra", "Infrastructure", ("**/*.tf",), (), True)
+    root_file = _file(None, filename="main.tf", additions=0, deletions=0, changes=0)
+    root_file.pop("patch")
+    nested_file = _file(None, filename="infra/main.tf", additions=0, deletions=0, changes=0)
+    nested_file.pop("patch")
+
+    limited, reason = summary_only([root_file], _config(areas=(sensitive,)))
+    assert limited is True
+    assert "needs-maintainer" in reason
+    assert summary_only([nested_file], _config(areas=(sensitive,)))[0] is True
 
 
 def test_summary_only_rejects_more_than_api_file_limit():

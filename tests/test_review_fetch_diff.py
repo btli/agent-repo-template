@@ -185,6 +185,38 @@ def test_fetch_routes_missing_patch_for_changed_file_to_summary_only(tmp_path, m
     assert "needs-maintainer" in reason
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {
+            "filename": "src/a.py",
+            "status": "modified",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+            "patch": "@@ -0,0 +1,1501 @@\n" + "+x\n" * 1501,
+        },
+        {
+            "filename": "src/a.py",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+            "patch": "",
+        },
+    ],
+    ids=["patch-rows-exceed-metadata", "empty-patch-with-line-changes"],
+)
+def test_fetch_routes_patch_metadata_mismatch_to_summary_only(tmp_path, monkeypatch, entry):
+    api = API(files=[entry])
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
+
+    _, _, limited, reason = fetch(tmp_path / "files.json", config_dir)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
 def test_fetch_rejects_head_that_moved_during_files_request(tmp_path, monkeypatch):
     class MovingAPI(API):
         def __init__(self):
@@ -254,19 +286,33 @@ def test_fetch_rejects_api_base_sha_that_changed_since_target_event(tmp_path, mo
 
 
 class ReviewApplyAPI:
-    def __init__(self, *, head_sha="b" * 40, base_ref="main", base_sha="a" * 40):
+    def __init__(
+        self,
+        *,
+        head_sha="b" * 40,
+        base_ref="main",
+        base_sha="a" * 40,
+        changed_files=1,
+        files=None,
+        move_head_during_files=False,
+    ):
         self.head_sha = head_sha
         self.base_ref = base_ref
         self.base_sha = base_sha
+        self.changed_files = changed_files
+        self.files = files
+        self.move_head_during_files = move_head_during_files
         self.calls = []
         self.review_posts = []
+        self.label_posts = []
+        self.pull_reads = 0
 
     def __call__(self, request, timeout):
         path = urlparse(request.full_url).path.removeprefix("/repos/your-org/project/")
         self.calls.append((request.method, path))
         body = json.loads(request.data) if request.data else None
         if path == "pulls/24/files":
-            value = [
+            value = self.files or [
                 {
                     "filename": "src/a.py",
                     "status": "modified",
@@ -276,16 +322,24 @@ class ReviewApplyAPI:
                     "patch": "@@ -0,0 +1 @@\n+new",
                 }
             ]
+            if self.move_head_during_files:
+                self.head_sha = "c" * 40
         elif request.method == "GET" and path == "pulls/24":
+            self.pull_reads += 1
             value = {
                 "head": {"sha": self.head_sha},
                 "base": {"ref": self.base_ref, "sha": self.base_sha},
-                "changed_files": 1,
+                "changed_files": self.changed_files,
             }
+            if self.move_head_during_files and self.pull_reads == 2:
+                self.head_sha = "b" * 40
         elif request.method == "GET" and path in {"issues/24", "issues/24/comments"}:
             value = {"labels": [], "assignees": []} if path == "issues/24" else []
         elif request.method == "POST" and path == "pulls/24/reviews":
             self.review_posts.append(body)
+            value = {}
+        elif request.method == "POST" and path == "issues/24/labels":
+            self.label_posts.append(body)
             value = {}
         else:
             value = {}
@@ -300,6 +354,7 @@ def _review_apply_setup(
     base_sha="a" * 40,
     scan_keys="scan-key",
     event_name="pull_request_target",
+    sensitive=False,
 ):
     from agent_repo.commands import review_apply
 
@@ -341,7 +396,7 @@ def _review_apply_setup(
 
     config = RepoConfig(
         {"limits": {"review_max_lines": 1500}, "mode": {"review": "live"}},
-        (Area("core", "Core", ("src/**",), (), False),),
+        (Area("core", "Core", ("src/**",), (), sensitive),),
         ("needs-maintainer",),
     )
     from agent_repo.charter import parse_charter
@@ -368,6 +423,99 @@ def test_review_apply_fetches_its_own_file_list_at_bound_head(tmp_path, monkeypa
     assert api.review_posts[0]["comments"][0]["path"] == "src/a.py"
     assert api.review_posts[0]["comments"][0]["line"] == 1
     assert "COMMENT review posted" in summary.read_text()
+
+
+@pytest.mark.parametrize(
+    ("api_options", "sensitive"),
+    [
+        ({}, True),
+        ({"changed_files": 2}, False),
+        (
+            {
+                "files": [
+                    {
+                        "filename": "src/a.py",
+                        "status": "modified",
+                        "additions": 1,
+                        "deletions": 0,
+                        "changes": 1,
+                    }
+                ]
+            },
+            False,
+        ),
+    ],
+    ids=["sensitive-area", "changed-files-mismatch", "missing-patch"],
+)
+def test_review_apply_limited_files_escalate_and_post_summary_only(
+    tmp_path, monkeypatch, api_options, sensitive
+):
+    api = ReviewApplyAPI(**api_options)
+    command, review_path, _ = _review_apply_setup(
+        tmp_path, monkeypatch, api=api, sensitive=sensitive
+    )
+    artifact = json.loads(review_path.read_text())
+    artifact["findings"] = [
+        {"severity": "low", "path": "src/a.py", "line": 1, "body": "Review this line."}
+    ]
+    review_path.write_text(json.dumps(artifact))
+
+    assert command.main([str(review_path)]) == 0
+    assert len(api.review_posts) == 1
+    assert api.review_posts[0]["comments"] == []
+    assert any("needs-maintainer" in post["labels"] for post in api.label_posts)
+
+
+def test_review_apply_changed_files_limit_escalates_independently_of_summary_helper(
+    tmp_path, monkeypatch
+):
+    entries = [
+        {
+            "filename": "src/a.py",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+            "patch": "@@ -0,0 +1 @@\n+new",
+        }
+    ]
+    entries.extend(
+        {
+            "filename": f"docs/rename-{number}.md",
+            "previous_filename": f"docs/old-{number}.md",
+            "status": "renamed",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+        }
+        for number in range(3000)
+    )
+    api = ReviewApplyAPI(changed_files=3001, files=entries)
+    command, review_path, _ = _review_apply_setup(tmp_path, monkeypatch, api=api)
+    monkeypatch.setattr(command, "summary_only", lambda files, config: (False, ""))
+    artifact = json.loads(review_path.read_text())
+    artifact["findings"] = [
+        {"severity": "low", "path": "src/a.py", "line": 1, "body": "Review this line."}
+    ]
+    review_path.write_text(json.dumps(artifact))
+
+    assert command.main([str(review_path)]) == 0
+    assert api.review_posts[0]["comments"] == []
+    assert any("needs-maintainer" in post["labels"] for post in api.label_posts)
+
+
+def test_review_apply_does_not_write_if_head_moves_during_files_fetch(tmp_path, monkeypatch):
+    api = ReviewApplyAPI(move_head_during_files=True)
+    command, review_path, _ = _review_apply_setup(tmp_path, monkeypatch, api=api)
+    policy_calls = []
+    policy = command._policy
+    monkeypatch.setattr(
+        command, "_policy", lambda *args: (policy_calls.append(args[1]), policy(*args))[1]
+    )
+
+    command.main([str(review_path)])
+    assert not any(method == "POST" for method, _ in api.calls)
+    assert not policy_calls
 
 
 def test_review_apply_main_rejects_head_moved_since_gate(tmp_path, monkeypatch):
