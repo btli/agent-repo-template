@@ -4,6 +4,36 @@ from dataclasses import dataclass
 from agent_repo.event import Event
 from agent_repo.github import GitHub
 
+_TITLE_STOPWORDS = frozenset(
+    {
+        "a",
+        "able",
+        "an",
+        "and",
+        "app",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "it",
+        "not",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "was",
+        "were",
+        "when",
+        "with",
+    }
+)
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -59,10 +89,16 @@ def duplicate_candidates(gh: GitHub, event: Event, k: int = 5) -> list[Candidate
     k = min(k, 5)
     if k <= 0:
         return []
-    terms = list(dict.fromkeys(re.findall(r"[a-z0-9]+", event.title.casefold())))[:4]
+    title_terms = list(dict.fromkeys(re.findall(r"[a-z0-9]+", event.title.casefold())))
+    terms = sorted(
+        (term for term in title_terms if len(term) >= 3 and term not in _TITLE_STOPWORDS),
+        key=len,
+        reverse=True,
+    )[:4]
+    if not terms:
+        return []
     query = f"repo:{event.repo} is:issue is:open"
-    if terms:
-        query += " (" + " OR ".join(terms) + ")"
+    query += " (" + " OR ".join(terms) + ")"
     result = gh.request(
         "GET",
         "/search/issues",

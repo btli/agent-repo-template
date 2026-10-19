@@ -155,8 +155,10 @@ def route(
 
     security_value, security_p = _value(answers, "security_sensitive")
     security = security_value is True and security_p >= apply_min
-    security_uncertain = not is_llm_only(config) and (
-        security_value is None or (security_value is False and security_p < apply_min)
+    security_uncertain = (
+        not is_llm_only(config)
+        and not security
+        and (security_value is None or security_p < apply_min)
     )
     if security:
         labels.append("needs-maintainer")
@@ -295,16 +297,21 @@ def to_decision(
     duplicate = encoded_answers.get("duplicate_of", {}).get("value")
     if isinstance(duplicate, str) and duplicate != "none" and proposal.close is None:
         notes.append(f"Suggested duplicate: {duplicate}. Automatic closing was not proposed.")
-    if (
-        encoded_answers.get("out_of_scope", {}).get("value") is True
-        and isinstance(encoded_answers.get("docs_ref", {}).get("value"), str)
-        and encoded_answers["docs_ref"]["value"] != "none"
-        and proposal.close is None
-    ):
-        notes.append(
-            "Suggested out-of-scope close with the selected documentation reference; "
-            "automatic closing was not proposed."
-        )
+    docs_ref = encoded_answers.get("docs_ref", {}).get("value")
+    out_of_scope = encoded_answers.get("out_of_scope", {}).get("value") is True
+    docs_ref_in_close = (
+        proposal.close is not None
+        and proposal.close.get("kind") == "out_of_scope"
+        and proposal.close.get("docs_ref") == docs_ref
+    )
+    if isinstance(docs_ref, str) and docs_ref != "none" and not docs_ref_in_close:
+        if out_of_scope:
+            notes.append(
+                f"Suggested out-of-scope close with documentation reference {docs_ref}; "
+                "automatic closing was not proposed."
+            )
+        else:
+            notes.append(f"Suggested documentation reference: {docs_ref}.")
     if proposal.rca_candidate:
         notes.append("This sufficiently specified bug is a candidate for root cause analysis.")
     if proposal.security:
@@ -402,8 +409,3 @@ def tier2_cap_status(
     except Exception:
         return "error"
     return "available"
-
-
-def tier2_cap_available(gh: GitHub, config: RepoConfig, event: Event, now: datetime) -> bool:
-    """Check current-day counters again immediately before routing to Tier 2."""
-    return tier2_cap_status(gh, config, event, now) == "available"

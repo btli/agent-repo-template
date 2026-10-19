@@ -122,9 +122,13 @@ def _model_answers(
         ):
             safe[question.id] = None
             continue
-        if question.kind == "choice" and answer.value not in (question.options or {}):
+        if question.kind == "choice" and (
+            not isinstance(answer.value, str) or answer.value not in (question.options or {})
+        ):
             safe[question.id] = None
-        elif question.kind == "noul" and answer.value not in {"yes", "no"}:
+        elif question.kind == "noul" and (
+            not isinstance(answer.value, str) or answer.value not in {"yes", "no"}
+        ):
             safe[question.id] = None
         else:
             safe[question.id] = answer
