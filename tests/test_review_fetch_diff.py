@@ -5,7 +5,6 @@ from urllib.parse import urlparse
 
 import pytest
 from agent_repo.commands.fetch_diff import _pull, fetch
-from agent_repo.diff import _parse_diff
 from agent_repo.event import load_event
 from agent_repo.github import GitHub
 
@@ -17,25 +16,37 @@ class API:
         base_ref="main",
         base_sha="a" * 40,
         head_sha="b" * 40,
-        head_reads=None,
-        diff=None,
+        changed_files=1,
+        files=None,
     ):
         self.calls = []
+        self.queries = []
         self.base_ref = base_ref
         self.base_sha = base_sha
         self.head_sha = head_sha
-        self.head_reads = iter(head_reads or ())
-        self.diff = diff or (
-            b"diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
-            b"@@ -1 +1 @@\n-old\n+new\n"
+        self.changed_files = changed_files
+        self.files = (
+            files
+            if files is not None
+            else [
+                {
+                    "filename": "src/a.py",
+                    "status": "modified",
+                    "additions": 1,
+                    "deletions": 1,
+                    "changes": 2,
+                    "patch": "@@ -1 +1 @@\n-old\n+new",
+                }
+            ]
         )
 
     def __call__(self, request, timeout):
         path = urlparse(request.full_url).path
         accept = request.get_header("Accept")
         self.calls.append((request.method, path, accept))
-        if accept == "application/vnd.github.diff":
-            return (200, {}, self.diff)
+        self.queries.append(urlparse(request.full_url).query)
+        if path.endswith("/pulls/24/files"):
+            return 200, {}, json.dumps(self.files).encode()
         return (
             200,
             {},
@@ -43,189 +54,10 @@ class API:
                 {
                     "head": {"sha": self.head_sha},
                     "base": {"ref": self.base_ref, "sha": self.base_sha},
+                    "changed_files": self.changed_files,
                 }
             ).encode(),
         )
-
-
-def test_fetch_diff_uses_api_diff_and_never_checks_out_code(tmp_path, monkeypatch):
-    event_path = Path("tests/fixtures/events/pull_request_target.opened.json")
-    payload = json.loads(event_path.read_text())
-    payload["repository"]["full_name"] = "your-org/project"
-    payload["repository"]["default_branch"] = "main"
-    payload["pull_request"]["base"]["ref"] = "main"
-    payload["pull_request"]["base"]["sha"] = "a" * 40
-    payload["pull_request"]["head"]["sha"] = "b" * 40
-    event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps(payload))
-    output = tmp_path / "github-output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-    areas = config_dir / "areas.yml"
-    areas.write_text(areas.read_text().replace("sensitive: true", "sensitive: false"))
-    transport = API()
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_target")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
-    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
-    monkeypatch.setenv("GH_TOKEN", "test-token")
-    monkeypatch.setenv("EXPECTED_HEAD_SHA", "b" * 40)
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
-
-    diff_path = tmp_path / "diff.patch"
-    base_sha, head_sha, summary_only, reason = fetch(diff_path, config_dir)
-
-    assert base_sha == "a" * 40
-    assert head_sha == "b" * 40
-    assert summary_only is False
-    assert reason == ""
-    assert diff_path.read_text().startswith("diff --git")
-    assert any(call[2] == "application/vnd.github.diff" for call in transport.calls)
-    assert not any(call[0] == "checkout" for call in transport.calls)
-
-
-@pytest.mark.parametrize(
-    "diff",
-    [
-        b"diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
-        b"--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-old\n+new\n",
-        b"diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
-        b"@@ -1 +1 @@\n-old\n+new\n+extra\n",
-        b"diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
-        b"@@ -1 +1 @@\n-old\n+new\ngarbage\n",
-    ],
-    ids=["mismatched-paths", "surplus-hunk-row", "garbage-row"],
-)
-def test_fetch_routes_ambiguous_diff_to_summary_only(tmp_path, monkeypatch, diff):
-    event_path = _event_file(tmp_path)
-    output = tmp_path / "output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-    areas = config_dir / "areas.yml"
-    areas.write_text(
-        "areas:\n  - name: workflows\n    description: Workflows\n"
-        "    paths:\n      - .github/**\n    owners: []\n    sensitive: true\n"
-    )
-    transport = API(diff=diff)
-    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
-
-    _, _, limited, reason = fetch(tmp_path / "diff.patch", config_dir)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-
-
-@pytest.mark.parametrize("metadata", ["rename", "copy"])
-@pytest.mark.parametrize(
-    "scenario",
-    ["conflicting-all-headers", "header-conflicts", "file-headers-conflict"],
-)
-def test_fetch_routes_conflicting_sensitive_source_metadata_to_summary_only(
-    tmp_path, monkeypatch, metadata, scenario
-):
-    if scenario == "conflicting-all-headers":
-        header_from = header_to = file_from = file_to = "src/a.py"
-    elif scenario == "header-conflicts":
-        header_from = header_to = "src/a.py"
-        file_from = ".github/workflows/ci.yml"
-        file_to = "src/a.py"
-    else:
-        header_from = ".github/workflows/ci.yml"
-        header_to = file_to = "src/a.py"
-        file_from = "src/a.py"
-    diff = (
-        f"diff --git a/{header_from} b/{header_to}\n"
-        f"{metadata} from .github/workflows/ci.yml\n"
-        f"{metadata} to src/a.py\n"
-        f"--- a/{file_from}\n+++ b/{file_to}\n@@ -1 +1 @@\n-old\n+new\n"
-    ).encode()
-    event_path = _event_file(tmp_path)
-    output = tmp_path / "output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-    (config_dir / "areas.yml").write_text(
-        "areas:\n  - name: workflows\n    description: Workflows\n"
-        "    paths:\n      - .github/**\n    owners: []\n    sensitive: true\n"
-    )
-    transport = API(diff=diff)
-    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
-
-    _, _, limited, reason = fetch(tmp_path / "diff.patch", config_dir)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-
-
-def test_fetch_accepts_spaced_path_rename_and_indexes_both_paths(tmp_path, monkeypatch):
-    diff = (
-        b"diff --git a/docs/a b.md b/docs/c d.md\n"
-        b"similarity index 100%\n"
-        b"rename from docs/a b.md\n"
-        b"rename to docs/c d.md\n"
-    )
-    event_path = _event_file(tmp_path)
-    output = tmp_path / "output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-    (config_dir / "areas.yml").write_text("areas: []\n")
-    transport = API(diff=diff)
-    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
-
-    _, _, limited, reason = fetch(tmp_path / "diff.patch", config_dir)
-    _, paths, invalid = _parse_diff(diff.decode())
-
-    assert limited is False
-    assert reason == ""
-    assert invalid is False
-    assert paths == {"docs/a b.md", "docs/c d.md"}
-
-
-@pytest.mark.parametrize(
-    "metadata",
-    [
-        "old mode 100644\nnew mode 100755\n",
-        "Binary files a/img/a b.png and b/img/a b.png differ\n",
-    ],
-    ids=["mode-only", "binary"],
-)
-def test_fetch_accepts_header_only_spaced_paths(tmp_path, monkeypatch, metadata):
-    diff = f"diff --git a/img/a b.png b/img/a b.png\n{metadata}".encode()
-    event_path = _event_file(tmp_path)
-    output = tmp_path / "output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-    (config_dir / "areas.yml").write_text("areas: []\n")
-    transport = API(diff=diff)
-    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
-
-    _, _, limited, reason = fetch(tmp_path / "diff.patch", config_dir)
-
-    assert limited is False
-    assert reason == ""
 
 
 def _event_file(
@@ -256,27 +88,130 @@ def _fetch_env(monkeypatch, event_path, output, *, name, base="a" * 40, expected
     monkeypatch.setenv("EXPECTED_HEAD_SHA", expected_head)
 
 
-def test_issue_comment_fetch_rejects_head_that_moved_after_gate(tmp_path, monkeypatch):
-    event_path = _event_file(tmp_path, "issue_comment")
-    output = tmp_path / "output"
+def _fetch_setup(tmp_path, monkeypatch, api, *, name="pull_request_target"):
+    event_path = _event_file(tmp_path, name)
+    output = tmp_path / "github-output"
     output.write_text("")
     config_dir = tmp_path / "agents"
     shutil.copytree("tests/fixtures/agents", config_dir)
-    transport = API(head_sha="c" * 40)
-    _fetch_env(monkeypatch, event_path, output, name="issue_comment")
+    (config_dir / "areas.yml").write_text("areas: []\n")
+    _fetch_env(monkeypatch, event_path, output, name=name)
     monkeypatch.setattr(
         "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
+        lambda token, repo: GitHub(token, repo, transport=api),
     )
+    return config_dir, output
 
-    try:
-        fetch(tmp_path / "diff.patch", config_dir)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("head moved after gate was accepted")
-    assert not any(call[2] == "application/vnd.github.diff" for call in transport.calls)
-    assert not (tmp_path / "diff.patch").exists()
+
+def test_fetch_files_uses_paginated_api_without_checkout_or_raw_diff(tmp_path, monkeypatch):
+    api = API()
+    config_dir, output = _fetch_setup(tmp_path, monkeypatch, api)
+    files_path = tmp_path / "files.json"
+
+    base_sha, head_sha, limited, reason = fetch(files_path, config_dir)
+
+    assert base_sha == "a" * 40
+    assert head_sha == "b" * 40
+    assert limited is False
+    assert reason == ""
+    assert json.loads(files_path.read_text())[0]["filename"] == "src/a.py"
+    assert any(call[1] == "/repos/your-org/project/pulls/24/files" for call in api.calls)
+    assert "per_page=100" in api.queries
+    assert not any(call[2] == "application/vnd.github.diff" for call in api.calls)
+    assert not any(call[0] == "checkout" for call in api.calls)
+    assert "summary_only=false" in output.read_text()
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {
+            "filename": "src/a.py",
+            "status": "unknown",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+            "patch": "@@ -0,0 +1 @@\n+added",
+        },
+        {
+            "filename": "src/a.py",
+            "status": "renamed",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+        },
+    ],
+    ids=["unknown-status", "renamed-without-previous-filename"],
+)
+def test_fetch_routes_invalid_file_entries_to_summary_only(tmp_path, monkeypatch, entry):
+    api = API(files=[entry])
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
+
+    _, _, limited, reason = fetch(tmp_path / "files.json", config_dir)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+@pytest.mark.parametrize(
+    "changed_files",
+    [2],
+    ids=["incomplete-list"],
+)
+def test_fetch_routes_incomplete_file_list_to_summary_only(tmp_path, monkeypatch, changed_files):
+    api = API(changed_files=changed_files)
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
+
+    _, _, limited, reason = fetch(tmp_path / "files.json", config_dir)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_fetch_routes_missing_patch_for_changed_file_to_summary_only(tmp_path, monkeypatch):
+    entry = {
+        "filename": "src/a.py",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 0,
+        "changes": 1,
+    }
+    api = API(files=[entry])
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
+
+    _, _, limited, reason = fetch(tmp_path / "files.json", config_dir)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_fetch_rejects_head_that_moved_during_files_request(tmp_path, monkeypatch):
+    class MovingAPI(API):
+        def __init__(self):
+            super().__init__()
+
+        def __call__(self, request, timeout):
+            response = super().__call__(request, timeout)
+            if urlparse(request.full_url).path.endswith("/files"):
+                self.head_sha = "c" * 40
+            return response
+
+    api = MovingAPI()
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api, name="issue_comment")
+    files_path = tmp_path / "files.json"
+
+    with pytest.raises(ValueError, match="head changed"):
+        fetch(files_path, config_dir)
+    assert not files_path.exists()
+
+
+def test_issue_comment_fetch_rejects_head_that_moved_after_gate(tmp_path, monkeypatch):
+    api = API(head_sha="c" * 40)
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api, name="issue_comment")
+
+    with pytest.raises(ValueError, match="head changed since gate"):
+        fetch(tmp_path / "files.json", config_dir)
+    assert not any(call[1].endswith("/files") for call in api.calls)
 
 
 def test_fetch_rejects_event_head_that_differs_from_api(tmp_path):
@@ -284,115 +219,38 @@ def test_fetch_rejects_event_head_that_differs_from_api(tmp_path):
     event = load_event("pull_request_target", event_path)
     transport = API(head_sha="c" * 40)
 
-    try:
+    with pytest.raises(ValueError, match="head changed since event"):
         _pull(GitHub("test-token", event.repo, transport=transport), event)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("event and API heads differed")
 
 
 def test_fetch_rejects_policy_sha_that_differs_from_event_base(tmp_path, monkeypatch):
-    event_path = _event_file(tmp_path)
-    output = tmp_path / "output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-    transport = API()
-    _fetch_env(monkeypatch, event_path, output, name="pull_request_target", base="c" * 40)
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
+    api = API()
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
+    monkeypatch.setenv("GITHUB_SHA", "c" * 40)
 
-    try:
-        fetch(tmp_path / "diff.patch", config_dir)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("event base and policy SHA differed")
-    assert not any(call[2] == "application/vnd.github.diff" for call in transport.calls)
-    assert not (tmp_path / "diff.patch").exists()
+    with pytest.raises(ValueError, match="event base does not match policy SHA"):
+        fetch(tmp_path / "files.json", config_dir)
+    assert not any(call[1].endswith("/files") for call in api.calls)
 
 
 def test_fetch_rejects_event_base_ref_retarget_race(tmp_path, monkeypatch):
+    api = API()
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
     event_path = _event_file(tmp_path, base_ref="release")
-    output = tmp_path / "output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-    transport = API(base_ref="main")
-    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
 
-    try:
-        fetch(tmp_path / "diff.patch", config_dir)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("retargeted pull request was accepted")
-    assert not transport.calls
+    with pytest.raises(ValueError, match="not based on the default branch"):
+        fetch(tmp_path / "files.json", config_dir)
+    assert not api.calls
 
 
 def test_fetch_rejects_api_base_sha_that_changed_since_target_event(tmp_path, monkeypatch):
-    event_path = _event_file(tmp_path)
-    output = tmp_path / "output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-    transport = API(base_sha="c" * 40)
-    _fetch_env(monkeypatch, event_path, output, name="pull_request_target")
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
+    api = API(base_sha="c" * 40)
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
 
-    try:
-        fetch(tmp_path / "diff.patch", config_dir)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("changed default branch base SHA was accepted")
-    assert not any(call[2] == "application/vnd.github.diff" for call in transport.calls)
-    assert not (tmp_path / "diff.patch").exists()
-
-
-def test_fetch_rechecks_head_after_diff_read(tmp_path, monkeypatch):
-    event_path = _event_file(tmp_path, "issue_comment")
-    output = tmp_path / "output"
-    output.write_text("")
-    config_dir = tmp_path / "agents"
-    shutil.copytree("tests/fixtures/agents", config_dir)
-
-    class ChangingAPI(API):
-        def __init__(self):
-            super().__init__()
-            self.pull_reads = 0
-
-        def __call__(self, request, timeout):
-            if request.get_header("Accept") != "application/vnd.github.diff":
-                self.pull_reads += 1
-                if self.pull_reads == 2:
-                    self.head_sha = "c" * 40
-            return super().__call__(request, timeout)
-
-    transport = ChangingAPI()
-    _fetch_env(monkeypatch, event_path, output, name="issue_comment")
-    monkeypatch.setattr(
-        "agent_repo.commands.fetch_diff.GitHub",
-        lambda token, repo: GitHub(token, repo, transport=transport),
-    )
-
-    try:
-        fetch(tmp_path / "diff.patch", config_dir)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("head change while reading diff was accepted")
-    assert not (tmp_path / "diff.patch").exists()
+    with pytest.raises(ValueError, match="base changed since event"):
+        fetch(tmp_path / "files.json", config_dir)
+    assert not any(call[1].endswith("/files") for call in api.calls)
 
 
 class ReviewApplyAPI:
@@ -401,17 +259,34 @@ class ReviewApplyAPI:
         self.base_ref = base_ref
         self.base_sha = base_sha
         self.calls = []
+        self.review_posts = []
 
     def __call__(self, request, timeout):
         path = urlparse(request.full_url).path.removeprefix("/repos/your-org/project/")
         self.calls.append((request.method, path))
-        if request.method == "GET" and path == "pulls/24":
+        body = json.loads(request.data) if request.data else None
+        if path == "pulls/24/files":
+            value = [
+                {
+                    "filename": "src/a.py",
+                    "status": "modified",
+                    "additions": 1,
+                    "deletions": 0,
+                    "changes": 1,
+                    "patch": "@@ -0,0 +1 @@\n+new",
+                }
+            ]
+        elif request.method == "GET" and path == "pulls/24":
             value = {
                 "head": {"sha": self.head_sha},
                 "base": {"ref": self.base_ref, "sha": self.base_sha},
+                "changed_files": 1,
             }
         elif request.method == "GET" and path in {"issues/24", "issues/24/comments"}:
             value = {"labels": [], "assignees": []} if path == "issues/24" else []
+        elif request.method == "POST" and path == "pulls/24/reviews":
+            self.review_posts.append(body)
+            value = {}
         else:
             value = {}
         return 200, {}, json.dumps(value).encode()
@@ -427,7 +302,6 @@ def _review_apply_setup(
     event_name="pull_request_target",
 ):
     from agent_repo.commands import review_apply
-    from agent_repo.github import GitHub
 
     event_path = _event_file(tmp_path, event_name, base=base_sha)
     review_path = tmp_path / "review.json"
@@ -447,8 +321,6 @@ def _review_apply_setup(
             }
         )
     )
-    diff_path = tmp_path / "diff.patch"
-    diff_path.write_text("")
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
@@ -460,6 +332,8 @@ def _review_apply_setup(
     monkeypatch.setenv("AGENT_SCAN_KEYS", scan_keys)
     monkeypatch.setenv("AGENT_CANARY", "canary")
     monkeypatch.setenv("AGENT_BOT_LOGIN", "agent-review[bot]")
+    from agent_repo.github import GitHub
+
     monkeypatch.setattr(
         review_apply, "GitHub", lambda token, repo: GitHub(token, repo, transport=api)
     )
@@ -478,12 +352,27 @@ def _review_apply_setup(
         "_policy",
         lambda gh, sha, directory: ("a" * 40, config, charter),
     )
-    return review_apply, review_path, diff_path, summary
+    return review_apply, review_path, summary
+
+
+def test_review_apply_fetches_its_own_file_list_at_bound_head(tmp_path, monkeypatch):
+    api = ReviewApplyAPI()
+    command, review_path, summary = _review_apply_setup(tmp_path, monkeypatch, api=api)
+    artifact = json.loads(review_path.read_text())
+    artifact["findings"] = [{"severity": "low", "path": "src/a.py", "line": 1, "body": "New line."}]
+    review_path.write_text(json.dumps(artifact))
+
+    assert command.main([str(review_path)]) == 0
+    assert ("GET", "pulls/24/files") in api.calls
+    assert ("POST", "pulls/24/reviews") in api.calls
+    assert api.review_posts[0]["comments"][0]["path"] == "src/a.py"
+    assert api.review_posts[0]["comments"][0]["line"] == 1
+    assert "COMMENT review posted" in summary.read_text()
 
 
 def test_review_apply_main_rejects_head_moved_since_gate(tmp_path, monkeypatch):
     api = ReviewApplyAPI(head_sha="c" * 40)
-    command, review_path, diff_path, summary = _review_apply_setup(
+    command, review_path, summary = _review_apply_setup(
         tmp_path, monkeypatch, api=api, event_name="issue_comment"
     )
     policy_calls = []
@@ -492,7 +381,7 @@ def test_review_apply_main_rejects_head_moved_since_gate(tmp_path, monkeypatch):
         command, "_policy", lambda *args: (policy_calls.append(args[1]), policy(*args))[1]
     )
 
-    assert command.main([str(review_path), str(diff_path)]) == 0
+    assert command.main([str(review_path)]) == 0
     assert not any(method == "POST" for method, _ in api.calls)
     assert "head moved" in summary.read_text()
     assert not policy_calls
@@ -500,7 +389,7 @@ def test_review_apply_main_rejects_head_moved_since_gate(tmp_path, monkeypatch):
 
 def test_review_apply_main_rejects_base_mismatch_before_policy_or_write(tmp_path, monkeypatch):
     api = ReviewApplyAPI(base_sha="c" * 40)
-    command, review_path, diff_path, summary = _review_apply_setup(
+    command, review_path, summary = _review_apply_setup(
         tmp_path, monkeypatch, api=api, base_sha="c" * 40
     )
     policy_calls = []
@@ -509,7 +398,7 @@ def test_review_apply_main_rejects_base_mismatch_before_policy_or_write(tmp_path
         command, "_policy", lambda *args: (policy_calls.append(args[1]), policy(*args))[1]
     )
 
-    assert command.main([str(review_path), str(diff_path)]) == 1
+    assert command.main([str(review_path)]) == 1
     assert not any(method == "POST" for method, _ in api.calls)
     assert "trusted review inputs unavailable" in summary.read_text()
     assert not policy_calls
@@ -517,17 +406,15 @@ def test_review_apply_main_rejects_base_mismatch_before_policy_or_write(tmp_path
 
 def test_review_apply_main_requires_scan_keys(tmp_path, monkeypatch):
     api = ReviewApplyAPI()
-    command, review_path, diff_path, _ = _review_apply_setup(
-        tmp_path, monkeypatch, api=api, scan_keys="\n"
-    )
+    command, review_path, _ = _review_apply_setup(tmp_path, monkeypatch, api=api, scan_keys="\n")
 
-    assert command.main([str(review_path), str(diff_path)]) == 1
+    assert command.main([str(review_path)]) == 1
     assert not any(method == "POST" for method, _ in api.calls)
 
 
 def test_review_apply_drops_finding_that_contains_github_token(tmp_path, monkeypatch):
     api = ReviewApplyAPI()
-    command, review_path, diff_path, summary = _review_apply_setup(tmp_path, monkeypatch, api=api)
+    command, review_path, summary = _review_apply_setup(tmp_path, monkeypatch, api=api)
     review_value = json.loads(review_path.read_text())
     review_value["findings"] = [
         {
@@ -539,12 +426,12 @@ def test_review_apply_drops_finding_that_contains_github_token(tmp_path, monkeyp
     ]
     review_path.write_text(json.dumps(review_value))
 
-    assert command.main([str(review_path), str(diff_path)]) == 0
+    assert command.main([str(review_path)]) == 0
     assert not any(method == "POST" and path == "pulls/24/reviews" for method, path in api.calls)
     assert "test-token" not in summary.read_text()
 
 
-def test_pull_refuses_nondefault_base_before_diff_request(tmp_path):
+def test_pull_refuses_nondefault_base_before_files_request(tmp_path):
     event_path = Path("tests/fixtures/events/pull_request_target.opened.json")
     payload = json.loads(event_path.read_text())
     payload["repository"]["full_name"] = "your-org/project"
@@ -556,10 +443,6 @@ def test_pull_refuses_nondefault_base_before_diff_request(tmp_path):
     transport = API(base_ref="release")
     gh = GitHub("test-token", "your-org/project", transport=transport)
 
-    try:
+    with pytest.raises(ValueError, match="not based on the default branch"):
         _pull(gh, event)
-    except ValueError as error:
-        assert str(error) == "pull request is not based on the default branch"
-    else:
-        raise AssertionError("nondefault base was accepted")
-    assert not any(call[2] == "application/vnd.github.diff" for call in transport.calls)
+    assert not any(call[1].endswith("/files") for call in transport.calls)

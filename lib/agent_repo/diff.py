@@ -1,355 +1,176 @@
 import fnmatch
+import json
 import re
 
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
+_STATUSES = {"added", "removed", "modified", "renamed", "copied", "changed", "unchanged"}
+_NO_NEWLINE = "\\ No newline at end of file"
+_NEEDS_MAINTAINER = "File list or patch could not be reviewed safely; needs-maintainer."
 
 
-def _quoted_path(value: str) -> tuple[str, str] | None:
-    if not value.startswith('"'):
-        return None
-    result = bytearray()
-    index = 1
-    escapes = {
-        '"': b'"',
-        "\\": b"\\",
-        "a": b"\a",
-        "b": b"\b",
-        "t": b"\t",
-        "n": b"\n",
-        "v": b"\v",
-        "f": b"\f",
-        "r": b"\r",
-    }
-    while index < len(value):
-        char = value[index]
-        index += 1
-        if char == '"':
-            suffix = value[index:]
-            return result.decode("utf-8", errors="surrogateescape"), suffix
-        if char != "\\":
-            result.extend(char.encode("utf-8", errors="surrogateescape"))
-            continue
-        if index >= len(value):
-            return None
-        escaped = value[index]
-        index += 1
-        if escaped in escapes:
-            result.extend(escapes[escaped])
-        elif escaped in "01234567":
-            digits = escaped
-            while index < len(value) and len(digits) < 3 and value[index] in "01234567":
-                digits += value[index]
-                index += 1
-            result.append(int(digits, 8))
-        else:
-            return None
-    return None
+def _valid_path(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and not any(character in value for character in "\x00\r\n")
+        and not value.startswith("/")
+    )
 
 
-def _path(value: str, *, strip_prefix: bool = True) -> str | None:
-    value = value.removesuffix("\r")
-    if value.startswith('"'):
-        parsed = _quoted_path(value)
-        if parsed is None or (parsed[1] and not parsed[1].startswith("\t")):
-            return None
-        path = parsed[0]
-    else:
-        path = value.partition("\t")[0]
-    if not path:
-        return None
-    if path == "/dev/null":
-        return None
-    if strip_prefix and path.startswith(("a/", "b/")):
-        path = path[2:]
-    return path or None
+def _validate_files(files: object) -> list[dict]:
+    if not isinstance(files, list):
+        raise ValueError("invalid pull request files")
+    validated = []
+    filenames = set()
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise ValueError("invalid pull request file")
+        filename = entry.get("filename")
+        previous = entry.get("previous_filename")
+        status = entry.get("status")
+        additions = entry.get("additions")
+        deletions = entry.get("deletions")
+        changes = entry.get("changes")
+        if not _valid_path(filename) or filename in filenames:
+            raise ValueError("invalid pull request filename")
+        if previous is not None and not _valid_path(previous):
+            raise ValueError("invalid previous pull request filename")
+        if not isinstance(status, str) or status not in _STATUSES:
+            raise ValueError("invalid pull request file status")
+        if any(type(count) is not int or count < 0 for count in (additions, deletions, changes)):
+            raise ValueError("invalid pull request change counts")
+        if changes != additions + deletions:
+            raise ValueError("inconsistent pull request change counts")
+        if status in {"renamed", "copied"} and previous is None:
+            raise ValueError("moved pull request file has no previous filename")
+        if status not in {"renamed", "copied"} and previous is not None:
+            raise ValueError("unexpected previous pull request filename")
+        if "patch" in entry and not isinstance(entry["patch"], str):
+            raise ValueError("invalid pull request patch")
+        filenames.add(filename)
+        validated.append(entry)
+    return validated
 
 
-def _git_header_paths(line: str) -> tuple[str | None, str | None] | None:
-    value = line.removeprefix("diff --git ")
-    tokens = []
-    while value:
-        value = value.lstrip(" ")
-        if not value:
-            break
-        if value.startswith('"'):
-            parsed = _quoted_path(value)
-            if parsed is None:
-                return None
-            token, suffix = parsed
-            tokens.append(token)
-            value = suffix.lstrip(" ")
-        else:
-            token, separator, value = value.partition(" ")
-            tokens.append(token)
-            if not separator:
-                value = ""
-        if len(tokens) > 2:
-            return None
-    if len(tokens) != 2:
-        return None
-    left = _path(tokens[0])
-    right = _path(tokens[1])
-    if left is None or right is None:
-        return None
-    return left, right
+def fetch_files(gh, number: int) -> list[dict]:
+    """Fetch and validate the structured file list for one pull request."""
+    files = gh.paginate(f"pulls/{number}/files", {"per_page": 100})
+    return _validate_files(files)
 
 
-def _identical_spaced_header_paths(line: str) -> tuple[str, str] | None:
-    prefix = "diff --git a/"
-    if not line.startswith(prefix):
-        return None
-    value = line.removeprefix(prefix)
-    matches = []
-    start = 0
-    while (separator := value.find(" b/", start)) >= 0:
-        left, right = value[:separator], value[separator + 3 :]
-        if left and left == right:
-            matches.append((left, right))
-        start = separator + 1
-    return matches[0] if len(matches) == 1 else None
+def render_files(files: list[dict]) -> str:
+    rendered = [
+        {
+            key: entry[key]
+            for key in (
+                "filename",
+                "previous_filename",
+                "status",
+                "additions",
+                "deletions",
+                "patch",
+            )
+            if key in entry
+        }
+        for entry in _validate_files(files)
+    ]
+    return json.dumps(rendered, indent=2, ensure_ascii=False) + "\n"
 
 
-def _diff_lines(diff: str) -> list[str]:
-    lines = diff.split("\n")
+def _parse_patch(patch: str) -> tuple[dict[int, None], bool]:
+    index: dict[int, None] = {}
+    lines = [line.removesuffix("\r") for line in patch.split("\n")]
     if lines and lines[-1] == "":
         lines.pop()
-    return [line.removesuffix("\r") for line in lines]
-
-
-def _parse_diff(diff: str) -> tuple[dict[str, set[int]], set[str], bool]:
-    index: dict[str, set[int]] = {}
-    paths: set[str] = set()
-    invalid = False
-    file_open = False
-    file_header_paths = False
-    left_header_seen = right_header_seen = False
-    hunk_started = False
-    left_path = None
-    right_path = None
-    renamed_from = None
-    renamed_to = None
-    copied_from = None
-    copied_to = None
-    rename_from_seen = rename_to_seen = False
-    copy_from_seen = copy_to_seen = False
-    in_hunk = False
     old_remaining = new_remaining = 0
     right_line = 0
-
-    def finish_file() -> None:
-        nonlocal invalid, file_open, file_header_paths, left_header_seen, right_header_seen
-        nonlocal hunk_started
-        nonlocal left_path, right_path
-        nonlocal renamed_from, renamed_to
-        nonlocal copied_from, copied_to
-        nonlocal rename_from_seen, rename_to_seen, copy_from_seen, copy_to_seen
-        if not file_open:
-            return
-        header_paths = _git_header_paths(current_header)
-        if header_paths is not None:
-            paths.update(header_paths)
-        if file_header_paths:
-            if not left_header_seen or not right_header_seen:
+    in_hunk = False
+    saw_hunk = False
+    invalid = False
+    for line in lines:
+        if in_hunk and old_remaining == 0 and new_remaining == 0:
+            in_hunk = False
+        if line.startswith("@@"):
+            if in_hunk:
                 invalid = True
-            expected_left = left_path if left_path is not None else right_path
-            expected_right = right_path if right_path is not None else left_path
-            if expected_left is None or expected_right is None:
-                invalid = True
-            elif header_paths is not None:
-                if header_paths != (expected_left, expected_right):
-                    invalid = True
-            elif current_header != f"diff --git a/{expected_left} b/{expected_right}":
-                invalid = True
-            if left_path is not None:
-                paths.add(left_path)
-            if right_path is not None:
-                paths.add(right_path)
-        else:
-            if not (rename_from_seen or rename_to_seen or copy_from_seen or copy_to_seen):
-                if header_paths is None:
-                    header_paths = _identical_spaced_header_paths(current_header)
-                    if header_paths is not None:
-                        paths.update(header_paths)
-                if header_paths is None:
-                    invalid = True
-                else:
-                    paths.update(header_paths)
-
-        for from_seen, to_seen, from_path, to_path in (
-            (rename_from_seen, rename_to_seen, renamed_from, renamed_to),
-            (copy_from_seen, copy_to_seen, copied_from, copied_to),
-        ):
-            if not (from_seen or to_seen):
-                continue
-            if not (from_seen and to_seen and from_path is not None and to_path is not None):
-                invalid = True
-            else:
-                metadata_paths = (from_path, to_path)
-                if header_paths is not None:
-                    if header_paths != metadata_paths:
-                        invalid = True
-                elif current_header != f"diff --git a/{from_path} b/{to_path}":
-                    invalid = True
-                if file_header_paths and (left_path, right_path) != metadata_paths:
-                    invalid = True
-                paths.update(metadata_paths)
-        file_open = False
-        file_header_paths = False
-        left_header_seen = right_header_seen = False
-        hunk_started = False
-        left_path = right_path = None
-        renamed_from = renamed_to = None
-        copied_from = copied_to = None
-        rename_from_seen = rename_to_seen = False
-        copy_from_seen = copy_to_seen = False
-
-    current_header = ""
-    for line in _diff_lines(diff):
-        if in_hunk:
-            if old_remaining == 0 and new_remaining == 0:
-                in_hunk = False
-            else:
-                if line.startswith(" "):
-                    old_remaining -= 1
-                    new_remaining -= 1
-                    if right_path is not None:
-                        index.setdefault(right_path, set()).add(right_line)
-                    right_line += 1
-                elif line.startswith("+"):
-                    new_remaining -= 1
-                    if right_path is not None:
-                        index.setdefault(right_path, set()).add(right_line)
-                    right_line += 1
-                elif line.startswith("-"):
-                    old_remaining -= 1
-                elif line == "\\ No newline at end of file":
-                    continue
-                else:
-                    invalid = True
-                    in_hunk = False
-                if old_remaining < 0 or new_remaining < 0:
-                    invalid = True
-                    in_hunk = False
-                if in_hunk:
-                    continue
-
-        if line.startswith("diff --git "):
-            finish_file()
-            current_header = line
-            file_open = True
-        elif line.startswith("--- ") and file_open:
-            if hunk_started or left_header_seen:
-                invalid = True
-                continue
-            parsed = _path(line[4:])
-            if parsed is None and line[4:].partition("\t")[0] != "/dev/null":
-                invalid = True
-            left_path = parsed
-            file_header_paths = True
-            left_header_seen = True
-        elif line.startswith("+++ ") and file_open:
-            if hunk_started or right_header_seen:
-                invalid = True
-                continue
-            parsed = _path(line[4:])
-            if parsed is None and line[4:].partition("\t")[0] != "/dev/null":
-                invalid = True
-            right_path = parsed
-            file_header_paths = True
-            right_header_seen = True
-        elif line.startswith("@@"):
-            hunk_started = True
-            match = _HUNK.match(line)
+            match = _HUNK.fullmatch(line)
             if match is None:
                 invalid = True
+                in_hunk = False
                 continue
-            new_start = int(match[3])
-            new_count = int(match[4] or "1")
-            if right_path is None and not (
-                left_path is not None and new_start == 0 and new_count == 0
-            ):
-                invalid = True
-                continue
+            saw_hunk = True
             right_line = int(match[3])
             old_remaining = int(match[2] or "1")
             new_remaining = int(match[4] or "1")
             in_hunk = old_remaining > 0 or new_remaining > 0
-        elif line == "\\ No newline at end of file" and hunk_started:
+        elif line == _NO_NEWLINE and saw_hunk:
             continue
-        elif (
-            file_open
-            and not hunk_started
-            and any(
-                line.startswith(prefix)
-                for prefix in (
-                    "index ",
-                    "old mode ",
-                    "new mode ",
-                    "deleted file mode ",
-                    "new file mode ",
-                    "similarity index ",
-                    "dissimilarity index ",
-                    "rename from ",
-                    "rename to ",
-                    "copy from ",
-                    "copy to ",
-                    "Binary files ",
-                )
-            )
-        ):
-            if line.startswith("rename from "):
-                if rename_from_seen:
-                    invalid = True
-                rename_from_seen = True
-                renamed_from = _path(line.removeprefix("rename from "), strip_prefix=False)
-                if renamed_from is None:
-                    invalid = True
-            elif line.startswith("rename to "):
-                if rename_to_seen:
-                    invalid = True
-                rename_to_seen = True
-                renamed_to = _path(line.removeprefix("rename to "), strip_prefix=False)
-                if renamed_to is None:
-                    invalid = True
-            elif line.startswith("copy from "):
-                if copy_from_seen:
-                    invalid = True
-                copy_from_seen = True
-                copied_from = _path(line.removeprefix("copy from "), strip_prefix=False)
-                if copied_from is None:
-                    invalid = True
-            elif line.startswith("copy to "):
-                if copy_to_seen:
-                    invalid = True
-                copy_to_seen = True
-                copied_to = _path(line.removeprefix("copy to "), strip_prefix=False)
-                if copied_to is None:
-                    invalid = True
+        elif not in_hunk:
+            invalid = True
+        elif line.startswith(" "):
+            old_remaining -= 1
+            new_remaining -= 1
+            index[right_line] = None
+            right_line += 1
+        elif line.startswith("+"):
+            new_remaining -= 1
+            index[right_line] = None
+            right_line += 1
+        elif line.startswith("-"):
+            old_remaining -= 1
         else:
             invalid = True
-    if in_hunk and (old_remaining or new_remaining):
+        if old_remaining < 0 or new_remaining < 0:
+            invalid = True
+            in_hunk = False
+    if not saw_hunk or old_remaining or new_remaining:
         invalid = True
-    finish_file()
-    return index, paths, invalid
+    return index, invalid
 
 
-def diff_index(diff: str) -> dict[str, set[int]]:
-    """Index right-side lines represented by added or context diff rows."""
-    index, _, invalid = _parse_diff(diff)
-    return {} if invalid else index
+def diff_index(files: list[dict]) -> dict[str, set[int]]:
+    """Index RIGHT-side lines represented by added or context rows in file patches."""
+    try:
+        validated = _validate_files(files)
+    except ValueError:
+        return {}
+    index: dict[str, set[int]] = {}
+    for entry in validated:
+        patch = entry.get("patch")
+        if patch is None:
+            if entry["changes"]:
+                return {}
+            continue
+        if not patch:
+            if entry["changes"]:
+                return {}
+            continue
+        lines, invalid = _parse_patch(patch)
+        if invalid:
+            return {}
+        index[entry["filename"]] = set(lines)
+    return index
 
 
-def summary_only(diff: str, config) -> tuple[bool, str]:
+def summary_only(files: list[dict], config) -> tuple[bool, str]:
+    try:
+        validated = _validate_files(files)
+    except ValueError:
+        return True, _NEEDS_MAINTAINER
+    if len(validated) > 3000:
+        return True, "Pull request file list exceeds the API limit; needs-maintainer."
+    if len(render_files(validated).encode("utf-8")) > 120 * 1024:
+        return True, "Pull request files exceed the prompt budget; needs-maintainer."
+    changed_lines = sum(entry["additions"] + entry["deletions"] for entry in validated)
     maximum = config.raw["limits"]["review_max_lines"]
-    line_count = len(_diff_lines(diff))
-    if line_count > maximum:
-        return True, f"Diff has {line_count} lines; review_max_lines is {maximum}."
-    byte_count = len(diff.encode("utf-8"))
-    if byte_count > 120 * 1024:
-        return True, f"Diff has {byte_count} bytes; prompt budget is 122880 bytes."
-    _, paths, invalid = _parse_diff(diff)
-    if invalid:
-        return True, "Diff paths could not be parsed unambiguously; needs-maintainer."
+    if changed_lines > maximum:
+        return True, f"Pull request changes {changed_lines} lines; review_max_lines is {maximum}."
+    paths = [
+        path
+        for entry in validated
+        for path in (entry["filename"], entry.get("previous_filename"))
+        if path is not None
+    ]
     sensitive = [
         area.name
         for area in config.areas
@@ -359,4 +180,12 @@ def summary_only(diff: str, config) -> tuple[bool, str]:
     if sensitive:
         names = ", ".join(dict.fromkeys(sensitive))
         return True, f"Sensitive area ({names}) requires maintainer review: needs-maintainer."
+    for entry in validated:
+        patch = entry.get("patch")
+        if entry["changes"] and patch is None:
+            return True, f"Patch unavailable for {entry['filename']}; needs-maintainer."
+        if patch:
+            _, invalid = _parse_patch(patch)
+            if invalid:
+                return True, f"Invalid patch for {entry['filename']}; needs-maintainer."
     return False, ""

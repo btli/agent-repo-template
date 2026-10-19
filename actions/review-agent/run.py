@@ -67,20 +67,21 @@ def main() -> int:
             print("Summary-only review artifact written.")
             return 0
 
-        diff = Path(os.environ["DIFF_FILE"]).read_text(encoding="utf-8")
-        if len(diff.encode()) > 120 * 1024:
+        files_text = Path(os.environ["FILES_FILE"]).read_text(encoding="utf-8")
+        files = json.loads(files_text)
+        if not isinstance(files, list) or len(files_text.encode()) > 120 * 1024:
             raise ValueError
         if re.fullmatch(r"[A-Z_][A-Z0-9_]*", key_env) is None:
             raise ValueError
         key = os.environ[key_env]
         if not key:
             raise ValueError
-        blocks = {"diff": diff, "schema": json.dumps(schema, sort_keys=True)}
+        blocks = {"files": files_text, "schema": json.dumps(schema, sort_keys=True)}
         prompt = render_prompt(
             (Path(os.environ["REVIEW_AGENT"]) / "prompt.md").read_text(encoding="utf-8")
             + "\nPrivate canary: {{canary}}\nRun: {{context:run_id}}\n"
             + "Base: {{context:base_sha}}\nHead: {{context:head_sha}}\n"
-            + "{{block:schema}}\n{{block:diff}}",
+            + "{{block:schema}}\n{{block:files}}",
             canary=canary,
             blocks=blocks,
             context={"run_id": run_id, "base_sha": base_sha, "head_sha": head_sha},

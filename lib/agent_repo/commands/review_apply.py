@@ -11,19 +11,19 @@ from agent_repo.apply.review import apply_review
 from agent_repo.commands.apply import _policy
 from agent_repo.commands.fetch_diff import _pull
 from agent_repo.config import ConfigError
-from agent_repo.diff import diff_index
+from agent_repo.diff import diff_index, fetch_files, summary_only
 from agent_repo.event import load_event
 from agent_repo.github import GitHub, GitHubError
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: review_apply <review.json> <diff.patch>", file=sys.stderr)
+    if len(argv) != 1:
+        print("usage: review_apply <review.json>", file=sys.stderr)
         return 2
     summary = Path(os.environ.get("GITHUB_STEP_SUMMARY", "review-apply-summary.md"))
     try:
-        review_path, diff_path = map(Path, argv)
-        if review_path.stat().st_size > 1_000_000 or diff_path.stat().st_size > 2_000_000:
+        review_path = Path(argv[0])
+        if review_path.stat().st_size > 1_000_000:
             raise ValueError
         review = json.loads(review_path.read_text(encoding="utf-8"))
         event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
@@ -48,6 +48,16 @@ def main(argv: list[str]) -> int:
         ):
             summary.write_text("No review posted: pull request head moved.\n", encoding="utf-8")
             return 0
+        files_invalid = False
+        try:
+            files = fetch_files(gh, event.number)
+        except ValueError:
+            files = []
+            files_invalid = True
+        current_pull = _pull(gh, event)
+        if current_pull["head"]["sha"] != expected_head_sha:
+            summary.write_text("No review posted: pull request head moved.\n", encoding="utf-8")
+            return 0
         if review.get("base_sha") != base_sha:
             summary.write_text(
                 "No review posted: policy base identity mismatch.\n", encoding="utf-8"
@@ -55,6 +65,28 @@ def main(argv: list[str]) -> int:
             return 0
         with tempfile.TemporaryDirectory(prefix="agent-review-policy-") as directory:
             _, config, charter = _policy(gh, base_sha, Path(directory))
+        changed_files = pull.get("changed_files")
+        files_incomplete = (
+            files_invalid
+            or type(changed_files) is not int
+            or changed_files < 0
+            or changed_files > 3000
+            or len(files) != changed_files
+        )
+        limited, reason = (
+            summary_only(files, config)
+            if not files_incomplete
+            else (
+                True,
+                "Pull request file list is incomplete; needs-maintainer.",
+            )
+        )
+        if limited:
+            review = dict(review)
+            review["escalate"] = {
+                "to": "maintainer",
+                "reason": reason[:500] or "Review needs a maintainer.",
+            }
         if event.head_sha is None:
             event = replace(event, head_sha=review["head_sha"])
         token = os.environ["GH_TOKEN"]
@@ -81,7 +113,7 @@ def main(argv: list[str]) -> int:
         alerts = apply_review(
             review,
             ctx,
-            diff_index(diff_path.read_text(encoding="utf-8")),
+            {} if limited else diff_index(files),
             gh,
             mode,
             summary,

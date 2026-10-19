@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from agent_repo.config import load_config
-from agent_repo.diff import summary_only
+from agent_repo.diff import fetch_files, render_files, summary_only
 from agent_repo.event import Event, load_event
 from agent_repo.github import GitHub, GitHubError
 
@@ -40,7 +40,12 @@ def _event_base_ref(event_name: str, event_path: Path) -> str | None:
     return None
 
 
-def fetch(diff_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
+def _changed_files(pull: dict) -> int | None:
+    count = pull.get("changed_files")
+    return count if type(count) is int and count >= 0 else None
+
+
+def fetch(files_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
     event_name = os.environ["GITHUB_EVENT_NAME"]
     event_path = Path(os.environ["GITHUB_EVENT_PATH"])
     event = load_event(event_name, event_path)
@@ -67,16 +72,26 @@ def fetch(diff_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
     head_sha = pull["head"]["sha"]
     if head_sha != expected_head_sha:
         raise ValueError("pull request head changed since gate")
-    diff = gh.request("GET", f"pulls/{event.number}", accept="application/vnd.github.diff")
-    if not isinstance(diff, str) or len(diff.encode()) > 2_000_000:
-        raise ValueError("invalid or oversized pull request diff")
-    if _pull(gh, event)["head"]["sha"] != expected_head_sha:
+    files_invalid = False
+    try:
+        files = fetch_files(gh, event.number)
+    except ValueError:
+        files = []
+        files_invalid = True
+    current_pull = _pull(gh, event)
+    if current_pull["head"]["sha"] != expected_head_sha:
         raise ValueError("pull request head changed while fetching diff")
+    changed_files = _changed_files(pull)
     config = load_config(config_dir)
-    limited, reason = summary_only(diff, config)
+    if files_invalid:
+        limited, reason = True, "Pull request file list is malformed; needs-maintainer."
+    elif changed_files is None or changed_files > 3000 or len(files) != changed_files:
+        limited, reason = True, "Pull request file list is incomplete; needs-maintainer."
+    else:
+        limited, reason = summary_only(files, config)
     reason = reason.replace("\r", " ").replace("\n", " ")[:4000]
-    diff_path.parent.mkdir(parents=True, exist_ok=True)
-    diff_path.write_text(diff, encoding="utf-8")
+    files_path.parent.mkdir(parents=True, exist_ok=True)
+    files_path.write_text(render_files(files), encoding="utf-8")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         output.write(f"base_sha={base_sha}\n")
         output.write(f"head_sha={head_sha}\n")
@@ -87,7 +102,7 @@ def fetch(diff_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print("usage: fetch_diff <diff-file> <trusted-config-dir>", file=sys.stderr)
+        print("usage: fetch_diff <files-file> <trusted-config-dir>", file=sys.stderr)
         return 2
     try:
         fetch(Path(argv[0]), Path(argv[1]))

@@ -53,7 +53,7 @@ jobs:
           mode: propose
           config-dir: ${{ github.workspace }}/agent-gate-default/.agents
           expected-head-sha: ${{ steps.gate.outputs.head_sha }}
-          diff-file: ${{ runner.temp }}/agent-review/diff.patch
+          files-file: ${{ runner.temp }}/agent-review/files.json
           output-file: ${{ runner.temp }}/agent-review/review.json
           run-id: ${{ github.run_id }}
       - name: Share review inputs with the apply job
@@ -62,7 +62,6 @@ jobs:
         with:
           name: agent-review-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/agent-review/diff.patch
             ${{ runner.temp }}/agent-review/review.json
           if-no-files-found: error
           retention-days: 1
@@ -94,7 +93,6 @@ jobs:
         uses: btli/agent-repo-template/actions/review-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         with:
           mode: apply
-          diff-file: ${{ runner.temp }}/agent-review/diff.patch
           output-file: ${{ runner.temp }}/agent-review/review.json
           run-id: ${{ github.run_id }}
           expected-head-sha: ${{ needs.agent-propose-review.outputs.head_sha }}

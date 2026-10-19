@@ -1,5 +1,5 @@
 name: Review or apply a pull request review
-description: Fetch diffs without checkout, run a confined reviewer, and apply COMMENT-only reviews.
+description: Fetch pull request files through the API, run a confined reviewer, and apply COMMENT-only reviews.
 inputs:
   mode:
     description: Select propose or apply.
@@ -9,9 +9,9 @@ inputs:
     description: Trusted default-branch .agents directory.
     required: false
     default: ''
-  diff-file:
-    description: Destination or source for the API-provided unified diff.
-    required: true
+  files-file:
+    description: Destination for the rendered pull request files list used by the reviewer.
+    required: false
   output-file:
     description: Destination or source for the validated review JSON.
     required: true
@@ -49,7 +49,7 @@ outputs:
     description: Pull request head captured by the fetch step.
     value: ${{ steps.fetch.outputs.head_sha }}
   summary-only:
-    description: Whether the patch was too large or sensitive for model review.
+    description: Whether the file list was too large, incomplete, or sensitive for model review.
     value: ${{ steps.fetch.outputs.summary_only }}
   summary-reason:
     description: Bounded reason for a summary-only review.
@@ -57,25 +57,25 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Fetch diff from the GitHub API
+    - name: Fetch pull request files from the GitHub API
       id: fetch
       if: inputs.mode == 'propose'
       shell: bash
       env:
         CONFIG_DIR: ${{ inputs.config-dir }}
-        DIFF_FILE: ${{ inputs.diff-file }}
+        FILES_FILE: ${{ inputs.files-file }}
         GH_TOKEN: ${{ inputs.token }}
         EXPECTED_HEAD_SHA: ${{ inputs.expected-head-sha }}
       run: |
         set -euo pipefail
         template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
         export PYTHONPATH="$template_root/lib"
-        python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" fetch_diff "$DIFF_FILE" "$CONFIG_DIR"
+        python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" fetch_diff "$FILES_FILE" "$CONFIG_DIR"
     - name: Run review agent
       if: inputs.mode == 'propose'
       shell: bash
       env:
-        DIFF_FILE: ${{ inputs.diff-file }}
+        FILES_FILE: ${{ inputs.files-file }}
         OUTPUT_FILE: ${{ inputs.output-file }}
         RUN_ID: ${{ inputs.run-id }}
         BASE_SHA: ${{ steps.fetch.outputs.base_sha }}
@@ -95,7 +95,6 @@ runs:
       shell: bash
       env:
         REVIEW_FILE: ${{ inputs.output-file }}
-        DIFF_FILE: ${{ inputs.diff-file }}
         GH_TOKEN: ${{ inputs.token }}
         EXPECTED_HEAD_SHA: ${{ inputs.expected-head-sha }}
         AGENT_SCAN_KEYS: ${{ inputs.scan-keys }}
@@ -105,4 +104,4 @@ runs:
         set -euo pipefail
         template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
         export PYTHONPATH="$template_root/lib"
-        python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" review_apply "$REVIEW_FILE" "$DIFF_FILE"
+        python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" review_apply "$REVIEW_FILE"

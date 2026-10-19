@@ -1,431 +1,167 @@
+import json
+from pathlib import Path
+
 import pytest
 from agent_repo.config import Area, RepoConfig
-from agent_repo.diff import _parse_diff, diff_index, summary_only
+from agent_repo.diff import diff_index, summary_only
+
+
+def _file(patch_text, **overrides):
+    entry = {
+        "filename": "src/file.py",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 1,
+        "changes": 2,
+        "patch": patch_text,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _config(maximum=1500, areas=()):
+    return RepoConfig({"limits": {"review_max_lines": maximum}}, tuple(areas), ())
 
 
 def test_diff_index_includes_added_and_context_lines_but_not_removed_lines():
-    diff = """diff --git a/src/file.py b/src/file.py
-index 1111111..2222222 100644
---- a/src/file.py
-+++ b/src/file.py
-@@ -2,3 +2,3 @@
- context
--removed
-+added
- context-after
-"""
+    files = [
+        _file(
+            "@@ -2,3 +2,3 @@\n context\n-removed\n+added\n context-after",
+            additions=1,
+            deletions=1,
+        )
+    ]
 
-    assert diff_index(diff) == {"src/file.py": {2, 3, 4}}
+    assert diff_index(files) == {"src/file.py": {2, 3, 4}}
 
 
-def test_diff_index_parses_crlf_lines():
-    diff = (
-        "diff --git a/src/file.py b/src/file.py\r\n"
-        "--- a/src/file.py\r\n"
-        "+++ b/src/file.py\r\n"
-        "@@ -0,0 +1 @@\r\n"
-        "+added\r\n"
+def test_diff_index_accepts_multiple_hunks_and_no_newline_marker():
+    patch = (
+        "@@ -1 +1 @@ function name\n-old\n+new\n\\ No newline at end of file\n@@ -5,0 +6 @@\n+last"
     )
 
-    assert diff_index(diff) == {"src/file.py": {1}}
-
-
-def test_diff_index_uses_renamed_path():
-    diff = """diff --git a/old.py b/new.py
-similarity index 90%
-rename from old.py
-rename to new.py
---- a/old.py
-+++ b/new.py
-@@ -1 +1 @@
--old
-+new
-"""
-
-    assert diff_index(diff) == {"new.py": {1}}
-
-
-def test_diff_index_does_not_parse_added_header_like_rows_between_hunks():
-    diff = """diff --git a/src/real.py b/src/real.py
---- a/src/real.py
-+++ b/src/real.py
-@@ -0,0 +1 @@
-+++ b/src/fake.py
-@@ -10,0 +12 @@
-+real content
-"""
-
-    assert diff_index(diff) == {"src/real.py": {1, 12}}
-
-
-def test_diff_index_decodes_quoted_paths():
-    diff = """diff --git a/src/quoted name.py b/src/quoted name.py
---- "a/src/quoted\\040name.py"
-+++ "b/src/quoted\\040name.py"
-@@ -0,0 +1 @@
-+added
-"""
-
-    assert diff_index(diff) == {"src/quoted name.py": {1}}
-
-
-def test_summary_only_for_large_diff():
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    diff = "".join(f"+line {line}\n" for line in range(1501))
-
-    summary_only_result, reason = summary_only(diff, config)
-
-    assert summary_only_result is True
-    assert "1500" in reason
-
-
-def test_summary_only_for_sensitive_area():
-    config = RepoConfig(
-        {"limits": {"review_max_lines": 1500}},
-        (Area("security", "Secrets", (".github/**",), (), True),),
-        (),
-    )
-
-    diff = """diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
---- a/.github/workflows/ci.yml
-+++ b/.github/workflows/ci.yml
-@@ -1 +1 @@
--old
-+new
-"""
-    summary_only_result, reason = summary_only(diff, config)
-
-    assert summary_only_result is True
-    assert "needs-maintainer" in reason
-
-
-def test_summary_only_sensitive_deletion_uses_old_path():
-    config = RepoConfig(
-        {"limits": {"review_max_lines": 1500}},
-        (Area("security", "Secrets", (".github/**",), (), True),),
-        (),
-    )
-    diff = """diff --git a/.github/secrets.yml b/.github/secrets.yml
-deleted file mode 100644
---- a/.github/secrets.yml
-+++ /dev/null
-"""
-
-    summary_only_result, reason = summary_only(diff, config)
-
-    assert summary_only_result is True
-    assert "needs-maintainer" in reason
-
-
-def test_summary_only_detects_sensitive_path_with_spaces():
-    config = RepoConfig(
-        {"limits": {"review_max_lines": 1500}},
-        (Area("ci", "CI", (".github/**",), (), True),),
-        (),
-    )
-    diff = """diff --git a/.github/workflows/a b.yml b/.github/workflows/a b.yml
---- a/.github/workflows/a b.yml\t
-+++ b/.github/workflows/a b.yml\t
-@@ -1 +1 @@
--old
-+new
-"""
-
-    assert diff_index(diff) == {".github/workflows/a b.yml": {1}}
-
-    limited, reason = summary_only(diff, config)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-
-
-@pytest.mark.parametrize("separator", ["\x0c", "\u2028", "\x1c", "\x85"])
-@pytest.mark.parametrize("new_file", [False, True])
-def test_summary_only_keeps_separator_injection_in_sensitive_workflow(separator, new_file):
-    config = RepoConfig(
-        {"limits": {"review_max_lines": 1500}},
-        (Area("security", "CI", (".github/**",), (), True),),
-        (),
-    )
-    path = ".github/workflows/new.yml" if new_file else ".github/workflows/ci.yml"
-    old_path = "/dev/null" if new_file else f"a/{path}"
-    new_path = f"b/{path}"
-    hunk = "@@ -0,0 +1 @@\n" if new_file else "@@ -1 +1 @@\n-old\n"
-    diff = (
-        f"diff --git a/{path} b/{path}\n--- {old_path}\n+++ {new_path}\n"
-        f"{hunk}+y{separator}--- /dev/null{separator}+++ b/src/ok.py\n"
-    )
-
-    assert diff_index(diff) == {path: {1}}
-
-    limited, reason = summary_only(diff, config)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-
-
-def test_summary_only_counts_lines_using_newline_only():
-    config = RepoConfig({"limits": {"review_max_lines": 5}}, (), ())
-    diff = (
-        "diff --git a/src/file.py b/src/file.py\n--- a/src/file.py\n"
-        "+++ b/src/file.py\n@@ -0,0 +1 @@\n+first\u2028second\n"
-    )
-
-    limited, reason = summary_only(diff, config)
-
-    assert limited is False
-    assert reason == ""
-
-
-@pytest.mark.parametrize("header", ["--- a/src/other.py", "+++ b/src/other.py"])
-@pytest.mark.parametrize("after_hunk", [False, True])
-def test_summary_only_fails_closed_for_repeated_or_late_file_headers(header, after_hunk):
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    diff = "diff --git a/src/file.py b/src/file.py\n--- a/src/file.py\n+++ b/src/file.py\n"
-    if after_hunk:
-        diff += f"@@ -0,0 +1 @@\n+added\n{header}\n"
-    else:
-        diff += f"{header}\n@@ -0,0 +1 @@\n+added\n"
-
-    limited, reason = summary_only(diff, config)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-
-
-def test_summary_only_ignores_first_added_header_after_hunk():
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    diff = """diff --git a/src/file.py b/src/file.py
---- a/src/file.py
-@@ -0,0 +1 @@
-+added
-+++ b/src/late.py
-"""
-
-    limited, reason = summary_only(diff, config)
-    _, paths, _ = _parse_diff(diff)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-    assert paths == {"src/file.py"}
-
-
-def test_summary_only_ignores_first_removed_header_after_hunk():
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    diff = """diff --git a/src/file.py b/src/file.py
-+++ b/src/file.py
-@@ -0,0 +1 @@
-+added
---- a/src/late.py
-"""
-
-    limited, reason = summary_only(diff, config)
-    _, paths, _ = _parse_diff(diff)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-    assert paths == {"src/file.py"}
-
-
-def test_summary_only_fails_closed_for_garbage_inside_hunk():
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    diff = """diff --git a/src/file.py b/src/file.py
---- a/src/file.py
-+++ b/src/file.py
-@@ -0,0 +1,2 @@
-+valid row
-garbage row
-"""
-
-    limited, reason = summary_only(diff, config)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-
-
-def test_summary_only_fails_closed_for_ambiguous_path_header():
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    diff = """diff --git a/src/file.py b/src/file.py
---- "a/src/file.py
-+++ b/src/file.py
-"""
-
-    limited, reason = summary_only(diff, config)
-
-    assert limited is True
-    assert "needs-maintainer" in reason
-
-
-def test_summary_only_for_diff_over_prompt_byte_budget():
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    rows = ["+" + "x" * 200 for _ in range(1000)]
-    diff = "diff --git a/src/large.py b/src/large.py\n--- a/src/large.py\n+++ b/src/large.py\n"
-    diff += "@@ -0,0 +1,1000 @@\n" + "\n".join(rows) + "\n"
-
-    limited, reason = summary_only(diff, config)
-
-    assert limited is True
-    assert "byte" in reason.lower()
-
-
-def test_diff_index_keeps_modified_file_when_neighbor_file_is_deleted():
-    diff = """diff --git a/src/app.py b/src/app.py
---- a/src/app.py
-+++ b/src/app.py
-@@ -1 +1 @@
--old
-+new
-diff --git a/src/old.py b/src/old.py
-deleted file mode 100644
---- a/src/old.py
-+++ /dev/null
-@@ -1 +0,0 @@
--removed
-"""
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-
-    assert diff_index(diff) == {"src/app.py": {1}}
-    assert summary_only(diff, config) == (False, "")
-
-
-def test_summary_only_fails_closed_for_truncated_hunk():
-    diff = """diff --git a/src/file.py b/src/file.py
---- a/src/file.py
-+++ b/src/file.py
-@@ -1,2 +1,2 @@
--old
-+new
-"""
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-
-    limited, reason = summary_only(diff, config)
-
+    assert diff_index([_file(patch, additions=2, deletions=1, changes=3)]) == {
+        "src/file.py": {1, 6}
+    }
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        "@@ -1, +1 @@\n-old\n+new",
+        "@@ -1,3 +1,3 @@\n-old\n+new",
+        "@@ -1 +1 @@\n-old\n+new\ngarbage",
+        "@@ -1 +1 @@\n-old\n+new\n\\ evil",
+    ],
+    ids=["malformed-hunk-header", "short-hunk", "stray-row", "wrong-marker"],
+)
+def test_malformed_file_patch_fails_closed(patch):
+    files = [_file(patch)]
+
+    assert diff_index(files) == {}
+    limited, reason = summary_only(files, _config())
     assert limited is True
     assert "needs-maintainer" in reason
 
 
 @pytest.mark.parametrize(
-    "diff",
+    "entry",
     [
-        """diff --git a/src/a.py b/src/a.py
-rename from src/a.py
-rename to .github/workflows/ci.yml
-""",
-        """diff --git a/src/a.py b/src/src b.py
---- a/src/a.py
-+++ b/src/a.py
-""",
-        """diff --git a/src/a.py b/src/a.py
---- /dev/null
-+++ /dev/null
-""",
+        _file("@@ -1 +1 @@\n-old\n+new", status="mystery"),
+        _file("@@ -1 +1 @@\n-old\n+new", status=[]),
+        _file("@@ -1 +1 @@\n-old\n+new", status="renamed"),
+        _file("@@ -1 +1 @@\n-old\n+new", additions=True),
+        _file("@@ -1 +1 @@\n-old\n+new", changes=3),
+        _file("@@ -1 +1 @@\n-old\n+new", patch=3),
     ],
     ids=[
-        "rename-target-disagrees-with-header",
-        "spaced-file-header-disagrees",
-        "both-null",
+        "unknown-status",
+        "nonstr-status",
+        "rename-without-previous-filename",
+        "boolean-count",
+        "count-mismatch",
+        "nontext-patch",
     ],
 )
-def test_diff_index_rejects_inconsistent_file_paths(diff):
-    assert diff_index(diff) == {}
+def test_invalid_file_entries_fail_closed(entry):
+    files = [entry]
 
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    limited, reason = summary_only(diff, config)
+    assert diff_index(files) == {}
+    limited, reason = summary_only(files, _config())
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_file_with_changes_and_missing_patch_is_summary_only():
+    entry = _file(None)
+    entry.pop("patch")
+
+    assert diff_index([entry]) == {}
+    limited, reason = summary_only([entry], _config())
+    assert limited is True
+    assert "needs-maintainer" in reason
+
+
+def test_summary_only_counts_additions_and_deletions():
+    patch = "@@ -1,751 +1,750 @@\n" + "-old\n" * 751 + "+new\n" * 750
+    file = _file(patch, additions=750, deletions=751, changes=1501)
+
+    limited, reason = summary_only([file], _config())
+
+    assert limited is True
+    assert "1501" in reason
+
+
+def test_summary_only_matches_both_current_and_previous_paths():
+    sensitive = Area("workflows", "Workflow", (".github/**",), (), True)
+    renamed = _file(
+        "@@ -1 +1 @@\n-old\n+new",
+        filename="src/workflow.yml",
+        previous_filename=".github/workflows/ci.yml",
+        status="renamed",
+    )
+
+    limited, reason = summary_only([renamed], _config(areas=(sensitive,)))
 
     assert limited is True
     assert "needs-maintainer" in reason
 
 
-@pytest.mark.parametrize(
-    "diff",
-    [
-        """diff --git a/src/file.py b/src/file.py
---- a/src/file.py
-+++ b/src/file.py
-@@ -0,0 +1,2 @@
-+valid row
-\\ evil
-+second row
-""",
-        """diff --git a/src/file.py b/src/file.py
---- a/src/file.py
-+++ b/src/file.py
-@@ -0,0 +1 @@
-+added
-index 1111111..2222222 100644
-""",
-        """diff --git a/src/file.py b/src/file.py
---- a/src/file.py
-+++ /dev/null
-@@ -1 +0,2 @@
--removed
-+unexpected one
-+unexpected two
-""",
-    ],
-    ids=["backslash-garbage-in-hunk", "extended-header-after-hunk", "invalid-deletion-hunk-counts"],
-)
-def test_diff_index_rejects_malformed_hunk_rows(diff):
-    assert diff_index(diff) == {}
+def test_summary_only_rejects_more_than_api_file_limit():
+    files = [
+        _file(None, filename=f"src/file-{number}.py", additions=0, deletions=0, changes=0)
+        for number in range(3001)
+    ]
+    for entry in files:
+        entry.pop("patch")
 
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    limited, reason = summary_only(diff, config)
+    limited, reason = summary_only(files, _config())
 
     assert limited is True
-    assert "needs-maintainer" in reason
+    assert "API limit" in reason
 
 
-def test_diff_index_accepts_exact_no_newline_marker():
-    diff = """diff --git a/src/file.py b/src/file.py
---- a/src/file.py
-+++ b/src/file.py
-@@ -1 +1 @@
--old
-+new
-\\ No newline at end of file
-"""
+def test_summary_only_rejects_files_over_prompt_budget():
+    patch = "@@ -1 +1 @@\n " + "x" * (120 * 1024)
+    entry = _file(patch, additions=0, deletions=0, changes=0)
 
-    assert diff_index(diff) == {"src/file.py": {1}}
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    assert summary_only(diff, config) == (False, "")
+    limited, reason = summary_only([entry], _config())
+
+    assert limited is True
+    assert "prompt budget" in reason
 
 
-def test_diff_index_keeps_text_edit_when_binary_file_is_also_present():
-    diff = """diff --git a/assets/image.bin b/assets/image.bin
-Binary files a/assets/image.bin and b/assets/image.bin differ
-diff --git a/src/file.py b/src/file.py
---- a/src/file.py
-+++ b/src/file.py
-@@ -1 +1 @@
--old
-+new
-"""
+def test_real_github_files_response_validates_and_indexes_patches():
+    pages = json.loads(Path("tests/fixtures/github/pr-10-files-pages.json").read_text())
+    files = [entry for page in pages for entry in page]
 
-    assert diff_index(diff) == {"src/file.py": {1}}
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    assert summary_only(diff, config) == (False, "")
+    index = diff_index(files)
 
-
-@pytest.mark.parametrize(
-    "metadata",
-    ["rename from src/file.py\n", "copy to src/file.py\n"],
-    ids=["incomplete-rename", "incomplete-copy"],
-)
-def test_diff_index_rejects_incomplete_move_metadata(metadata):
-    diff = f"diff --git a/src/file.py b/src/file.py\n{metadata}"
-
-    assert diff_index(diff) == {}
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    assert summary_only(diff, config)[0] is True
-
-
-def test_diff_index_rejects_deletion_hunk_without_old_file_path():
-    diff = """diff --git a/src/file.py b/src/file.py
-deleted file mode 100644
-@@ -1 +0,0 @@
--removed
-"""
-
-    assert diff_index(diff) == {}
-    config = RepoConfig({"limits": {"review_max_lines": 1500}}, (), ())
-    assert summary_only(diff, config)[0] is True
+    assert len(files) == 18
+    assert {entry["status"] for entry in files} >= {"added", "modified"}
+    assert index["lib/agent_repo/diff.py"]
+    assert index["actions/gate/action.yml"] == set(range(35, 44))
+    assert all(isinstance(line, int) and line > 0 for lines in index.values() for line in lines)
+    limited, reason = summary_only(files, _config())
+    assert limited is True
+    assert "review_max_lines" in reason

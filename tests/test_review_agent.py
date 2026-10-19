@@ -63,7 +63,17 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
         apply_step["with"]["expected-head-sha"]
         == "${{ needs.agent-propose-review.outputs.head_sha }}"
     )
+    assert "files-file" in propose_action["with"]
+    artifact_step = next(
+        step
+        for step in workflow["jobs"]["agent-propose-review"]["steps"]
+        if step.get("name") == "Share review inputs with the apply job"
+    )
+    assert "files.json" not in artifact_step["with"]["path"]
+    assert "review.json" in artifact_step["with"]["path"]
+    assert "files-file" not in apply_step["with"]
     review_action = load_yaml(Path("actions/review-agent/action.yml"))
+    assert review_action["inputs"]["files-file"]["required"] is False
     assert review_action["inputs"]["expected-head-sha"]["required"] is True
     assert any(
         step.get("env", {}).get("EXPECTED_HEAD_SHA") == "${{ inputs.expected-head-sha }}"
@@ -90,8 +100,21 @@ def _prepare_review_run(tmp_path, monkeypatch, fake_body):
     timeout = binary_dir / "timeout"
     timeout.write_text('#!/bin/sh\nshift 3\nexec "$@"\n')
     timeout.chmod(0o755)
-    diff = tmp_path / "diff.patch"
-    diff.write_text("diff --git a/file.py b/file.py\n")
+    files = tmp_path / "files.json"
+    files.write_text(
+        json.dumps(
+            [
+                {
+                    "filename": "file.py",
+                    "status": "modified",
+                    "additions": 1,
+                    "deletions": 0,
+                    "changes": 1,
+                    "patch": "@@ -0,0 +1 @@\n+added",
+                }
+            ]
+        )
+    )
     output = tmp_path / "review.json"
     monkeypatch.setenv("PATH", str(binary_dir) + os.pathsep + os.environ["PATH"])
     for key, value in {
@@ -100,7 +123,7 @@ def _prepare_review_run(tmp_path, monkeypatch, fake_body):
         "BASE_SHA": "a" * 40,
         "HEAD_SHA": "b" * 40,
         "SUMMARY_ONLY": "false",
-        "DIFF_FILE": str(diff),
+        "FILES_FILE": str(files),
         "REVIEW_AGENT": str(Path("agents/review").resolve()),
         "LLM_API_KEY": "test-secret-key",
     }.items():
@@ -154,6 +177,36 @@ def test_review_agent_rejects_wrong_head_without_artifact(tmp_path, monkeypatch)
 
     assert module.main() == 1
     assert not output.exists()
+
+
+def test_review_agent_supplies_rendered_file_list_as_model_input(tmp_path, monkeypatch):
+    artifact = {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "summary": "Review summary.",
+        "findings": [],
+        "scope_ok": True,
+        "tests_missing": False,
+        "docs_needed": False,
+        "escalate": None,
+    }
+    response = "```json\n" + json.dumps(artifact) + "\n```"
+    captured = tmp_path / "model-prompt.txt"
+    body = (
+        "printf '%s\\n' \"$*\" > "
+        + shlex.quote(str(captured))
+        + "\nprintf '%s\\n' "
+        + shlex.quote(response)
+    )
+    module, output = _prepare_review_run(tmp_path, monkeypatch, body)
+
+    assert module.main() == 0
+    prompt = captured.read_text()
+    assert '"filename": "file.py"' in prompt
+    assert '"patch": "@@ -0,0 +1 @@\\n+added"' in prompt
+    assert output.exists()
 
 
 def test_summary_only_review_writes_schema_artifact_without_model(tmp_path, monkeypatch):
