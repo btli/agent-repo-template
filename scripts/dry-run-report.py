@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import dataclasses
 import io
 import json
 import re
@@ -149,12 +148,14 @@ def triage_runs(
     return decisions, missing, by_issue
 
 
-def load_policy(repo: str):
-    """Load the repository's `.agents` policy from its default branch, or None."""
+def load_policy(repo: str, ref: str | None = None):
+    """Load the repository's `.agents` policy from the default branch, or at `ref`; None
+    when it cannot be loaded."""
+    query = f"?ref={ref}" if ref else ""
     try:
         with tempfile.TemporaryDirectory() as directory:
             for name in ("config.yml", "areas.yml", "labels.yml", "charter.md"):
-                content = gh_json(f"repos/{repo}/contents/.agents/{name}")["content"]
+                content = gh_json(f"repos/{repo}/contents/.agents/{name}{query}")["content"]
                 (Path(directory) / name).write_bytes(base64.b64decode(content))
             charter = parse_charter((Path(directory) / "charter.md").read_text(encoding="utf-8"))
             return load_config(Path(directory)), charter
@@ -165,7 +166,8 @@ def load_policy(repo: str):
 def label_allowlist(config: RepoConfig) -> set[str]:
     """Labels triage apply may add: the configured type and area taxonomy plus fixed labels."""
     taxonomy = {label for label in config.labels if label.startswith("type:")}
-    taxonomy |= {f"area:{area.name}" for area in config.areas}
+    # Apply needs an area label in labels.yml and its name in areas.yml.
+    taxonomy |= {f"area:{area.name}" for area in config.areas} & set(config.labels)
     return taxonomy | TRIAGE_FIXED_LABELS
 
 
@@ -244,10 +246,12 @@ def _by_bot(event: dict, bot_login: str) -> bool:
 
 
 def reopen_counts(events: dict[int, list], bot_login: str, since: datetime) -> tuple[int, int]:
-    """Count issues with an in-window bot close that follows its agent:closed label, and
-    those reopened after that close."""
+    """Count issues with an in-window bot close, correlated with the bot's agent:closed label
+    added at or after it (apply closes, then labels) and before any later reopen, and those
+    reopened after that close."""
     closed = reopened = 0
     for timeline in events.values():
+        reopens = [event["created_at"] for event in timeline if event.get("event") == "reopened"]
         labelled = [
             event["created_at"]
             for event in timeline
@@ -261,7 +265,11 @@ def reopen_counts(events: dict[int, list], bot_login: str, since: datetime) -> t
             if event.get("event") == "closed"
             and _by_bot(event, bot_login)
             and _since(event, "created_at", since)
-            and any(label_time <= event["created_at"] for label_time in labelled)
+            and any(
+                event["created_at"] <= label_time
+                and not any(event["created_at"] < reopen < label_time for reopen in reopens)
+                for label_time in labelled
+            )
         ]
         if not closes:
             continue
@@ -297,23 +305,18 @@ def out_of_policy_labels(
     return count, unchecked
 
 
-def _closing_policy(policy):
-    """Decide records a close only while closing is enabled, so judge that run as enabled."""
-    config, charter = policy
-    raw = {**config.raw, "close": {**config.raw["close"], "enabled": True}}
-    return dataclasses.replace(config, raw=raw), charter
-
-
 def out_of_policy_closes(
+    repo: str,
     events: dict[int, list],
     runs: dict[int, list[tuple[str, dict | None]]],
     bot_login: str,
     since: datetime,
-    policy,
-) -> tuple[int, list[str]]:
+) -> tuple[list[str], list[str]]:
     """Judge each in-window bot close against the decision of the newest triage run that
-    started before it; closes without a readable record are unverifiable."""
-    count, unverifiable = 0, []
+    started before it, under the policy at that decision's base_sha; closes without a
+    readable record or loadable policy are unverifiable."""
+    violations, unverifiable = [], []
+    policies: dict[str, object] = {}
     for number, timeline in sorted(events.items()):
         for event in timeline:
             if (
@@ -328,11 +331,22 @@ def out_of_policy_closes(
                 unverifiable.append(
                     f"- #{number}: closed {event['created_at']} with no readable decision record"
                 )
+                continue
+            sha = decision["base_sha"]
+            if sha not in policies:
+                policies[sha] = load_policy(repo, sha)
+            if policies[sha] is None:
+                unverifiable.append(
+                    f"- #{number}: closed {event['created_at']} with no loadable policy at {sha}"
+                )
             elif not close_eligible(
-                decision, *_closing_policy(policy), number=number, github=_TargetWasOpen()
+                decision, *policies[sha], number=number, github=_TargetWasOpen()
             ):
-                count += 1
-    return count, unverifiable
+                violations.append(
+                    f"- #{number}: closed {event['created_at']}; its run "
+                    f"{decision['run_id']}'s decision does not allow a close"
+                )
+    return violations, unverifiable
 
 
 def _percent(value: float | None) -> str:
@@ -421,23 +435,23 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
     if bot_login:
         allowed = label_allowlist(policy[0]) if policy is not None else None
         labels, unchecked = out_of_policy_labels(events, bot_login, since, allowed)
-        closes = 0
-        if policy is not None:
-            closes, unverifiable = out_of_policy_closes(events, runs, bot_login, since, policy)
+        violations, unverifiable = out_of_policy_closes(args.repo, events, runs, bot_login, since)
+        closes = len(violations)
         repo_stats["out_of_policy_actions"] = labels + closes
         lines.append(
             f"- {labels + closes} actions by {bot_login} across {len(events)} issues from "
             "triage marker runs and agent:closed items: labels outside the configured "
-            "triage taxonomy, and closes the run's own decision record does not allow."
+            "triage taxonomy, and closes that the run's own decision record and the policy at "
+            "its base_sha do not allow."
         )
+        lines.extend(violations)
         if policy is None:
             lines.append(
-                f"- Not evaluated: {unchecked} type:/area: labels and every bot close, because "
-                "`.agents/` could not be loaded."
+                f"- Not evaluated: {unchecked} type:/area: labels, because the default "
+                "branch's `.agents/` could not be loaded."
             )
             repo_stats["not_evaluated"].append(
-                f"{ABORT_OUT_OF_POLICY} (taxonomy labels and closes: `.agents/` could not be "
-                "loaded)"
+                f"{ABORT_OUT_OF_POLICY} (taxonomy labels: `.agents/` could not be loaded)"
             )
     else:
         lines.append("- Not evaluated; pass --bot-login.")

@@ -6,7 +6,7 @@
  },
  "repos/your-org/example/actions/artifacts": {
   "json": {
-   "total_count": 38,
+   "total_count": 46,
    "artifacts": [
     {
      "id": 1,
@@ -400,6 +400,94 @@
      "created_at": "2026-10-18T10:00:00Z",
      "workflow_run": {
       "id": 118,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 39,
+     "name": "agent-triage-26",
+     "expired": false,
+     "created_at": "2026-10-18T10:00:00Z",
+     "workflow_run": {
+      "id": 119,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 40,
+     "name": "agent-decision-119",
+     "expired": false,
+     "created_at": "2026-10-18T10:00:00Z",
+     "workflow_run": {
+      "id": 119,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 41,
+     "name": "agent-triage-26",
+     "expired": false,
+     "created_at": "2026-10-19T11:00:00Z",
+     "workflow_run": {
+      "id": 120,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 42,
+     "name": "agent-decision-120",
+     "expired": false,
+     "created_at": "2026-10-19T10:00:00Z",
+     "workflow_run": {
+      "id": 120,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 43,
+     "name": "agent-triage-27",
+     "expired": false,
+     "created_at": "2026-10-18T10:00:00Z",
+     "workflow_run": {
+      "id": 121,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 44,
+     "name": "agent-decision-121",
+     "expired": false,
+     "created_at": "2026-10-18T10:00:00Z",
+     "workflow_run": {
+      "id": 121,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 45,
+     "name": "agent-triage-27",
+     "expired": false,
+     "created_at": "2026-10-19T11:00:00Z",
+     "workflow_run": {
+      "id": 122,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 46,
+     "name": "agent-decision-122",
+     "expired": false,
+     "created_at": "2026-10-19T10:00:00Z",
+     "workflow_run": {
+      "id": 122,
       "repository_id": 1,
       "head_repository_id": 1
      }
@@ -929,6 +1017,156 @@
    }
   }
  },
+ "repos/your-org/example/actions/artifacts/40/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "119",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "core",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:core"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": null,
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/actions/artifacts/42/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "120",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "core",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:core"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": {
+     "kind": "out_of_scope",
+     "target": null,
+     "docs_ref": "https://example.org/larkspur/faq",
+     "p": 0.95,
+     "lexical": null,
+     "tier2_agrees": true
+    },
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/actions/artifacts/44/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "121",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "core",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:core"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": {
+     "kind": "out_of_scope",
+     "target": null,
+     "docs_ref": "https://example.org/larkspur/faq",
+     "p": 0.95,
+     "lexical": null,
+     "tier2_agrees": true
+    },
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/actions/artifacts/46/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "122",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "core",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:core"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": null,
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
  "repos/your-org/example/issues/18": {
   "json": {
    "number": 18,
@@ -1135,10 +1373,52 @@
       "name": "agent:closed"
      }
     ]
+   },
+   {
+    "number": 24,
+    "state": "open",
+    "html_url": "https://github.com/your-org/example/issues/24",
+    "labels": [
+     {
+      "name": "agent:closed"
+     }
+    ]
+   },
+   {
+    "number": 25,
+    "state": "open",
+    "html_url": "https://github.com/your-org/example/issues/25",
+    "labels": [
+     {
+      "name": "agent:closed"
+     }
+    ]
    }
   ]
  },
+ "repos/your-org/example/issues/26": {
+  "json": {
+   "number": 26,
+   "state": "closed",
+   "html_url": "https://github.com/your-org/example/issues/26",
+   "labels": []
+  }
+ },
+ "repos/your-org/example/issues/27": {
+  "json": {
+   "number": 27,
+   "state": "closed",
+   "html_url": "https://github.com/your-org/example/issues/27",
+   "labels": []
+  }
+ },
  "repos/your-org/example/contents/.agents/config.yml": {
+  "json": {
+   "encoding": "base64",
+   "content": "dmVyc2lvbjogMQptb2RlOgogIHRyaWFnZTogZHJ5LXJ1bgogIHJldmlldzogZHJ5LXJ1bgogIGZpeDogZHJ5LXJ1bgpzeXN0ZW1fb25lOgogIHByb3ZpZGVyOiBkYXRhYnJpY2tzLW9wZW5qZXYKICBtb2RlbDogc3lzdGVtLmFpLm9wZW5qZXYtcXdlbjM1LTRiCm1vZGVsczoKICB0cmlhZ2U6IGdhdGV3YXktdHJpYWdlCiAgcmV2aWV3OiBnYXRld2F5LXJldmlldwogIGZpeDogZ2F0ZXdheS1maXgKdGhyZXNob2xkczoKICBhcHBseV9taW46IDAuOAogIGNsb3NlX21pbjogMC45MgogIGNsb3NlX2xleGljYWxfbWluOiAwLjQ1CiMgVGhlIGdvbGRlbnMgaW5jbHVkZSBvdXQtb2Ytc2NvcGUgY2xvc2VzLCBzbyBjbG9zaW5nIGlzIGVuYWJsZWQgZm9yIGV2YWxzLgpjbG9zZToKICBlbmFibGVkOiB0cnVlCnRyaWFnZToKICByY2FfYXV0aG9yczogYWxsCmxpbWl0czoKICB0cmlhZ2VfcnVuc19wZXJfaXNzdWU6IDMKICB0aWVyMl9wZXJfYXV0aG9yX3Blcl9kYXk6IDIKICB0aWVyMl9wZXJfZGF5OiAyNQogIGVkaXRfZGVib3VuY2VfbWludXRlczogMTAKICByZXZpZXdfbWF4X2xpbmVzOiAxNTAwCiAgZml4X21heF90dXJuczogNDAKICBmaXhfbWF4X2RpZmZfbGluZXM6IDQwMApjb21tYW5kczoKICBzZXR1cDogIiIKICB0ZXN0OiAiIgogIGxpbnQ6ICIiCmZpeDoKICBhbGxvd19uZXdfZGVwczogZmFsc2UKICBhY2NlcHRfY2lfZXhwb3N1cmU6IGZhbHNlCg=="
+  }
+ },
+ "repos/your-org/example/contents/.agents/config.yml?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
   "json": {
    "encoding": "base64",
    "content": "dmVyc2lvbjogMQptb2RlOgogIHRyaWFnZTogZHJ5LXJ1bgogIHJldmlldzogZHJ5LXJ1bgogIGZpeDogZHJ5LXJ1bgpzeXN0ZW1fb25lOgogIHByb3ZpZGVyOiBkYXRhYnJpY2tzLW9wZW5qZXYKICBtb2RlbDogc3lzdGVtLmFpLm9wZW5qZXYtcXdlbjM1LTRiCm1vZGVsczoKICB0cmlhZ2U6IGdhdGV3YXktdHJpYWdlCiAgcmV2aWV3OiBnYXRld2F5LXJldmlldwogIGZpeDogZ2F0ZXdheS1maXgKdGhyZXNob2xkczoKICBhcHBseV9taW46IDAuOAogIGNsb3NlX21pbjogMC45MgogIGNsb3NlX2xleGljYWxfbWluOiAwLjQ1CiMgVGhlIGdvbGRlbnMgaW5jbHVkZSBvdXQtb2Ytc2NvcGUgY2xvc2VzLCBzbyBjbG9zaW5nIGlzIGVuYWJsZWQgZm9yIGV2YWxzLgpjbG9zZToKICBlbmFibGVkOiB0cnVlCnRyaWFnZToKICByY2FfYXV0aG9yczogYWxsCmxpbWl0czoKICB0cmlhZ2VfcnVuc19wZXJfaXNzdWU6IDMKICB0aWVyMl9wZXJfYXV0aG9yX3Blcl9kYXk6IDIKICB0aWVyMl9wZXJfZGF5OiAyNQogIGVkaXRfZGVib3VuY2VfbWludXRlczogMTAKICByZXZpZXdfbWF4X2xpbmVzOiAxNTAwCiAgZml4X21heF90dXJuczogNDAKICBmaXhfbWF4X2RpZmZfbGluZXM6IDQwMApjb21tYW5kczoKICBzZXR1cDogIiIKICB0ZXN0OiAiIgogIGxpbnQ6ICIiCmZpeDoKICBhbGxvd19uZXdfZGVwczogZmFsc2UKICBhY2NlcHRfY2lfZXhwb3N1cmU6IGZhbHNlCg=="
@@ -1150,13 +1430,31 @@
    "content": "YXJlYXM6CiAgLSBuYW1lOiBwYXJzZXIKICAgIGRlc2NyaXB0aW9uOiBUT01MLCBZQU1MIGFuZCBJTkkgcGFyc2luZyBpbnRvIHRoZSBjb25maWd1cmF0aW9uIHRyZWUKICAgIHBhdGhzOgogICAgICAtIGxhcmtzcHVyL3BhcnNlcnMvKioKICAgIG93bmVyczoKICAgICAgLSAiQHlvdXItb3JnL2xhcmtzcHVyLW1haW50YWluZXJzIgogICAgc2Vuc2l0aXZlOiBmYWxzZQogIC0gbmFtZTogdmFsaWRhdGlvbgogICAgZGVzY3JpcHRpb246IFNjaGVtYSB2YWxpZGF0aW9uIGFuZCB0eXBlZCBlcnJvciByZXBvcnRpbmcKICAgIHBhdGhzOgogICAgICAtIGxhcmtzcHVyL3NjaGVtYS8qKgogICAgb3duZXJzOgogICAgICAtICJAeW91ci1vcmcvbGFya3NwdXItbWFpbnRhaW5lcnMiCiAgICBzZW5zaXRpdmU6IGZhbHNlCiAgLSBuYW1lOiBtZXJnZQogICAgZGVzY3JpcHRpb246IE1lcmdlIG9yZGVyLCBlbnZpcm9ubWVudCBvdmVycmlkZXMgYW5kIGRlZmF1bHRzCiAgICBwYXRoczoKICAgICAgLSBsYXJrc3B1ci9tZXJnZS8qKgogICAgb3duZXJzOgogICAgICAtICJAeW91ci1vcmcvbGFya3NwdXItbWFpbnRhaW5lcnMiCiAgICBzZW5zaXRpdmU6IHRydWUKICAtIG5hbWU6IGNsaQogICAgZGVzY3JpcHRpb246IFRoZSBsYXJrc3B1ciBjaGVjayBjb21tYW5kLWxpbmUgdG9vbAogICAgcGF0aHM6CiAgICAgIC0gbGFya3NwdXIvY2xpLyoqCiAgICBvd25lcnM6CiAgICAgIC0gIkB5b3VyLW9yZy9sYXJrc3B1ci1tYWludGFpbmVycyIKICAgIHNlbnNpdGl2ZTogZmFsc2UKICAtIG5hbWU6IGRvY3MKICAgIGRlc2NyaXB0aW9uOiBVc2VyIGd1aWRlLCByZWZlcmVuY2UgcGFnZXMgYW5kIGV4YW1wbGVzCiAgICBwYXRoczoKICAgICAgLSBkb2NzLyoqCiAgICBvd25lcnM6CiAgICAgIC0gIkB5b3VyLW9yZy9sYXJrc3B1ci1tYWludGFpbmVycyIKICAgIHNlbnNpdGl2ZTogZmFsc2UK"
   }
  },
+ "repos/your-org/example/contents/.agents/areas.yml?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+  "json": {
+   "encoding": "base64",
+   "content": "YXJlYXM6CiAgLSBuYW1lOiBwYXJzZXIKICAgIGRlc2NyaXB0aW9uOiBUT01MLCBZQU1MIGFuZCBJTkkgcGFyc2luZyBpbnRvIHRoZSBjb25maWd1cmF0aW9uIHRyZWUKICAgIHBhdGhzOgogICAgICAtIGxhcmtzcHVyL3BhcnNlcnMvKioKICAgIG93bmVyczoKICAgICAgLSAiQHlvdXItb3JnL2xhcmtzcHVyLW1haW50YWluZXJzIgogICAgc2Vuc2l0aXZlOiBmYWxzZQogIC0gbmFtZTogdmFsaWRhdGlvbgogICAgZGVzY3JpcHRpb246IFNjaGVtYSB2YWxpZGF0aW9uIGFuZCB0eXBlZCBlcnJvciByZXBvcnRpbmcKICAgIHBhdGhzOgogICAgICAtIGxhcmtzcHVyL3NjaGVtYS8qKgogICAgb3duZXJzOgogICAgICAtICJAeW91ci1vcmcvbGFya3NwdXItbWFpbnRhaW5lcnMiCiAgICBzZW5zaXRpdmU6IGZhbHNlCiAgLSBuYW1lOiBtZXJnZQogICAgZGVzY3JpcHRpb246IE1lcmdlIG9yZGVyLCBlbnZpcm9ubWVudCBvdmVycmlkZXMgYW5kIGRlZmF1bHRzCiAgICBwYXRoczoKICAgICAgLSBsYXJrc3B1ci9tZXJnZS8qKgogICAgb3duZXJzOgogICAgICAtICJAeW91ci1vcmcvbGFya3NwdXItbWFpbnRhaW5lcnMiCiAgICBzZW5zaXRpdmU6IHRydWUKICAtIG5hbWU6IGNsaQogICAgZGVzY3JpcHRpb246IFRoZSBsYXJrc3B1ciBjaGVjayBjb21tYW5kLWxpbmUgdG9vbAogICAgcGF0aHM6CiAgICAgIC0gbGFya3NwdXIvY2xpLyoqCiAgICBvd25lcnM6CiAgICAgIC0gIkB5b3VyLW9yZy9sYXJrc3B1ci1tYWludGFpbmVycyIKICAgIHNlbnNpdGl2ZTogZmFsc2UKICAtIG5hbWU6IGRvY3MKICAgIGRlc2NyaXB0aW9uOiBVc2VyIGd1aWRlLCByZWZlcmVuY2UgcGFnZXMgYW5kIGV4YW1wbGVzCiAgICBwYXRoczoKICAgICAgLSBkb2NzLyoqCiAgICBvd25lcnM6CiAgICAgIC0gIkB5b3VyLW9yZy9sYXJrc3B1ci1tYWludGFpbmVycyIKICAgIHNlbnNpdGl2ZTogZmFsc2UK"
+  }
+ },
  "repos/your-org/example/contents/.agents/labels.yml": {
   "json": {
    "encoding": "base64",
    "content": "bGFiZWxzOgogIC0gdHlwZTpidWcKICAtIHR5cGU6ZmVhdHVyZQogIC0gdHlwZTpkb2NzCiAgLSBhcmVhOnBhcnNlcgogIC0gYXJlYTp2YWxpZGF0aW9uCiAgLSBhcmVhOm1lcmdlCiAgLSBhcmVhOmNsaQogIC0gYXJlYTpkb2NzCiAgLSBQMAogIC0gUDEKICAtIFAyCiAgLSBQMwogIC0gbmVlZHMtaW5mbwogIC0gbmVlZHMtbWFpbnRhaW5lcgogIC0gYWdlbnQ6Y2xvc2VkCiAgLSBhZ2VudDpmaXgKICAtIGFnZW50OnNraXAKICAtIGFnZW50OnRyaWFnZS1jYXBwZWQK"
   }
  },
+ "repos/your-org/example/contents/.agents/labels.yml?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+  "json": {
+   "encoding": "base64",
+   "content": "bGFiZWxzOgogIC0gdHlwZTpidWcKICAtIHR5cGU6ZmVhdHVyZQogIC0gdHlwZTpkb2NzCiAgLSBhcmVhOnBhcnNlcgogIC0gYXJlYTp2YWxpZGF0aW9uCiAgLSBhcmVhOm1lcmdlCiAgLSBhcmVhOmNsaQogIC0gYXJlYTpkb2NzCiAgLSBQMAogIC0gUDEKICAtIFAyCiAgLSBQMwogIC0gbmVlZHMtaW5mbwogIC0gbmVlZHMtbWFpbnRhaW5lcgogIC0gYWdlbnQ6Y2xvc2VkCiAgLSBhZ2VudDpmaXgKICAtIGFnZW50OnNraXAKICAtIGFnZW50OnRyaWFnZS1jYXBwZWQK"
+  }
+ },
  "repos/your-org/example/contents/.agents/charter.md": {
+  "json": {
+   "encoding": "base64",
+   "content": "IyBMYXJrc3B1ciBwcm9qZWN0IGNoYXJ0ZXIKCkxhcmtzcHVyIGlzIGEgZmljdGlvbmFsIFB5dGhvbiBsaWJyYXJ5IHRoYXQgbG9hZHMsIG1lcmdlcyBhbmQgdmFsaWRhdGVzIGxheWVyZWQKY29uZmlndXJhdGlvbiBmaWxlcy4gSXQgaXMgdGhlIHdvcmtlZCBleGFtcGxlIHVzZWQgYnkgdGhlIGdvbGRlbiBldmFscy4KCiMjIE1pc3Npb24KCkdpdmUgUHl0aG9uIGFwcGxpY2F0aW9ucyBvbmUgcHJlZGljdGFibGUgd2F5IHRvIGxvYWQgbGF5ZXJlZCBjb25maWd1cmF0aW9uIGFuZApyZXBvcnQgZXZlcnkgdmFsaWRhdGlvbiBlcnJvciB3aXRoIHRoZSBmaWxlIGFuZCBsaW5lIHRoYXQgY2F1c2VkIGl0LgoKIyMgSW4gc2NvcGUKCi0gUGFyc2luZyBUT01MLCBZQU1MIGFuZCBJTkkgZmlsZXMgaW50byBvbmUgbWVyZ2VkIGNvbmZpZ3VyYXRpb24gdHJlZS4KLSBTY2hlbWEgdmFsaWRhdGlvbiB3aXRoIHR5cGVkIGVycm9ycyB0aGF0IG5hbWUgdGhlIGZpbGUsIGxpbmUgYW5kIGtleS4KLSBNZXJnZSBvcmRlciwgZW52aXJvbm1lbnQtdmFyaWFibGUgb3ZlcnJpZGVzIGFuZCBkZWZhdWx0IHZhbHVlcy4KLSBUaGUgYGxhcmtzcHVyIGNoZWNrYCBjb21tYW5kLWxpbmUgdG9vbC4KLSBEb2N1bWVudGF0aW9uLCBleGFtcGxlcyBhbmQgdHlwZSBoaW50cyBmb3IgdGhlIHB1YmxpYyBBUEkuCgojIyBPdXQgb2Ygc2NvcGUKCi0gUmVtb3RlIGNvbmZpZ3VyYXRpb24gc3RvcmVzIHN1Y2ggYXMga2V5LXZhbHVlIHNlcnZpY2VzIG9yIHNlY3JldCBtYW5hZ2VycyAoW2RvY3NdKGh0dHBzOi8vZXhhbXBsZS5vcmcvbGFya3NwdXIvZmFxI3JlbW90ZS1zdG9yZXMpKQotIEdyYXBoaWNhbCBjb25maWd1cmF0aW9uIGVkaXRvcnMgKFtkb2NzXShodHRwczovL2V4YW1wbGUub3JnL2xhcmtzcHVyL2ZhcSNlZGl0b3JzKSkKLSBTdXBwb3J0IGZvciBQeXRob24gdmVyc2lvbnMgdGhhdCBoYXZlIHJlYWNoZWQgZW5kIG9mIGxpZmUgKFtkb2NzXShodHRwczovL2V4YW1wbGUub3JnL2xhcmtzcHVyL3N1cHBvcnQjcHl0aG9uLXZlcnNpb25zKSkKCiMjIFByaW9yaXRpZXMKCi0gUDA6IFNpbGVudGx5IHdyb25nIGNvbmZpZ3VyYXRpb24gdmFsdWVzLCBkYXRhIGxvc3MsIG9yIGEgY3Jhc2ggb24gZXZlcnkgbG9hZC4KLSBQMTogQSBjb21tb24gd29ya2Zsb3cgaXMgdW51c2FibGUgZm9yIG1hbnkgdXNlcnMgYW5kIGhhcyBubyBwcmFjdGljYWwgd29ya2Fyb3VuZC4KLSBQMjogQSBkZWZlY3QgaW4gYSBsaW1pdGVkIHdvcmtmbG93IHRoYXQgaGFzIGEgcHJhY3RpY2FsIHdvcmthcm91bmQuCi0gUDM6IENvc21ldGljIGlzc3VlcywgZG9jdW1lbnRhdGlvbiBwb2xpc2ggb3IgYSBzbWFsbCBjb252ZW5pZW5jZS4KCiMjIEEgZ29vZCByZXBvcnQgaW5jbHVkZXMKCi0gVGhlIExhcmtzcHVyIGFuZCBQeXRob24gdmVyc2lvbnMuCi0gQSBtaW5pbWFsIGNvbmZpZ3VyYXRpb24gZmlsZSBhbmQgY29kZSBzbmlwcGV0IHRoYXQgcmVwcm9kdWNlIHRoZSBwcm9ibGVtLgotIFRoZSBleHBlY3RlZCByZXN1bHQgYW5kIHRoZSBhY3R1YWwgcmVzdWx0LCBpbmNsdWRpbmcgdGhlIGZ1bGwgZXJyb3IgbWVzc2FnZS4KCiMjIFN1cHBvcnQgcG9saWN5CgpNYWludGFpbmVycyBzdXBwb3J0IHRoZSBsYXRlc3QgbWlub3IgcmVsZWFzZS4gVXNhZ2UgcXVlc3Rpb25zIGJlbG9uZyBpbiB0aGUKZGlzY3Vzc2lvbiBmb3J1bS4gUmVwb3J0IHNlY3VyaXR5IGlzc3VlcyB0aHJvdWdoIHRoZSBwcml2YXRlIHByb2Nlc3MgaW4gU0VDVVJJVFkubWQuCgojIyBEb2NzIGluZGV4CgotIFtVc2VyIGd1aWRlXShodHRwczovL2V4YW1wbGUub3JnL2xhcmtzcHVyL2d1aWRlKQotIFtNZXJnZSBvcmRlcl0oaHR0cHM6Ly9leGFtcGxlLm9yZy9sYXJrc3B1ci9ndWlkZS9tZXJnZS1vcmRlcikKLSBbU2NoZW1hIHJlZmVyZW5jZV0oaHR0cHM6Ly9leGFtcGxlLm9yZy9sYXJrc3B1ci9yZWZlcmVuY2Uvc2NoZW1hKQotIFtDb21tYW5kLWxpbmUgdG9vbF0oaHR0cHM6Ly9leGFtcGxlLm9yZy9sYXJrc3B1ci9yZWZlcmVuY2UvY2xpKQotIFtGQVFdKGh0dHBzOi8vZXhhbXBsZS5vcmcvbGFya3NwdXIvZmFxKQotIFtTdXBwb3J0IHBvbGljeV0oaHR0cHM6Ly9leGFtcGxlLm9yZy9sYXJrc3B1ci9zdXBwb3J0KQo="
+  }
+ },
+ "repos/your-org/example/contents/.agents/charter.md?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
   "json": {
    "encoding": "base64",
    "content": "IyBMYXJrc3B1ciBwcm9qZWN0IGNoYXJ0ZXIKCkxhcmtzcHVyIGlzIGEgZmljdGlvbmFsIFB5dGhvbiBsaWJyYXJ5IHRoYXQgbG9hZHMsIG1lcmdlcyBhbmQgdmFsaWRhdGVzIGxheWVyZWQKY29uZmlndXJhdGlvbiBmaWxlcy4gSXQgaXMgdGhlIHdvcmtlZCBleGFtcGxlIHVzZWQgYnkgdGhlIGdvbGRlbiBldmFscy4KCiMjIE1pc3Npb24KCkdpdmUgUHl0aG9uIGFwcGxpY2F0aW9ucyBvbmUgcHJlZGljdGFibGUgd2F5IHRvIGxvYWQgbGF5ZXJlZCBjb25maWd1cmF0aW9uIGFuZApyZXBvcnQgZXZlcnkgdmFsaWRhdGlvbiBlcnJvciB3aXRoIHRoZSBmaWxlIGFuZCBsaW5lIHRoYXQgY2F1c2VkIGl0LgoKIyMgSW4gc2NvcGUKCi0gUGFyc2luZyBUT01MLCBZQU1MIGFuZCBJTkkgZmlsZXMgaW50byBvbmUgbWVyZ2VkIGNvbmZpZ3VyYXRpb24gdHJlZS4KLSBTY2hlbWEgdmFsaWRhdGlvbiB3aXRoIHR5cGVkIGVycm9ycyB0aGF0IG5hbWUgdGhlIGZpbGUsIGxpbmUgYW5kIGtleS4KLSBNZXJnZSBvcmRlciwgZW52aXJvbm1lbnQtdmFyaWFibGUgb3ZlcnJpZGVzIGFuZCBkZWZhdWx0IHZhbHVlcy4KLSBUaGUgYGxhcmtzcHVyIGNoZWNrYCBjb21tYW5kLWxpbmUgdG9vbC4KLSBEb2N1bWVudGF0aW9uLCBleGFtcGxlcyBhbmQgdHlwZSBoaW50cyBmb3IgdGhlIHB1YmxpYyBBUEkuCgojIyBPdXQgb2Ygc2NvcGUKCi0gUmVtb3RlIGNvbmZpZ3VyYXRpb24gc3RvcmVzIHN1Y2ggYXMga2V5LXZhbHVlIHNlcnZpY2VzIG9yIHNlY3JldCBtYW5hZ2VycyAoW2RvY3NdKGh0dHBzOi8vZXhhbXBsZS5vcmcvbGFya3NwdXIvZmFxI3JlbW90ZS1zdG9yZXMpKQotIEdyYXBoaWNhbCBjb25maWd1cmF0aW9uIGVkaXRvcnMgKFtkb2NzXShodHRwczovL2V4YW1wbGUub3JnL2xhcmtzcHVyL2ZhcSNlZGl0b3JzKSkKLSBTdXBwb3J0IGZvciBQeXRob24gdmVyc2lvbnMgdGhhdCBoYXZlIHJlYWNoZWQgZW5kIG9mIGxpZmUgKFtkb2NzXShodHRwczovL2V4YW1wbGUub3JnL2xhcmtzcHVyL3N1cHBvcnQjcHl0aG9uLXZlcnNpb25zKSkKCiMjIFByaW9yaXRpZXMKCi0gUDA6IFNpbGVudGx5IHdyb25nIGNvbmZpZ3VyYXRpb24gdmFsdWVzLCBkYXRhIGxvc3MsIG9yIGEgY3Jhc2ggb24gZXZlcnkgbG9hZC4KLSBQMTogQSBjb21tb24gd29ya2Zsb3cgaXMgdW51c2FibGUgZm9yIG1hbnkgdXNlcnMgYW5kIGhhcyBubyBwcmFjdGljYWwgd29ya2Fyb3VuZC4KLSBQMjogQSBkZWZlY3QgaW4gYSBsaW1pdGVkIHdvcmtmbG93IHRoYXQgaGFzIGEgcHJhY3RpY2FsIHdvcmthcm91bmQuCi0gUDM6IENvc21ldGljIGlzc3VlcywgZG9jdW1lbnRhdGlvbiBwb2xpc2ggb3IgYSBzbWFsbCBjb252ZW5pZW5jZS4KCiMjIEEgZ29vZCByZXBvcnQgaW5jbHVkZXMKCi0gVGhlIExhcmtzcHVyIGFuZCBQeXRob24gdmVyc2lvbnMuCi0gQSBtaW5pbWFsIGNvbmZpZ3VyYXRpb24gZmlsZSBhbmQgY29kZSBzbmlwcGV0IHRoYXQgcmVwcm9kdWNlIHRoZSBwcm9ibGVtLgotIFRoZSBleHBlY3RlZCByZXN1bHQgYW5kIHRoZSBhY3R1YWwgcmVzdWx0LCBpbmNsdWRpbmcgdGhlIGZ1bGwgZXJyb3IgbWVzc2FnZS4KCiMjIFN1cHBvcnQgcG9saWN5CgpNYWludGFpbmVycyBzdXBwb3J0IHRoZSBsYXRlc3QgbWlub3IgcmVsZWFzZS4gVXNhZ2UgcXVlc3Rpb25zIGJlbG9uZyBpbiB0aGUKZGlzY3Vzc2lvbiBmb3J1bS4gUmVwb3J0IHNlY3VyaXR5IGlzc3VlcyB0aHJvdWdoIHRoZSBwcml2YXRlIHByb2Nlc3MgaW4gU0VDVVJJVFkubWQuCgojIyBEb2NzIGluZGV4CgotIFtVc2VyIGd1aWRlXShodHRwczovL2V4YW1wbGUub3JnL2xhcmtzcHVyL2d1aWRlKQotIFtNZXJnZSBvcmRlcl0oaHR0cHM6Ly9leGFtcGxlLm9yZy9sYXJrc3B1ci9ndWlkZS9tZXJnZS1vcmRlcikKLSBbU2NoZW1hIHJlZmVyZW5jZV0oaHR0cHM6Ly9leGFtcGxlLm9yZy9sYXJrc3B1ci9yZWZlcmVuY2Uvc2NoZW1hKQotIFtDb21tYW5kLWxpbmUgdG9vbF0oaHR0cHM6Ly9leGFtcGxlLm9yZy9sYXJrc3B1ci9yZWZlcmVuY2UvY2xpKQotIFtGQVFdKGh0dHBzOi8vZXhhbXBsZS5vcmcvbGFya3NwdXIvZmFxKQotIFtTdXBwb3J0IHBvbGljeV0oaHR0cHM6Ly9leGFtcGxlLm9yZy9sYXJrc3B1ci9zdXBwb3J0KQo="
@@ -1229,39 +1527,28 @@
  "repos/your-org/example/issues/4/events": {
   "json": [
    {
-    "event": "labeled",
-    "actor": {
-     "login": "example-agent[bot]",
-     "type": "Bot"
-    },
-    "created_at": "2026-10-13T12:00:00Z",
-    "label": {
-     "name": "agent:closed"
-    }
-   },
-   {
     "event": "closed",
     "actor": {
      "login": "example-agent[bot]",
      "type": "Bot"
     },
     "created_at": "2026-10-13T12:00:00Z"
-   }
-  ]
- },
- "repos/your-org/example/issues/5/events": {
-  "json": [
+   },
    {
     "event": "labeled",
     "actor": {
      "login": "example-agent[bot]",
      "type": "Bot"
     },
-    "created_at": "2026-10-01T12:00:00Z",
+    "created_at": "2026-10-13T12:00:01Z",
     "label": {
      "name": "agent:closed"
     }
-   },
+   }
+  ]
+ },
+ "repos/your-org/example/issues/5/events": {
+  "json": [
    {
     "event": "closed",
     "actor": {
@@ -1269,6 +1556,17 @@
      "type": "Bot"
     },
     "created_at": "2026-10-01T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-01T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
    },
    {
     "event": "reopened",
@@ -1291,23 +1589,23 @@
  "repos/your-org/example/issues/6/events": {
   "json": [
    {
-    "event": "labeled",
-    "actor": {
-     "login": "example-agent[bot]",
-     "type": "Bot"
-    },
-    "created_at": "2026-10-05T12:00:00Z",
-    "label": {
-     "name": "agent:closed"
-    }
-   },
-   {
     "event": "closed",
     "actor": {
      "login": "example-agent[bot]",
      "type": "Bot"
     },
     "created_at": "2026-10-05T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-05T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
    }
   ]
  },
@@ -1375,6 +1673,17 @@
     "label": {
      "name": "type:unauthorized"
     }
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-15T12:00:00Z",
+    "label": {
+     "name": "area:cli"
+    }
    }
   ]
  },
@@ -1411,23 +1720,23 @@
  "repos/your-org/example/issues/20/events": {
   "json": [
    {
-    "event": "labeled",
-    "actor": {
-     "login": "example-agent[bot]",
-     "type": "Bot"
-    },
-    "created_at": "2026-10-06T12:00:00Z",
-    "label": {
-     "name": "agent:closed"
-    }
-   },
-   {
     "event": "closed",
     "actor": {
      "login": "example-agent[bot]",
      "type": "Bot"
     },
     "created_at": "2026-10-06T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-06T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
    },
    {
     "event": "reopened",
@@ -1450,39 +1759,28 @@
     "created_at": "2026-10-08T12:00:00Z"
    },
    {
-    "event": "labeled",
-    "actor": {
-     "login": "example-agent[bot]",
-     "type": "Bot"
-    },
-    "created_at": "2026-10-09T12:00:00Z",
-    "label": {
-     "name": "agent:closed"
-    }
-   },
-   {
     "event": "closed",
     "actor": {
      "login": "example-agent[bot]",
      "type": "Bot"
     },
     "created_at": "2026-10-09T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-09T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
    }
   ]
  },
  "repos/your-org/example/issues/22/events": {
   "json": [
-   {
-    "event": "labeled",
-    "actor": {
-     "login": "maintainer",
-     "type": "User"
-    },
-    "created_at": "2026-10-08T12:00:00Z",
-    "label": {
-     "name": "agent:closed"
-    }
-   },
    {
     "event": "closed",
     "actor": {
@@ -1490,6 +1788,17 @@
      "type": "Bot"
     },
     "created_at": "2026-10-08T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "maintainer",
+     "type": "User"
+    },
+    "created_at": "2026-10-08T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
    },
    {
     "event": "reopened",
@@ -1510,6 +1819,114 @@
      "type": "Bot"
     },
     "created_at": "2026-10-08T12:00:00Z",
+    "label": {
+     "name": "agent:closed"
+    }
+   }
+  ]
+ },
+ "repos/your-org/example/issues/24/events": {
+  "json": [
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-08T12:00:00Z",
+    "label": {
+     "name": "agent:closed"
+    }
+   },
+   {
+    "event": "closed",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-08T12:00:01Z"
+   },
+   {
+    "event": "reopened",
+    "actor": {
+     "login": "maintainer",
+     "type": "User"
+    },
+    "created_at": "2026-10-09T12:00:00Z"
+   }
+  ]
+ },
+ "repos/your-org/example/issues/25/events": {
+  "json": [
+   {
+    "event": "closed",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-08T12:00:00Z"
+   },
+   {
+    "event": "reopened",
+    "actor": {
+     "login": "maintainer",
+     "type": "User"
+    },
+    "created_at": "2026-10-09T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-10T12:00:00Z",
+    "label": {
+     "name": "agent:closed"
+    }
+   }
+  ]
+ },
+ "repos/your-org/example/issues/26/events": {
+  "json": [
+   {
+    "event": "closed",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-19T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-19T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
+   }
+  ]
+ },
+ "repos/your-org/example/issues/27/events": {
+  "json": [
+   {
+    "event": "closed",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-19T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-19T12:00:01Z",
     "label": {
      "name": "agent:closed"
     }

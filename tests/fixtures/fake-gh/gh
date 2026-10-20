@@ -15,7 +15,8 @@ if arguments[:1] != ["api"]:
 endpoint = arguments[-1]
 with open(os.environ["FAKE_GH_API"], encoding="utf-8") as stream:
     responses = json.load(stream)
-response = responses.get(endpoint.split("?", 1)[0])
+# An exact endpoint, query included, takes precedence over its bare path.
+response = responses.get(endpoint, responses.get(endpoint.split("?", 1)[0]))
 if response is None:
     print(f"no fixture for {endpoint}", file=sys.stderr)
     sys.exit(1)
