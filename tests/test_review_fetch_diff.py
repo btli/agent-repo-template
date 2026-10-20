@@ -236,6 +236,25 @@ def test_fetch_routes_patch_metadata_mismatch_to_summary_only(tmp_path, monkeypa
     assert "needs-maintainer" in reason
 
 
+def test_fetch_routes_misplaced_no_newline_marker_to_maintainer(tmp_path, monkeypatch):
+    entry = {
+        "filename": "src/a.py",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 0,
+        "changes": 1,
+        "patch": "@@ -0,0 +1 @@\n\\ No newline at end of file\n+new",
+    }
+    api = API(files=[entry])
+    config_dir, output = _fetch_setup(tmp_path, monkeypatch, api)
+
+    _, _, limited, reason = fetch(tmp_path / "files.json", config_dir)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+    assert "summary_only=true" in output.read_text()
+
+
 def test_fetch_rejects_head_that_moved_during_files_request(tmp_path, monkeypatch):
     class MovingAPI(API):
         def __init__(self):
@@ -564,6 +583,28 @@ def test_review_apply_limited_files_escalate_and_post_summary_only(
     assert "Model-only summary must be discarded." not in api.review_posts[0]["body"]
     assert "Unverified finding must be discarded." not in api.review_posts[0]["body"]
     assert "Automated review skipped." in api.review_posts[0]["body"]
+    assert "needs-maintainer" in api.review_posts[0]["body"]
+
+
+def test_review_apply_misplaced_no_newline_marker_hands_off_to_maintainer(tmp_path, monkeypatch):
+    malformed_patch = "@@ -0,0 +1 @@\n\\ No newline at end of file\n+new"
+    api = ReviewApplyAPI(
+        files=[
+            {
+                "filename": "src/a.py",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+                "patch": malformed_patch,
+            }
+        ]
+    )
+    command, review_path, _ = _review_apply_setup(tmp_path, monkeypatch, api=api)
+
+    assert command.main([str(review_path)]) == 0
+    assert api.review_posts[0]["comments"] == []
+    assert any("needs-maintainer" in post["labels"] for post in api.label_posts)
     assert "needs-maintainer" in api.review_posts[0]["body"]
 
 

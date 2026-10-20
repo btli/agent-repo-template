@@ -88,6 +88,9 @@ def test_diff_index_accepts_pure_rename_without_patch():
         ("@@ -1 +1 @@\n-old\n+new\n\\ evil", 1, 1),
         ("@@ -0,0 +1 @@\nxjunk\n+a", 1, 0),
         ("@@ -0,0 +1,2 @@\n+a\n@@ -0,0 +5 @@\n+b", 2, 0),
+        ("@@ -0,0 +1 @@\n\\ No newline at end of file\n+x", 1, 0),
+        ("@@ -0,0 +1 @@\n+x\n\\ No newline at end of file\n\\ No newline at end of file", 1, 0),
+        ("@@ -١ +١ @@\n-a\n+b", 1, 1),
     ],
     ids=[
         "malformed-hunk-header",
@@ -97,6 +100,9 @@ def test_diff_index_accepts_pure_rename_without_patch():
         "wrong-marker",
         "unknown-row-prefix",
         "header-before-hunk-exhausted",
+        "marker-before-first-row",
+        "repeated-marker",
+        "non-ascii-hunk-digits",
     ],
 )
 def test_malformed_file_patch_fails_closed(patch, additions, deletions):

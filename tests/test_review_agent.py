@@ -23,14 +23,25 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
     workflow = load_yaml(Path("consumer/.github/workflows/agent-review.yml"))
 
     assert set(workflow["on"]) == {"pull_request_target", "issue_comment"}
-    assert set(workflow["jobs"]) == {"agent-propose-review", "agent-apply-review"}
+    assert set(workflow["jobs"]) == {
+        "agent-review-gate",
+        "agent-propose-review",
+        "agent-apply-review",
+    }
+    gate_job = workflow["jobs"]["agent-review-gate"]
+    assert "concurrency" not in gate_job
+    assert workflow["jobs"]["agent-propose-review"]["needs"] == "agent-review-gate"
+    assert (
+        workflow["jobs"]["agent-propose-review"]["if"]
+        == "${{ needs.agent-review-gate.outputs.run == 'true' }}"
+    )
     propose_job = workflow["jobs"]["agent-propose-review"]
     concurrency_context = "${{ github.event.pull_request.number || github.event.issue.number }}"
     assert propose_job["concurrency"] == {
         "group": f"agent-review-{concurrency_context}",
         "cancel-in-progress": True,
     }
-    assert workflow["jobs"]["agent-propose-review"]["permissions"]["pull-requests"] == "read"
+    assert propose_job["permissions"]["pull-requests"] == "read"
     assert workflow["jobs"]["agent-propose-review"]["environment"] == "agent-propose-review"
     apply_job = workflow["jobs"]["agent-apply-review"]
     assert apply_job["permissions"] == {"actions": "read", "contents": "read"}
@@ -42,8 +53,10 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
         for step in workflow["jobs"]["agent-propose-review"]["steps"]
         if step.get("name") == "Propose review"
     )
-    assert propose_action["with"]["expected-head-sha"] == "${{ steps.gate.outputs.head_sha }}"
-    assert propose_action["with"]["canary"] == "${{ steps.gate.outputs.canary }}"
+    assert propose_action["with"]["expected-head-sha"] == (
+        "${{ needs.agent-review-gate.outputs.head_sha }}"
+    )
+    assert propose_action["with"]["canary"] == "${{ needs.agent-review-gate.outputs.canary }}"
     token_step = next(step for step in apply_job["steps"] if step.get("id") == "app-token")
     assert token_step["uses"].startswith("actions/create-github-app-token@")
     permission_inputs = {
@@ -363,3 +376,22 @@ def test_summary_only_review_writes_schema_artifact_without_model(tmp_path, monk
     assert artifact["escalate"]["to"] == "maintainer"
     assert "needs-maintainer" in artifact["summary"]
     assert "number" not in artifact and "repo" not in artifact
+
+
+def test_summary_only_review_requires_gate_canary(tmp_path, monkeypatch):
+    module_spec = importlib.util.spec_from_file_location(
+        "review_agent_run", "actions/review-agent/run.py"
+    )
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    output = tmp_path / "review.json"
+    monkeypatch.setenv("OUTPUT_FILE", str(output))
+    monkeypatch.setenv("RUN_ID", "run-1")
+    monkeypatch.setenv("BASE_SHA", "a" * 40)
+    monkeypatch.setenv("HEAD_SHA", "b" * 40)
+    monkeypatch.setenv("AGENT_CANARY", "")
+    monkeypatch.setenv("SUMMARY_ONLY", "true")
+    monkeypatch.setenv("SUMMARY_REASON", "Sensitive area: needs-maintainer.")
+
+    assert module.main() == 1
+    assert not output.exists()

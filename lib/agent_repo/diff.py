@@ -2,7 +2,7 @@ import fnmatch
 import json
 import re
 
-_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
+_HUNK = re.compile(r"^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@(?: .*)?$")
 _STATUSES = {"added", "removed", "modified", "renamed", "copied", "changed", "unchanged"}
 _NO_NEWLINE = "\\ No newline at end of file"
 _NEEDS_MAINTAINER = "File list or patch could not be reviewed safely; needs-maintainer."
@@ -88,6 +88,7 @@ def _parse_patch(patch: str) -> tuple[dict[int, None], int, int, bool]:
     right_line = 0
     in_hunk = False
     saw_hunk = False
+    previous_was_hunk_row = False
     additions = deletions = 0
     invalid = False
     for line in lines:
@@ -100,34 +101,45 @@ def _parse_patch(patch: str) -> tuple[dict[int, None], int, int, bool]:
             if match is None:
                 invalid = True
                 in_hunk = False
+                previous_was_hunk_row = False
                 continue
             saw_hunk = True
             right_line = int(match[3])
             old_remaining = int(match[2] or "1")
             new_remaining = int(match[4] or "1")
             in_hunk = old_remaining > 0 or new_remaining > 0
-        elif line == _NO_NEWLINE and saw_hunk:
+            previous_was_hunk_row = False
+        elif line == _NO_NEWLINE:
+            if not previous_was_hunk_row:
+                invalid = True
+            previous_was_hunk_row = False
             continue
         elif not in_hunk:
             invalid = True
+            previous_was_hunk_row = False
         elif line.startswith(" "):
             old_remaining -= 1
             new_remaining -= 1
             index[right_line] = None
             right_line += 1
+            previous_was_hunk_row = True
         elif line.startswith("+"):
             new_remaining -= 1
             additions += 1
             index[right_line] = None
             right_line += 1
+            previous_was_hunk_row = True
         elif line.startswith("-"):
             old_remaining -= 1
             deletions += 1
+            previous_was_hunk_row = True
         else:
             invalid = True
+            previous_was_hunk_row = False
         if old_remaining < 0 or new_remaining < 0:
             invalid = True
             in_hunk = False
+            previous_was_hunk_row = False
     if not saw_hunk or old_remaining or new_remaining:
         invalid = True
     return index, additions, deletions, invalid

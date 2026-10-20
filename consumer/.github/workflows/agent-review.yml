@@ -11,12 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  agent-propose-review:
+  agent-review-gate:
     runs-on: ubuntu-24.04
-    environment: agent-propose-review
-    concurrency:
-      group: agent-review-${{ github.event.pull_request.number || github.event.issue.number }}
-      cancel-in-progress: true
     permissions:
       actions: read
       contents: read
@@ -35,8 +31,26 @@ jobs:
           workflow: review
           enabled: ${{ vars.AGENTS_ENABLED }}
           bot-login: ${{ vars.AGENT_BOT_LOGIN }}
+
+  agent-propose-review:
+    needs: agent-review-gate
+    if: ${{ needs.agent-review-gate.outputs.run == 'true' }}
+    runs-on: ubuntu-24.04
+    environment: agent-propose-review
+    concurrency:
+      group: agent-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      run: ${{ needs.agent-review-gate.outputs.run }}
+      canary: ${{ needs.agent-review-gate.outputs.canary }}
+      head_sha: ${{ needs.agent-review-gate.outputs.head_sha }}
+    steps:
       - name: Checkout review policy
-        if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -44,7 +58,6 @@ jobs:
           sparse-checkout: .agents
           persist-credentials: false
       - name: Set up repository agent
-        if: steps.gate.outputs.run == 'true'
         # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/setup@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         with:
@@ -55,7 +68,6 @@ jobs:
           LLM_API_KEY: ${{ secrets.AGENT_REVIEW_KEY }}
       - name: Propose review
         id: propose
-        if: steps.gate.outputs.run == 'true'
         # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/review-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         env:
@@ -63,13 +75,12 @@ jobs:
         with:
           mode: propose
           config-dir: ${{ github.workspace }}/agent-review-policy/.agents
-          expected-head-sha: ${{ steps.gate.outputs.head_sha }}
-          canary: ${{ steps.gate.outputs.canary }}
+          expected-head-sha: ${{ needs.agent-review-gate.outputs.head_sha }}
+          canary: ${{ needs.agent-review-gate.outputs.canary }}
           files-file: ${{ runner.temp }}/agent-review/files.json
           output-file: ${{ runner.temp }}/agent-review/review.json
           run-id: ${{ github.run_id }}
       - name: Share review inputs with the apply job
-        if: steps.gate.outputs.run == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agent-review-${{ github.run_id }}
