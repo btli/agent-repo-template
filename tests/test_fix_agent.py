@@ -37,6 +37,7 @@ if mode != "attributes_only":
     (work / "test_lib.py").write_text("def test_add():\\n    assert add(1, 2) == 3\\n")
 key = os.environ["LLM_API_KEY"]
 outputs = {"canary": canary, "split_canary": "-".join(canary), "oversized": "x" * 70000,
+           "over_one_mib": "x" * 1153434,
            "encoded_key": base64.b64encode(key.encode()).decode()}
 if mode in outputs:
     (work / "notes.txt").write_text(outputs[mode])
@@ -57,6 +58,12 @@ if mode == "ignored_attributes":
     (work / "sub" / "x.txt").write_text("hello\\n")
 if mode == "ebcdic_base_attribute":
     (work / "secret.dat").write_bytes(("token=" + canary).encode("cp037"))
+if mode in ("modify_base_attributes", "no_patch_attributes"):
+    (work / ".gitattributes").write_text("*.py text eol=crlf\\n")
+if mode == "symlink_base_attributes":
+    (work / "attributes.copy").write_bytes((work / ".gitattributes").read_bytes())
+    (work / ".gitattributes").unlink()
+    os.symlink("attributes.copy", work / ".gitattributes")
 if mode == "outside_symlink":
     (home / "outside.txt").write_text(canary)
     (work / "b.bin").unlink()
@@ -95,7 +102,7 @@ if mode == "nested_repo":
 answer = {"schema_version": "1", "run_id": value["Run"], "base_sha": value["Base"],
           "status": "patch", "rca": "add subtracts.", "tests": ["test_lib.py::test_add"],
           "risk": "low", "summary": "Return the sum.", "attempted": "", "escalate": None}
-if mode == "no_patch":
+if mode in ("no_patch", "no_patch_attributes"):
     answer.update(status="no_patch", attempted="Could not reproduce.",
                   escalate={"to": "maintainer", "reason": "No repro."})
 if mode == "raw_key_summary":
@@ -438,6 +445,8 @@ LEAKS = {
     "encoded_key": "credential or canary",
     "raw_key_summary": "credential or canary",
     "oversized": "outbound scan budget",
+    # Over the artifact builder's 1 MB cap (1.1 MiB here) is a size refusal too.
+    "over_one_mib": "outbound scan budget",
     # The key sits only in the base pre-image, which the binary patch still encodes.
     "delete_binary": "credential or canary",
     "modify_binary": "credential or canary",
@@ -450,6 +459,10 @@ LEAKS = {
     # Attributes decide how git encodes shipped content, so a fix may not change them.
     "attributes_only": "agent output changes .gitattributes",
     "ignored_attributes": "agent output changes .gitattributes",
+    "modify_base_attributes": "agent output changes .gitattributes",
+    "symlink_base_attributes": "agent output changes .gitattributes",
+    # A no-patch answer still leaves the edited attributes in the tree.
+    "no_patch_attributes": "agent output changes .gitattributes",
     # The base already re-encodes secret.dat, so only the encoded-blob scan sees the canary.
     "ebcdic_base_attribute": "credential or canary",
     # The limit is in bytes, and these are under it in decoded characters.
@@ -467,6 +480,8 @@ LEAKS = {
 def test_canary_in_patch_fails_closed(action, mode):
     if mode in ("delete_binary", "modify_binary"):
         commit_base_file(action, "secret.bin", b"\0" + KEY.encode())
+    if mode in ("modify_base_attributes", "symlink_base_attributes"):
+        commit_base_file(action, ".gitattributes", b"*.py text\n")
     if mode == "ebcdic_base_attribute":
         attribute = b"secret.dat binary working-tree-encoding=IBM037\n"
         commit_base_file(action, ".gitattributes", attribute)
@@ -840,6 +855,23 @@ def test_undecodable_git_config_is_refused(action, mode, checkout, entry):
     assert result.stderr == FIXED_FAILURES[mode]
     assert not (action["work"] / "source.txt").exists()
     assert calls(action) == []
+
+
+def test_setup_installed_attributes_are_not_refused(action):
+    # Installed dependencies may ship attributes files; only the agent's changes are refused.
+    commit_base_file(action, ".gitignore", b"node_modules/\n")
+    policy = Path(action["env"]["POLICY_PATH"]) / ".agents"
+    command = "mkdir -p node_modules/pkg && printf '* text=auto\\n' > node_modules/pkg/"
+    command += ".gitattributes"
+    config = (policy / "config.yml").read_text()
+    config = config.replace('setup: "echo default > source.txt"', f"setup: {json.dumps(command)}")
+    (policy / "config.yml").write_text(config)
+    assert run_action(action, "setup").returncode == 0
+    installed = action["work"] / "node_modules" / "pkg" / ".gitattributes"
+    assert installed.read_text() == "* text=auto\n"
+    result = run_action(action, "agent")
+    assert result.returncode == 0, result.stderr
+    assert (action["out"] / "fix.patch").exists()
 
 
 def test_setup_home_is_discarded_before_the_agent(action):

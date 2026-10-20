@@ -11,6 +11,10 @@ MAX_PATCH_BYTES = 1_000_000
 DIFF_OPTIONS = ("--binary", "--full-index", "--no-ext-diff", "--no-textconv")
 
 
+class PatchTooLarge(ValueError):
+    """The patch is over MAX_PATCH_BYTES, so callers can report it as a size refusal."""
+
+
 def git_environment() -> dict[str, str]:
     # Global and system config are ignored so runner-wide settings cannot change any git result.
     return {
@@ -85,7 +89,7 @@ def build_artifact(
     if not patch:
         raise ValueError("patch status without changes")
     if len(patch) > MAX_PATCH_BYTES:
-        raise ValueError("patch too large")
+        raise PatchTooLarge("patch too large")
     gitlink = rb"^(?:(?:new|deleted) file mode|old mode|new mode|index \S+) 160000$"
     if re.search(gitlink, patch, re.M):
         raise ValueError("patch contains a gitlink")

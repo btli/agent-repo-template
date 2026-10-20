@@ -4,6 +4,7 @@ description: >-
   fix.patch from git. The checkout's .git directory is moved outside the sandbox root.
   harden-runner blocks egress for the whole job, from job start, outside allowed-endpoints.
   The outbound scan refuses a patch, or any changed binary file, over 64 KiB.
+  Any agent change to a .gitattributes file is refused; ones setup installs are kept.
 inputs:
   work-path:
     description: >-

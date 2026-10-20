@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from agent_repo.commands.fix_artifact import (
+    PatchTooLarge,
     build_artifact,
     git_environment,
     local_config,
@@ -186,25 +187,19 @@ def binary_file_bytes(work: Path, git_dir: Path, base_sha: str) -> list[bytes]:
     return blobs + [path.read_bytes() for path in inside] + encoded
 
 
-def refuse_changed_attributes(work: Path, git_dir: Path, base_sha: str) -> None:
-    # Attributes decide how git encodes shipped content, and an ignored file still applies,
-    # so every attributes file in the tree must be the base copy.
-    tree = run_git(work, git_dir, "ls-tree", "-r", "-z", "--name-only", base_sha).split(b"\0")
-    names = [os.fsdecode(name) for name in tree]
-    base = {name for name in names if Path(name).name.casefold() == ".gitattributes"}
-    found = {
-        (Path(root) / name).relative_to(work).as_posix()
-        for root, dirs, files in os.walk(work)
-        for name in dirs + files
-        if name.casefold() == ".gitattributes"
-    }
-    if found != base:
-        raise Refused("agent output changes .gitattributes")
-    for name in found:
-        path = work / name
-        base_copy = run_git(work, git_dir, "cat-file", "blob", f"{base_sha}:{name}")
-        if path.is_symlink() or not path.is_file() or path.read_bytes() != base_copy:
-            raise Refused("agent output changes .gitattributes")
+def attribute_files(work: Path) -> dict[str, tuple[str, str | bytes | None]]:
+    # Every attributes file in the tree, ignored ones included, with its link target or bytes.
+    found = {}
+    for root, dirs, files in os.walk(work):
+        for name in dirs + files:
+            if name.casefold() == ".gitattributes":
+                path = Path(root) / name
+                if path.is_symlink():
+                    entry = ("link", os.readlink(path))
+                else:
+                    entry = ("file", path.read_bytes()) if path.is_file() else ("other", None)
+                found[path.relative_to(work).as_posix()] = entry
+    return found
 
 
 def read_optional(path: Path) -> str:
@@ -270,6 +265,9 @@ def run_agent(output: Path, canary: str) -> str:
         raise Refused("credential in prompt")
     if len(prompt.encode()) > 120 * 1024:
         raise Refused("prompt byte cap exceeded")
+    # Attributes decide how git encodes shipped content, so the agent's changes are compared
+    # with what the base tree and trusted setup left, such as files in installed dependencies.
+    attributes = attribute_files(work)
     command = ["timeout", "-k", "15", str(limit), "omnigent", "run", str(spec)]
     try:
         run = subprocess.run(
@@ -287,6 +285,8 @@ def run_agent(output: Path, canary: str) -> str:
     try:
         answer = extract_json(run.stdout.decode("utf-8"))
         artifact, patch = build_artifact(work, base_sha, run_id, answer, git_dir=git_dir)
+    except PatchTooLarge:
+        raise Refused("agent output exceeds the outbound scan budget") from None
     except ValueError:
         raise Refused("agent output rejected") from None
     # The patch is scanned on its own, so its documented limit is not shared with the fields.
@@ -304,8 +304,9 @@ def run_agent(output: Path, canary: str) -> str:
         raise Refused("agent output exceeds the outbound scan budget")
     if leaks:
         raise Refused("credential or canary in agent output")
-    if patch is not None:
-        refuse_changed_attributes(work, git_dir, base_sha)
+    # Checked for every answer, since a no-patch answer still leaves the edited tree behind.
+    if attribute_files(work) != attributes:
+        raise Refused("agent output changes .gitattributes")
     write_artifact(output, artifact, patch)
     return artifact["status"]
 
