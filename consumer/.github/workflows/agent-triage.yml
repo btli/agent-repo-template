@@ -26,6 +26,7 @@ jobs:
     steps:
       - name: Evaluate triage request
         id: gate
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/gate@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         with:
           workflow: triage
@@ -134,6 +135,7 @@ jobs:
           path: ${{ runner.temp }}/agent-triage/context
       - name: Build Tier-1 decision
         id: decide
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/decide@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         env:
           AGENT_SYSTEM_ONE_KEY: ${{ secrets.AGENT_SYSTEM_ONE_KEY }}
@@ -179,6 +181,7 @@ jobs:
           name: agent-handoff-context-${{ github.run_id }}
           path: ${{ runner.temp }}/agent-triage/tier2-context
       - name: Set up repository agent
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/setup@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         with:
           gateway-url: ${{ vars.AGENT_GATEWAY_URL }}
@@ -188,6 +191,7 @@ jobs:
       - name: Run Tier-2 triage
         id: triage
         continue-on-error: true
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/triage-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         env:
           AGENT_TRIAGE_KEY: ${{ secrets.AGENT_TRIAGE_KEY }}
@@ -233,6 +237,7 @@ jobs:
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
           permission-issues: write
       - name: Apply triage decision
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/apply@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         with:
           artifact: ${{ runner.temp }}/agent-triage/apply/decision.json
