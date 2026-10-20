@@ -47,6 +47,11 @@ if mode == "binary_attribute":
 if mode == "outside_symlink":
     (home / "outside.txt").write_text(canary)
     os.symlink(home / "outside.txt", work / "outside-link")
+if mode == "large_binary":
+    (work / "notes.dat").write_bytes(b"\\0" * 70000)
+if mode == "large_text_edit":
+    big = work / "big.py"
+    big.write_text(big.read_text().replace("# filler\\n", "# changed\\n", 1))
 if mode == "nested_repo":
     vendor = work / "vendor"
     vendor.mkdir()
@@ -339,6 +344,19 @@ def test_no_patch_answer_writes_only_fix_json(action):
     assert not (action["out"] / "fix.patch").exists()
 
 
+def test_one_line_change_to_a_large_text_file_produces_a_patch(action):
+    # Text changes are scanned in the patch, so a big file around them is not read whole.
+    work, env = action["work"], action["env"]
+    (work / "big.py").write_text("# filler\n" * 8000)
+    git(work, "add", "big.py")
+    git(work, "commit", "-q", "-m", "large file")
+    env["BASE_SHA"] = git(work, "rev-parse", "HEAD").strip()
+    (action["home"] / "mode").write_text("large_text_edit")
+    result = run_action(action, "agent")
+    assert result.returncode == 0, result.stderr
+    assert "+# changed" in (action["out"] / "fix.patch").read_text()
+
+
 def test_changed_file_scan_never_follows_a_symlink_out_of_the_tree(action):
     # The link's target holds the canary, so reading through it would refuse the run.
     (action["home"] / "mode").write_text("outside_symlink")
@@ -367,6 +385,7 @@ LEAKS = {
     # Binary hunks are base85 in the patch, so only the file scan sees these.
     "nul_canary": "credential or canary",
     "binary_attribute": "credential or canary",
+    "large_binary": "outbound scan budget",
     # JSON escaping turns these separators into letters, so only the field-value scan sees them.
     "newline_key_summary": "credential or canary",
     "newline_canary_rca": "credential or canary",
@@ -576,14 +595,9 @@ def test_setup_runs_default_branch_command_without_key(action, key_env):
 
 
 @pytest.mark.parametrize("checkout", ["work", "policy"])
-# The surrogate-escaped value writes raw non-UTF-8 bytes, which the check must still decode.
 @pytest.mark.parametrize(
     "setting",
-    [
-        ("http.https://example.test/.extraheader", "basic e30="),
-        ("http.https://example.test/.extraheader", "basic \udcff\udcfe"),
-        *CREDENTIAL_SETTINGS.values(),
-    ],
+    [("http.https://example.test/.extraheader", "basic e30="), *CREDENTIAL_SETTINGS.values()],
 )
 def test_setup_refuses_persisted_credentials_before_running(action, checkout, setting):
     policy = Path(action["env"]["POLICY_PATH"])
@@ -699,13 +713,29 @@ def test_policy_path_outside_the_checkout_is_refused(action, name, mode):
     assert calls(action) == []
 
 
-def test_setup_reads_a_non_utf8_git_config(action):
-    # A non-UTF-8 byte in an unrelated config value must neither crash nor block setup.
-    with (action["work"] / ".git" / "config").open("ab") as config:
-        config.write(b"[core]\n\tcomment = \xff\xfe\n")
-    result = run_action(action, "setup")
-    assert result.returncode == 0, result.stderr
-    assert (action["work"] / "source.txt").read_text() == "default\n"
+UNDECODABLE_CONFIG = {
+    "benign": b"[core]\n\tcomment = \xff\xfe\n",
+    "extraheader": b"[http]\n\textraheader = basic \xff\xfe\n",
+}
+FIXED_FAILURES = {
+    "setup": "Project setup failed: trusted configuration unavailable.\n",
+    "agent": "Fix agent failed: trusted inputs unavailable.\n",
+}
+
+
+@pytest.mark.parametrize("mode", ["setup", "agent"])
+@pytest.mark.parametrize("checkout", ["work", "policy"])
+@pytest.mark.parametrize("entry", sorted(UNDECODABLE_CONFIG))
+def test_undecodable_git_config_is_refused(action, mode, checkout, entry):
+    # Config that cannot be decoded is refused outright, even when the bad byte looks harmless.
+    tree = action["work"] if checkout == "work" else Path(action["env"]["POLICY_PATH"])
+    with (tree / ".git" / "config").open("ab") as config:
+        config.write(UNDECODABLE_CONFIG[entry])
+    result = run_action(action, mode)
+    assert result.returncode == 1
+    assert result.stderr == FIXED_FAILURES[mode]
+    assert not (action["work"] / "source.txt").exists()
+    assert calls(action) == []
 
 
 def test_setup_home_is_discarded_before_the_agent(action):

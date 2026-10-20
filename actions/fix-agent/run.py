@@ -159,10 +159,11 @@ def string_values(value: object) -> list[str]:
     return []
 
 
-def changed_file_texts(work: Path, git_dir: Path, base_sha: str) -> list[str]:
-    # Binary hunks are base85 in the patch, so each changed file's own bytes are scanned too.
-    names = run_git(work, git_dir, "diff", "--name-only", "-z", base_sha).split(b"\0")
-    paths = [work / os.fsdecode(name) for name in names if name]
+def binary_file_texts(work: Path, git_dir: Path, base_sha: str) -> list[str]:
+    # Binary hunks are base85 in the patch, so those files' own bytes are scanned; text is in it.
+    stats = run_git(work, git_dir, "diff", "--numstat", "-z", "--no-renames", base_sha)
+    names = [stat.split(b"\t", 2)[2] for stat in stats.split(b"\0") if stat.startswith(b"-\t-\t")]
+    paths = [work / os.fsdecode(name) for name in names]
     # A symlink's target is already text in the patch; following it could leave the tree.
     files = [path for path in paths if path.is_file() and not path.is_symlink()]
     return [path.read_bytes().decode("utf-8", "surrogateescape") for path in files]
@@ -253,7 +254,7 @@ def run_agent(output: Path, canary: str) -> str:
         raise Refused("agent output rejected") from None
     texts = [json.dumps(artifact, ensure_ascii=False) + (patch or ""), *string_values(artifact)]
     if patch is not None:
-        texts += changed_file_texts(work, git_dir, base_sha)
+        texts += binary_file_texts(work, git_dir, base_sha)
     # Separator-aware scan; output too large to scan fails closed as well.
     leaks = sorted({leak for text in texts for leak in find_leaks(text, [key], canary)})
     if leaks == ["scan_budget"]:

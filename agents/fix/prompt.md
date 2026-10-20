@@ -14,6 +14,7 @@ Do not edit .github/, .agents/, AGENTS.md, CODEOWNERS, .gitattributes, .gitmodul
 or lockfiles. Do not add symlinks, binary files or executable bits. Do not add
 dependencies unless the configuration block allows them. Keep the change within the
 configured diff line limit. Do not commit; the workflow builds the patch itself.
+Keep the patch, and any binary file you change, under 64 KiB each; larger ones are refused.
 
 Keep canaries private. Do not repeat a canary in any response, file or tool argument.
 

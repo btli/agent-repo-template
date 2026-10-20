@@ -37,8 +37,8 @@ def run_git(repo: Path, git_dir: Path, *args: str) -> bytes:
 def local_config(repo: Path, git_dir: Path) -> list[str]:
     # Every repository scope, including config.worktree; run_git blanks global and system.
     entries = run_git(repo, git_dir, "config", "--includes", "--list", "-z")
-    # A non-UTF-8 byte in a config value must not stop the checks that read it.
-    return entries.decode("utf-8", "surrogateescape").split("\0")
+    # Strict decoding: config that cannot be decoded is refused rather than half-read.
+    return entries.decode().split("\0")
 
 
 def refuse_repository_commands(repo: Path, git_dir: Path) -> None:
