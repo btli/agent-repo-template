@@ -1,0 +1,75 @@
+name: Decide issue triage
+description: Build a schema-validated, deterministic Tier 0 and Tier 1 decision.
+inputs:
+  token:
+    description: 'Read-only token for issue comments and search; also requires actions: read for Tier 2 cap checks.'
+    required: true
+  canary:
+    description: Canary supplied by the gate for this decide run.
+    required: true
+  default-branch:
+    description: Consumer default branch containing agent policy and issue forms.
+    default: ${{ github.event.repository.default_branch }}
+  tier2-allowed:
+    description: Whether the gate permits a Tier 2 run under current rate caps.
+    required: true
+  decision-file:
+    description: Path where decision.json is written.
+    default: decision.json
+  context-file:
+    description: Path where filtered Tier 2 issue context is written.
+    default: issue-context.txt
+  system-one-base-url:
+    description: Optional System One endpoint; ignored in LLM-only mode.
+    required: false
+  system-one-api-key-env:
+    description: Environment variable holding the System One key.
+    default: LLM_API_KEY
+outputs:
+  decision-file:
+    description: Path to the validated decision artifact.
+    value: ${{ inputs.decision-file }}
+  context-file:
+    description: Path to filtered issue context for Tier 2.
+    value: ${{ inputs.context-file }}
+  tier2:
+    description: Whether the decision routes this issue to Tier 2.
+    value: ${{ steps.decide.outputs.tier2 }}
+runs:
+  using: composite
+  steps:
+    - name: Read policy from the default branch
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        ref: ${{ inputs.default-branch }}
+        path: agent-decide-default
+        persist-credentials: false
+        token: ${{ inputs.token }}
+    - id: decide
+      name: Build decision artifact
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}/../../lib
+        GH_TOKEN: ${{ inputs.token }}
+        GATE_CANARY: ${{ inputs.canary }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        TIER2_ALLOWED: ${{ inputs.tier2-allowed }}
+        DECISION_FILE: ${{ inputs.decision-file }}
+        DECISION_CONTEXT: ${{ inputs.context-file }}
+        SYSTEM_ONE_BASE_URL: ${{ inputs.system-one-base-url }}
+        SYSTEM_ONE_API_KEY_ENV: ${{ inputs.system-one-api-key-env }}
+      run: python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" decide "$GITHUB_WORKSPACE/agent-decide-default" "$DECISION_FILE" "$DECISION_CONTEXT"
+    - name: Upload global Tier 2 counter
+      if: steps.decide.outputs.tier2 == 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.decide.outputs.tier2-global-name }}
+        path: ${{ steps.decide.outputs.tier2-counter-file }}
+        retention-days: 2
+    - name: Upload per-author Tier 2 counter
+      if: steps.decide.outputs.tier2 == 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.decide.outputs.tier2-author-name }}
+        path: ${{ steps.decide.outputs.tier2-counter-file }}
+        retention-days: 2
