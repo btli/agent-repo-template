@@ -362,6 +362,33 @@ CREDENTIAL_SETTINGS = {
     "ssl_key": ("http.sslKey", "/runner/temp/client.key"),
     "url_scoped_ssl_cert": ("http.https://example.test/.sslCert", "/runner/temp/client.crt"),
 }
+# Worktree-scoped config is outside --local but still applies to the checkout.
+WORKTREE_SETTINGS = {
+    "worktree_filter": ("filter.hooked.clean", "cat"),
+    "worktree_extraheader": ("http.https://example.test/.extraheader", "basic e30="),
+}
+# Each policy path the action reads could be a symlink into the agent-branch checkout.
+POLICY_LINKS = {
+    "policy_agents_symlink": (".agents", ".agents"),
+    "policy_config_symlink": (".agents/config.yml", ".agents/config.yml"),
+    "policy_charter_symlink": (".agents/charter.md", ".agents/charter.md"),
+    "policy_doc_symlink": ("AGENTS.md", "lib.py"),
+}
+
+
+def plant_checkout_problem(work: Path, policy: Path, problem: str) -> None:
+    if problem in WORKTREE_SETTINGS:
+        git(work, "config", "extensions.worktreeConfig", "true")
+        git(work, "config", "--worktree", *WORKTREE_SETTINGS[problem])
+    else:
+        link, target = policy / POLICY_LINKS[problem][0], work / POLICY_LINKS[problem][1]
+        if link.is_dir():
+            shutil.rmtree(link)
+        else:
+            link.unlink(missing_ok=True)
+        link.symlink_to(target)
+
+
 REFUSALS = {
     "wrong_base": "not at the base SHA",
     "policy_inside_work": "policy checkout must be separate",
@@ -385,6 +412,12 @@ REFUSALS = {
     "ssl_key": "persisted credentials",
     "url_scoped_ssl_cert": "persisted credentials",
     "policy_checkout_token": "persisted credentials",
+    "worktree_filter": "git config defines filters",
+    "worktree_extraheader": "persisted credentials",
+    "policy_agents_symlink": "resolves outside the policy checkout",
+    "policy_config_symlink": "resolves outside the policy checkout",
+    "policy_charter_symlink": "resolves outside the policy checkout",
+    "policy_doc_symlink": "resolves outside the policy checkout",
     "key_in_issue": "credential in prompt",
     "oversized_issue": "prompt byte cap exceeded",
 }
@@ -430,6 +463,8 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         git(work, "config", "url.https://x:tok3n@example.test/.insteadOf", "https://example.test/")
     elif problem in CREDENTIAL_SETTINGS:
         git(work, "config", *CREDENTIAL_SETTINGS[problem])
+    elif problem in WORKTREE_SETTINGS or problem in POLICY_LINKS:
+        plant_checkout_problem(work, Path(env["POLICY_PATH"]), problem)
     elif problem == "policy_checkout_token":
         policy = Path(env["POLICY_PATH"])
         git(policy, "init", "-q")
@@ -458,6 +493,11 @@ def test_unignored_setup_output_refuses_agent(action):
     assert result.returncode == 1
     assert "Fix agent refused: work tree is not clean after setup" in result.stderr
     assert calls(action) == []
+    # The same output passes once it is ignored, as setup outputs must be.
+    exclude = action["work"] / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(exist_ok=True)
+    exclude.write_text("source.txt\n")
+    assert run_action(action, "agent").returncode == 0
 
 
 def test_repository_filters_never_run_before_the_agent(action):
@@ -527,6 +567,11 @@ SETUP_REFUSALS = {
     "untracked_script": "work tree is not clean before setup",
     "modified_script": "work tree is not clean before setup",
     "filter_configured": "git config defines filters",
+    "ignored_script": "work tree is not clean before setup",
+    "worktree_filter": "git config defines filters",
+    "worktree_extraheader": "checkout persisted credentials; use persist-credentials: false",
+    "policy_agents_symlink": "policy file resolves outside the policy checkout",
+    "policy_config_symlink": "policy file resolves outside the policy checkout",
 }
 
 
@@ -535,12 +580,22 @@ def test_setup_never_runs_code_outside_base_sha(action, problem):
     work, env = action["work"], action["env"]
     policy = Path(env["POLICY_PATH"]) / ".agents"
     marker = Path(env["RUNNER_TEMP"]) / "untrusted-ran"
+    script = 'touch "$RUNNER_TEMP/untrusted-ran"\n'
     if problem == "modified_script":
         (work / "bootstrap.sh").write_text("true\n")
-        git(work, "add", "bootstrap.sh")
-        git(work, "commit", "-q", "-m", "setup script")
+    elif problem == "ignored_script":
+        (work / ".gitignore").write_text("bootstrap.sh\n")
+    elif problem in POLICY_LINKS:
+        # The linked agent-branch config names a committed script, so only the link check stops it.
+        branch = work / ".agents" / "config.yml"
+        command = 'setup: "bash bootstrap.sh"'
+        branch.write_text(branch.read_text().replace('setup: "echo agent > source.txt"', command))
+        (work / "bootstrap.sh").write_text(script)
+    if problem in ("modified_script", "ignored_script") or problem in POLICY_LINKS:
+        git(work, "add", ".")
+        git(work, "commit", "-q", "-m", "setup files")
         env["BASE_SHA"] = git(work, "rev-parse", "HEAD").strip()
-    (work / "bootstrap.sh").write_text('touch "$RUNNER_TEMP/untrusted-ran"\n')
+    (work / "bootstrap.sh").write_text(script)
     config = (policy / "config.yml").read_text()
     config = config.replace('setup: "echo default > source.txt"', 'setup: "bash bootstrap.sh"')
     (policy / "config.yml").write_text(config)
@@ -553,6 +608,8 @@ def test_setup_never_runs_code_outside_base_sha(action, problem):
         env["BASE_SHA"] = env["BASE_SHA"][:39] + "G"
     elif problem == "filter_configured":
         git(work, "config", "filter.hooked.clean", "cat")
+    elif problem in WORKTREE_SETTINGS or problem in POLICY_LINKS:
+        plant_checkout_problem(work, policy.parent, problem)
     result = run_action(action, "setup")
     assert not marker.exists()
     assert result.returncode == 1

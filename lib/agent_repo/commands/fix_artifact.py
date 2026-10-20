@@ -32,7 +32,8 @@ def run_git(repo: Path, git_dir: Path, *args: str) -> bytes:
 
 
 def local_config(repo: Path, git_dir: Path) -> list[str]:
-    entries = run_git(repo, git_dir, "config", "--local", "--includes", "--list", "-z")
+    # Every repository scope, including config.worktree; run_git blanks global and system.
+    entries = run_git(repo, git_dir, "config", "--includes", "--list", "-z")
     return entries.decode().split("\0")
 
 

@@ -25,6 +25,15 @@ from agent_repo.yamljson import YamlError
 
 ACTION = Path(__file__).resolve().parent
 TEMPLATE = ACTION.parents[1] / "agents" / "fix"
+POLICY_FILES = (
+    ".agents",
+    ".agents/config.yml",
+    ".agents/areas.yml",
+    ".agents/labels.yml",
+    ".agents/charter.md",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+)
 
 
 class Refused(Exception):
@@ -66,14 +75,22 @@ def refuse_unexpected_head(git_dir: Path, base_sha: str) -> None:
         raise Refused("work tree is not at the base SHA")
 
 
-def refuse_unclean_work_tree(work: Path, git_dir: Path, reason: str) -> None:
+def refuse_unclean_work_tree(work: Path, git_dir: Path, reason: str, *, ignored: bool) -> None:
     # Status hashes modified files, so filters and nested repositories are refused first.
     try:
         refuse_repository_commands(work, git_dir)
     except ValueError as exc:
         raise Refused(str(exc)) from None
-    if run_git(work, git_dir, "status", "--porcelain", "-z", "--untracked-files=all"):
+    status = ["status", "--porcelain", "-z", "--untracked-files=all"]
+    if run_git(work, git_dir, *status, *(["--ignored"] if ignored else [])):
         raise Refused(reason)
+
+
+def refuse_escaping_policy_paths(policy: Path) -> None:
+    # A symlink in the policy checkout could point config or charter at agent-branch files.
+    for name in POLICY_FILES:
+        if not (policy / name).resolve().is_relative_to(policy):
+            raise Refused("policy file resolves outside the policy checkout")
 
 
 def setup() -> int:
@@ -88,8 +105,10 @@ def setup() -> int:
         if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
             raise Refused("invalid inputs")
         refuse_unexpected_head(work / ".git", base_sha)
-        # An untracked or edited script would otherwise run as if it were base_sha code.
-        refuse_unclean_work_tree(work, work / ".git", "work tree is not clean before setup")
+        # An untracked, ignored or edited script would otherwise run as if it were base_sha code.
+        reason = "work tree is not clean before setup"
+        refuse_unclean_work_tree(work, work / ".git", reason, ignored=True)
+        refuse_escaping_policy_paths(policy)
         command = load_config(policy / ".agents").raw["commands"]["setup"]
     except Refused as exc:
         print(f"Project setup refused: {exc}.", file=sys.stderr)
@@ -142,6 +161,7 @@ def run_agent(output: Path, canary: str) -> str:
         raise Refused("bwrap sandbox unavailable")
     if (policy / ".git").exists():
         refuse_persisted_credentials(policy, policy / ".git")
+    refuse_escaping_policy_paths(policy)
     config = load_config(policy / ".agents")
     scratch = Path(tempfile.mkdtemp(prefix="agent-fix-", dir=temp))
     dot_git = work / ".git"
@@ -151,7 +171,7 @@ def run_agent(output: Path, canary: str) -> str:
     refuse_unexpected_head(dot_git, base_sha)
     # Setup output that is not gitignored would otherwise land in the patch as agent work.
     reason = "work tree is not clean after setup; gitignore setup outputs"
-    refuse_unclean_work_tree(work, dot_git, reason)
+    refuse_unclean_work_tree(work, dot_git, reason, ignored=False)
     # Git metadata leaves the sandbox root so the agent cannot plant config the diff would run.
     git_dir = scratch / "git"
     shutil.move(dot_git, git_dir)
