@@ -80,7 +80,11 @@ def main(argv: list[str]) -> int:
         except (OSError, ValueError, RecursionError, MemoryError):
             decision = None
         alerts = execute(plan_triage(decision, ctx), gh, mode, summary)
-        return 1 if any(alert.startswith("Apply failed") for alert in alerts) else 0
+        return (
+            1
+            if any(alert.startswith(("Apply failed", "Outbound scan alert")) for alert in alerts)
+            else 0
+        )
     except Exception:
         # Environment, file and API errors may contain credentials; publish fixed text.
         actions = []

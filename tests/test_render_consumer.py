@@ -27,6 +27,17 @@ def test_rendered_workflow_has_no_template_tokens(tmp_path: Path):
 
     rendered = render_consumer("c" * 40, "v0.0.0", temporary_parent=tmp_path)
     workflow = (rendered / "consumer/.github/workflows/agent-triage.yml").read_text()
+    workflow_data = load_yaml(rendered / "consumer/.github/workflows/agent-triage.yml")
+    apply_steps = workflow_data["jobs"]["apply"]["steps"]
+    apply_index = next(
+        i for i, step in enumerate(apply_steps) if step.get("name") == "Apply triage decision"
+    )
+    record_index = next(
+        i
+        for i, step in enumerate(apply_steps)
+        if step.get("name") == "Share applied decision record"
+    )
+    record_step = apply_steps[record_index]
 
     assert "__TEMPLATE_SHA__" not in workflow
     assert "__TEMPLATE_VERSION__" not in workflow
@@ -34,3 +45,8 @@ def test_rendered_workflow_has_no_template_tokens(tmp_path: Path):
     assert "name: agent-decision-${{ github.run_id }}" in workflow
     assert "retention-days: 30" in workflow
     assert "name: agent-handoff-tier1-${{ github.run_id }}" in workflow
+    assert record_index > apply_index
+    assert record_step["if"] == "success()"
+    assert record_step["uses"].startswith("actions/upload-artifact@")
+    assert record_step["with"]["name"] == "agent-decision-${{ github.run_id }}"
+    assert record_step["with"]["path"].endswith("/decision.json")
