@@ -356,6 +356,12 @@ def test_repository_filters_never_run_after_the_agent(action):
     assert not (action["out"] / "fix.patch").exists()
 
 
+# Checkout can persist an SSH key or client certificate instead of a token.
+CREDENTIAL_SETTINGS = {
+    "ssh_command": ("core.sshCommand", "ssh -i /runner/temp/deploy-key"),
+    "ssl_key": ("http.sslKey", "/runner/temp/client.key"),
+    "url_scoped_ssl_cert": ("http.https://example.test/.sslCert", "/runner/temp/client.crt"),
+}
 REFUSALS = {
     "wrong_base": "not at the base SHA",
     "policy_inside_work": "policy checkout must be separate",
@@ -375,6 +381,9 @@ REFUSALS = {
     "include_path": "persisted credentials",
     "remote_url_token": "persisted credentials",
     "insteadof_token": "persisted credentials",
+    "ssh_command": "persisted credentials",
+    "ssl_key": "persisted credentials",
+    "url_scoped_ssl_cert": "persisted credentials",
     "policy_checkout_token": "persisted credentials",
     "key_in_issue": "credential in prompt",
     "oversized_issue": "prompt byte cap exceeded",
@@ -419,6 +428,8 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         git(work, "remote", "add", "origin", "https://x-access-token:tok3n@example.test/o/r")
     elif problem == "insteadof_token":
         git(work, "config", "url.https://x:tok3n@example.test/.insteadOf", "https://example.test/")
+    elif problem in CREDENTIAL_SETTINGS:
+        git(work, "config", *CREDENTIAL_SETTINGS[problem])
     elif problem == "policy_checkout_token":
         policy = Path(env["POLICY_PATH"])
         git(policy, "init", "-q")
@@ -488,7 +499,11 @@ def test_setup_runs_default_branch_command_without_key(action):
 
 
 @pytest.mark.parametrize("checkout", ["work", "policy"])
-def test_setup_refuses_persisted_credentials_before_running(action, checkout):
+@pytest.mark.parametrize(
+    "setting",
+    [("http.https://example.test/.extraheader", "basic e30="), *CREDENTIAL_SETTINGS.values()],
+)
+def test_setup_refuses_persisted_credentials_before_running(action, checkout, setting):
     policy = Path(action["env"]["POLICY_PATH"])
     marker = Path(action["env"]["RUNNER_TEMP"]) / "setup.ran"
     config = (policy / ".agents" / "config.yml").read_text()
@@ -498,7 +513,7 @@ def test_setup_refuses_persisted_credentials_before_running(action, checkout):
     tree = action["work"] if checkout == "work" else policy
     if checkout == "policy":
         git(policy, "init", "-q")
-    git(tree, "config", "http.https://example.test/.extraheader", "basic e30=")
+    git(tree, "config", *setting)
     result = run_action(action, "setup")
     assert result.returncode == 1
     assert "Project setup refused: checkout persisted credentials" in result.stderr
@@ -509,6 +524,9 @@ SETUP_REFUSALS = {
     "commit_after_base": "work tree is not at the base SHA",
     "missing_base": "invalid inputs",
     "malformed_base": "invalid inputs",
+    "untracked_script": "work tree is not clean before setup",
+    "modified_script": "work tree is not clean before setup",
+    "filter_configured": "git config defines filters",
 }
 
 
@@ -517,6 +535,11 @@ def test_setup_never_runs_code_outside_base_sha(action, problem):
     work, env = action["work"], action["env"]
     policy = Path(env["POLICY_PATH"]) / ".agents"
     marker = Path(env["RUNNER_TEMP"]) / "untrusted-ran"
+    if problem == "modified_script":
+        (work / "bootstrap.sh").write_text("true\n")
+        git(work, "add", "bootstrap.sh")
+        git(work, "commit", "-q", "-m", "setup script")
+        env["BASE_SHA"] = git(work, "rev-parse", "HEAD").strip()
     (work / "bootstrap.sh").write_text('touch "$RUNNER_TEMP/untrusted-ran"\n')
     config = (policy / "config.yml").read_text()
     config = config.replace('setup: "echo default > source.txt"', 'setup: "bash bootstrap.sh"')
@@ -526,8 +549,10 @@ def test_setup_never_runs_code_outside_base_sha(action, problem):
         git(work, "commit", "-q", "-m", "after base")
     elif problem == "missing_base":
         del env["BASE_SHA"]
-    else:
+    elif problem == "malformed_base":
         env["BASE_SHA"] = env["BASE_SHA"][:39] + "G"
+    elif problem == "filter_configured":
+        git(work, "config", "filter.hooked.clean", "cat")
     result = run_action(action, "setup")
     assert not marker.exists()
     assert result.returncode == 1

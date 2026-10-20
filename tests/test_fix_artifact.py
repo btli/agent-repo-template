@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -55,17 +56,26 @@ def test_patch_has_new_and_modified_files_but_not_ignored(tmp_path):
     repo = tmp_path / "repo"
     base_sha = make_repo(repo)
     plant_fix(repo)
+    # A binary file and a non-ASCII name must survive the round trip through git apply.
+    (repo / "blob.bin").write_bytes(bytes(range(256)))
+    (repo / "数据.txt").write_text("data\n")
     _, patch = build_artifact(repo, base_sha, "run-1", answer(base_sha))
     assert "diff --git a/lib.py b/lib.py" in patch
     assert "+    return a + b" in patch
     assert "diff --git a/tests/test_lib.py b/tests/test_lib.py\nnew file mode" in patch
     assert "debug.log" not in patch
+    assert "diff --git a/blob.bin b/blob.bin" in patch and "GIT binary patch" in patch
+    full_index = r"^diff --git a/lib.py b/lib.py\nindex [0-9a-f]{40}\.\.[0-9a-f]{40} "
+    assert re.search(full_index, patch, re.M)
+    assert "diff --git a/数据.txt b/数据.txt" in patch
     clone = tmp_path / "clone"
     git(tmp_path, "clone", "-q", str(repo), str(clone))
     git(clone, "checkout", "-q", base_sha)
-    (clone / "fix.patch").write_text(patch)
+    (clone / "fix.patch").write_text(patch, encoding="utf-8")
     git(clone, "apply", "--index", "fix.patch")
     assert (clone / "tests" / "test_lib.py").is_file()
+    assert (clone / "blob.bin").read_bytes() == bytes(range(256))
+    assert (clone / "数据.txt").read_text() == "data\n"
 
 
 def test_patch_uses_detached_git_dir(tmp_path):

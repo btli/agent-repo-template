@@ -42,7 +42,11 @@ def checkouts() -> tuple[Path, Path]:
 
 def refuse_persisted_credentials(tree: Path, git_dir: Path) -> None:
     # Read before any move so includeIf.gitdir still matches; includes are refused outright.
-    pattern = r"http(\..*)?\.extraheader|credential\..*|include\.path|includeif\..*\.path"
+    # Git lowercases section and key names, so camel-cased keys such as sshCommand match too.
+    pattern = (
+        r"http(\..*)?\.(extraheader|sslkey|sslcert)|core\.sshcommand|credential\..*"
+        r"|include\.path|includeif\..*\.path"
+    )
     for entry in local_config(tree, git_dir):
         name = entry.partition("\n")[0]
         # A token can also sit in URL userinfo, in a value or in an insteadOf key name.
@@ -62,6 +66,16 @@ def refuse_unexpected_head(git_dir: Path, base_sha: str) -> None:
         raise Refused("work tree is not at the base SHA")
 
 
+def refuse_unclean_work_tree(work: Path, git_dir: Path, reason: str) -> None:
+    # Status hashes modified files, so filters and nested repositories are refused first.
+    try:
+        refuse_repository_commands(work, git_dir)
+    except ValueError as exc:
+        raise Refused(str(exc)) from None
+    if run_git(work, git_dir, "status", "--porcelain", "-z", "--untracked-files=all"):
+        raise Refused(reason)
+
+
 def setup() -> int:
     try:
         work, policy = checkouts()
@@ -74,6 +88,8 @@ def setup() -> int:
         if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
             raise Refused("invalid inputs")
         refuse_unexpected_head(work / ".git", base_sha)
+        # An untracked or edited script would otherwise run as if it were base_sha code.
+        refuse_unclean_work_tree(work, work / ".git", "work tree is not clean before setup")
         command = load_config(policy / ".agents").raw["commands"]["setup"]
     except Refused as exc:
         print(f"Project setup refused: {exc}.", file=sys.stderr)
@@ -133,14 +149,9 @@ def run_agent(output: Path, canary: str) -> str:
         raise Refused("work tree must be a plain git checkout")
     refuse_persisted_credentials(work, dot_git)
     refuse_unexpected_head(dot_git, base_sha)
-    # Status hashes modified files, so filters and nested repositories are refused first.
-    try:
-        refuse_repository_commands(work, dot_git)
-    except ValueError as exc:
-        raise Refused(str(exc)) from None
     # Setup output that is not gitignored would otherwise land in the patch as agent work.
-    if run_git(work, dot_git, "status", "--porcelain", "-z", "--untracked-files=all"):
-        raise Refused("work tree is not clean after setup; gitignore setup outputs")
+    reason = "work tree is not clean after setup; gitignore setup outputs"
+    refuse_unclean_work_tree(work, dot_git, reason)
     # Git metadata leaves the sandbox root so the agent cannot plant config the diff would run.
     git_dir = scratch / "git"
     shutil.move(dot_git, git_dir)
