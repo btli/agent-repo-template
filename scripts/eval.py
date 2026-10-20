@@ -134,10 +134,23 @@ def close_eligible(
         event, config, charter, decision["run_id"], decision["base_sha"], [], "", False, github
     )
     duplicate_of = decision["answers"].get("duplicate_of", {}).get("value")
-    try:
-        return _can_close(close, context, duplicate_of)
-    except Exception:
-        return False
+    return _can_close(close, context, duplicate_of)
+
+
+class TargetNotRecorded(Exception):
+    """Raised when a duplicate close's target has no recorded facts in the golden issue."""
+
+
+class RecordedTargets:
+    """Answers apply's duplicate-target lookup from a golden issue's `duplicate_target`."""
+
+    def __init__(self, facts: dict | None):
+        self.facts = facts
+
+    def request(self, method: str, path: str, *, params: dict | None = None) -> object:
+        if self.facts is None or path != f"issues/{self.facts['number']}":
+            raise TargetNotRecorded(path)
+        return {"state": self.facts["state"]}
 
 
 def load_policy(evals_dir: Path) -> tuple[RepoConfig, Charter]:
@@ -160,7 +173,17 @@ def load_golden(evals_dir: Path) -> dict[str, dict]:
             document = load_yaml(path)
         except YamlError as exc:
             raise EvalError(str(exc)) from exc
-        if not isinstance(document, dict) or set(document) != {"issue", "expected"}:
+        if not isinstance(document, dict) or not (
+            {"issue", "expected"} <= set(document) <= {"issue", "expected", "duplicate_target"}
+        ):
+            raise EvalError(f"malformed golden issue: {path.name}")
+        target = document.get("duplicate_target", {"number": 1, "state": "open"})
+        if (
+            not isinstance(target, dict)
+            or set(target) != {"number", "state"}
+            or type(target["number"]) is not int
+            or target["state"] not in {"open", "closed"}
+        ):
             raise EvalError(f"malformed golden issue: {path.name}")
         issue, expected = document["issue"], document["expected"]
         if (
@@ -193,9 +216,12 @@ def _expected(document: dict) -> dict[str, object]:
     }
 
 
-def outcome(decision: dict, config: RepoConfig, charter: Charter) -> str:
-    """Name the visible result apply would produce for a decision."""
-    if close_eligible(decision, config, charter):
+def outcome(
+    decision: dict, config: RepoConfig, charter: Charter, targets: RecordedTargets | None = None
+) -> str:
+    """Name the visible result apply would produce for a decision; raises
+    TargetNotRecorded when a duplicate close cannot be judged offline."""
+    if close_eligible(decision, config, charter, github=targets or RecordedTargets(None)):
         return "close"
     if (
         decision["close"] is not None
@@ -223,7 +249,12 @@ def score(
         seen.add((mode, issue_id))
         result = by_mode.setdefault(
             mode,
-            {"issues": 0, "pairs": {q: [] for q in (*QUESTIONS, "outcome")}, "points": {}},
+            {
+                "issues": 0,
+                "pairs": {q: [] for q in (*QUESTIONS, "outcome")},
+                "points": {},
+                "not_evaluated": [],
+            },
         )
         result["issues"] += 1
         expected = _expected(golden[issue_id])
@@ -244,7 +275,11 @@ def score(
         # LLM-only mode never auto-closes, so a close becomes a maintainer suggestion.
         if mode == "llm-only" and wanted == "close":
             wanted = "needs-maintainer"
-        result["pairs"]["outcome"].append((wanted, outcome(decision, config, charter)))
+        targets = RecordedTargets(golden[issue_id].get("duplicate_target"))
+        try:
+            result["pairs"]["outcome"].append((wanted, outcome(decision, config, charter, targets)))
+        except TargetNotRecorded:
+            result["not_evaluated"].append(issue_id)
     return by_mode
 
 
@@ -279,6 +314,12 @@ def render(golden: dict[str, dict], by_mode: dict[str, dict]) -> str:
                 "n/a" if question == "outcome" else (suggested if suggested is not None else "none")
             )
             lines.append(f"| {question} | {accuracy(pairs):.0%} | {len(pairs)} | {shown} |")
+        if result["not_evaluated"]:
+            lines += [
+                "",
+                "Outcome not evaluated (no recorded duplicate-target facts): "
+                + ", ".join(sorted(result["not_evaluated"])),
+            ]
         for question in QUESTIONS:
             lines += ["", f"### Calibration: {question}", "", "| Mean p | Accuracy | n |"]
             lines += ["|---|---|---|"]

@@ -115,9 +115,12 @@ def test_larkspur_policy_loads_and_covers_every_golden_label():
     ("issue_id", "expected"),
     [
         ("system-one/out-of-scope-remote-store", "close"),
+        # The recorded duplicate target is open, so apply would close the duplicate.
+        ("system-one/duplicate-check-passes-invalid-file", "close"),
         # Tier 2 disagreed, or the close is below close_min: apply only suggests it.
         ("system-one/out-of-scope-gui-editor", "needs-maintainer"),
         ("system-one/out-of-scope-eol-python", "needs-maintainer"),
+        # Tier 2 agreed and p meets close_min, but LLM-only mode never closes.
         ("llm-only/out-of-scope-remote-store", "needs-maintainer"),
         ("system-one/merge-order-env-wins-wrongly", "needs-maintainer"),
         ("system-one/schema-all-errors-blocked", "needs-maintainer"),
@@ -130,7 +133,9 @@ def test_larkspur_policy_loads_and_covers_every_golden_label():
 )
 def test_outcome_mirrors_what_apply_would_do(issue_id, expected):
     decision = json.loads((FIXTURES / f"{issue_id}.json").read_text())
-    assert evals.outcome(decision, *evals.load_policy(ROOT / "evals")) == expected
+    golden = evals.load_golden(ROOT / "evals")[issue_id.split("/")[1]]
+    targets = evals.RecordedTargets(golden.get("duplicate_target"))
+    assert evals.outcome(decision, *evals.load_policy(ROOT / "evals"), targets) == expected
 
 
 def test_golden_set_has_twenty_issues_and_a_lintable_charter():
@@ -156,11 +161,27 @@ def test_eval_scores_recorded_decisions_per_mode(capsys):
         report.split("## Mode: system-one")[1],
         report.split("## Mode: llm-only")[1],
     )
-    assert "| type | 78% | 9 | 0.9 |" in system_one
+    assert "| type | 80% | 10 | 0.9 |" in system_one
     # The Tier-2-disagreed and below-close_min closes do not score as closes.
-    assert "| outcome | 78% | 9 | n/a |" in system_one
+    assert "| outcome | 80% | 10 | n/a |" in system_one
+    assert "Outcome not evaluated" not in report
     # LLM-only never closes, so the out-of-scope issue scores as a maintainer suggestion.
     assert "| outcome | 100% | 4 | n/a |" in llm_only.split("## Mode:")[0]
+
+
+def test_duplicate_close_without_recorded_target_is_not_evaluated(tmp_path, capsys):
+    shutil.copytree(ROOT / "evals", tmp_path / "evals")
+    golden = tmp_path / "evals" / "issues" / "duplicate-check-passes-invalid-file.yml"
+    text = golden.read_text()
+    golden.write_text(text.replace("duplicate_target:\n  number: 42\n  state: open\n", ""))
+    argv = ["--evals", str(tmp_path / "evals"), "--decisions", str(FIXTURES / "system-one")]
+    assert evals.main(argv) == 0
+    report = capsys.readouterr().out
+    assert "| outcome | 78% | 9 | n/a |" in report
+    assert (
+        "Outcome not evaluated (no recorded duplicate-target facts): "
+        "duplicate-check-passes-invalid-file" in report
+    )
 
 
 def test_eval_rejects_a_decision_that_fails_the_schema(tmp_path, capsys):
@@ -171,15 +192,24 @@ def test_eval_rejects_a_decision_that_fails_the_schema(tmp_path, capsys):
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("outcome", "archive"), ("area", "storage"), ("labels", ["type:bug", "area:cli", "P2", "x"])],
+    [
+        ("outcome", "archive"),
+        ("area", "storage"),
+        ("labels", ["type:bug", "area:cli", "P2", "x"]),
+        ("duplicate_target", {"number": "42", "state": "open"}),
+    ],
 )
 def test_eval_rejects_a_malformed_golden_issue(tmp_path, capsys, field, value):
     for name in ("charter.md", "config.yml", "areas.yml", "labels.yml"):
         shutil.copy(ROOT / "evals" / name, tmp_path / name)
     (tmp_path / "issues").mkdir()
     expected = {"labels": ["type:bug", "area:cli", "P2"], "area": "cli", "priority": "P2"}
-    expected = {**expected, "outcome": "label", field: value}
     document = {"issue": {"title": "Broken", "body": "It fails."}, "expected": expected}
+    if field == "duplicate_target":
+        document[field] = value
+    else:
+        expected[field] = value
+    expected.setdefault("outcome", "label")
     (tmp_path / "issues" / "broken.yml").write_text(json.dumps(document))
     assert evals.main(["--evals", str(tmp_path), "--decisions", str(tmp_path / "issues")]) == 2
     assert "malformed golden issue: broken.yml" in capsys.readouterr().err

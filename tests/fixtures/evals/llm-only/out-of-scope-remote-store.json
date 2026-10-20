@@ -38,7 +38,7 @@
     "docs_ref": "https://example.org/larkspur/faq",
     "p": 0.95,
     "lexical": null,
-    "tier2_agrees": false
+    "tier2_agrees": true
   },
   "escalate": null,
   "security": false,

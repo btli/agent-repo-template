@@ -66,12 +66,13 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     # Only exact agent-decision-<run_id> records count, never hand-off artifacts or copies;
     # the fork run and the run older than 30 days are ignored; issue 1 uses its newest record.
     system_one = sections["Mode: system-one"]
-    assert "- Decided issues: 6" in system_one
+    assert "- Decided issues: 8" in system_one
     # An issue carrying two type: labels is not compared.
     assert "- Type agreement: 67% (3 maintainer-labelled issues)" in system_one
     assert "- Area agreement: 100% (3 maintainer-labelled issues)" in system_one
-    # Tier-2-disagreed and below-close_min closes are not candidates.
-    assert "- Close candidates: 1, maintainer agreement 100%; close_enable_ready: no" in system_one
+    # Tier-2-disagreed and below-close_min closes are not candidates; the duplicate of an
+    # open target is.
+    assert "- Close candidates: 2, maintainer agreement 100%; close_enable_ready: no" in system_one
 
     llm_only = sections["Mode: llm-only"]
     assert "- Decided issues: 1" in llm_only
@@ -83,16 +84,29 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     assert _lines(sections["Missing decision records"]) == [
         "- #8: run 107 has no readable agent-decision-107",
         "- #11: run 109 has no readable agent-decision-109",
+        "- #13: run 118 has no readable agent-decision-118",
         "- #15: run 113 has no readable agent-decision-113",
         "- #16: run 114 has no readable agent-decision-114",
     ]
-    assert _lines(sections["Skipped issues"]) == ["- #17: issue lookup failed"]
-    # Issue 5 was reopened then closed again; issue 7's agent close predates the window.
-    assert _lines(sections["Reopen rate for agent:closed"]) == [
-        "- 1 of 3 agent closes in the window were reopened (33%)"
+    # A failed duplicate-target lookup is listed rather than dropping the candidate silently.
+    assert _lines(sections["Skipped issues"]) == [
+        "- #17: issue lookup failed",
+        "- #18: duplicate target lookup failed",
     ]
-    # The bot's P1 label, its P0 label on a missing-record issue and its LLM-only close.
-    assert "- 3 actions by example-agent[bot] across 15 issues" in sections["Out-of-policy actions"]
+    # Bot closes of 4, 5, 6 and 21 count. Issue 5 reopened then reclosed; 21 reopened before
+    # its close; 22's agent:closed came from a person; 23 was labelled but never closed.
+    assert _lines(sections["Reopen rate for agent:closed"]) == [
+        "- 1 of 4 bot closes with agent:closed in the window were reopened (25%)"
+    ]
+    # The bot's P1, its P0 on a missing-record issue, type:unauthorized, its LLM-only close
+    # and its close under a Tier-2-disagreed decision.
+    assert "- 5 actions by example-agent[bot] across 20 issues" in sections["Out-of-policy actions"]
+    assert _lines(sections["Unverifiable bot closes"]) == [
+        "- #5: closed 2026-10-01T12:00:00Z with no readable decision record",
+        "- #6: closed 2026-10-05T12:00:00Z with no readable decision record",
+        "- #21: closed 2026-10-09T12:00:00Z with no readable decision record",
+        "- #22: closed 2026-10-08T12:00:00Z with no readable decision record",
+    ]
     assert _lines(sections["Abort criteria"]) == [
         "- ABORT: any out-of-policy action",
         "- ABORT: a reopen rate above 5% for `agent:closed`",
@@ -105,11 +119,11 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     downloads = {call[-1] for call in calls if call[-1].endswith("/zip")}
     assert downloads == {
         f"{REPO}/actions/artifacts/{artifact_id}/zip"
-        for artifact_id in (2, 5, 7, 9, 13, 22, 24, 26, 28, 30, 32)
+        for artifact_id in (2, 5, 7, 9, 13, 22, 24, 26, 28, 30, 32, 34, 36)
     }
 
 
-def test_bot_close_with_close_disabled_is_out_of_policy(fake_gh, capsys):
+def test_closes_are_judged_by_their_own_run_after_close_is_disabled(fake_gh, capsys):
     config = (ROOT / "evals" / "config.yml").read_text().replace("enabled: true", "enabled: false")
 
     def disable_close(responses):
@@ -122,8 +136,55 @@ def test_bot_close_with_close_disabled_is_out_of_policy(fake_gh, capsys):
         "candidates are only collected while `close.enabled: true`"
         in (sections["Mode: system-one"])
     )
-    # The bot's closes of issues 4, 5 and 6 are now out of policy as well.
-    assert "- 6 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    # Issue 4's close was eligible under its own run's decision, so it stays in policy.
+    assert "- 5 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- #5: closed 2026-10-01T12:00:00Z" in sections["Unverifiable bot closes"]
+
+
+def test_unloadable_policy_marks_taxonomy_and_close_checks_not_evaluated(fake_gh, capsys):
+    _edit(fake_gh, lambda responses: responses.pop(f"{REPO}/contents/.agents/labels.yml"))
+    sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
+    # The P1 and P0 labels need no policy; type:bug and type:unauthorized cannot be checked.
+    assert _lines(sections["Out-of-policy actions"])[1:] == [
+        "- Not evaluated: 2 type:/area: labels and every bot close, because `.agents/` could "
+        "not be loaded."
+    ]
+    assert "- 2 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert (
+        "- NOT EVALUATED: any out-of-policy action (taxonomy labels and closes: "
+        in (sections["Abort criteria"])
+    )
+
+
+def test_label_without_a_bot_close_is_not_in_the_reopen_denominator(fake_gh, capsys):
+    bot = {"login": "example-agent[bot]", "type": "Bot"}
+    person = {"login": "maintainer", "type": "User"}
+
+    def label_only_cohort(responses):
+        responses[f"{REPO}/actions/artifacts"]["json"]["artifacts"] = []
+        responses[f"{REPO}/issues"]["json"] = [
+            {"number": number, "state": "open", "labels": [{"name": "agent:closed"}]}
+            for number in range(30, 50)
+        ]
+        label = {"event": "labeled", "actor": bot, "label": {"name": "agent:closed"}}
+        for number in range(30, 49):
+            responses[f"{REPO}/issues/{number}/events"] = {
+                "json": [{**label, "created_at": "2026-10-10T12:00:00Z"}]
+            }
+        responses[f"{REPO}/issues/49/events"] = {
+            "json": [
+                {**label, "created_at": "2026-10-10T12:00:00Z"},
+                {"event": "closed", "actor": bot, "created_at": "2026-10-10T12:00:01Z"},
+                {"event": "reopened", "actor": person, "created_at": "2026-10-11T12:00:00Z"},
+            ]
+        }
+
+    _edit(fake_gh, label_only_cohort)
+    sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
+    assert _lines(sections["Reopen rate for agent:closed"]) == [
+        "- 1 of 1 bot closes with agent:closed in the window were reopened (100%)"
+    ]
+    assert "- ABORT: a reopen rate above 5% for `agent:closed`" in sections["Abort criteria"]
 
 
 def test_default_invocation_reports_skipped_criteria_as_not_evaluated(fake_gh, capsys):
@@ -133,6 +194,7 @@ def test_default_invocation_reports_skipped_criteria_as_not_evaluated(fake_gh, c
     assert "Not evaluated" in sections["Tier-2 budget"]
     # No evaluated criterion fires here, yet the result must not read as clean.
     assert _lines(sections["Abort criteria"]) == [
+        "- NOT EVALUATED: a reopen rate above 5% for `agent:closed` (pass --bot-login)",
         "- NOT EVALUATED: any out-of-policy action (pass --bot-login)",
         "- NOT EVALUATED: a Tier-2 key reaching 80% of its budget twice in one week. "
         "The response is to set `triage.rca_authors: known`. (pass --tier2-budget-alerts)",
