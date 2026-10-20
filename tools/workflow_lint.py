@@ -1,4 +1,7 @@
+import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,9 +13,14 @@ ALLOWED_MODEL_EVENTS = {"issues", "issue_comment", "pull_request_target"}
 PINNED_USE = re.compile(r"[^\s@]+@[0-9a-f]{40}")
 VERSION_COMMENT = re.compile(r"#\s*v\d+\.\d+\.\d+\s*$")
 EVENT_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
-EVENT_FIELD = re.compile(r"\bgithub\s*(?:\.\s*event\b|\[\s*['\"]event['\"]\s*\])")
-BARE_GITHUB_ARGUMENT = re.compile(r"(?:\(|,)\s*github\s*(?=[,)])")
-USES_LINE = re.compile(r"(?:^\s*(?:-\s*)?|\{\s*|,\s*)uses\s*:\s*([^,}\s#]+)")
+EVENT_FIELD = re.compile(r"\bgithub\s*(?:\.\s*event\b|\[\s*['\"]event['\"]\s*\])", re.IGNORECASE)
+BARE_GITHUB_ARGUMENT = re.compile(r"(?:\(|,)\s*github\s*(?=[,)])", re.IGNORECASE)
+USES_LOCATIONS_QUERY = (
+    '([.jobs | to_entries[] | select(.value | has("uses")) '
+    '| {"line": (.value.uses | line)}] + '
+    '[.jobs | to_entries[] | .value.steps[]? | select(has("uses")) '
+    '| {"line": (.uses | line)}])'
+)
 
 
 def _mapping(value: object) -> dict:
@@ -66,30 +74,22 @@ def _has_cache_input(step: dict) -> bool:
     return False
 
 
-def _uses_version_comments_present(text: str, uses_values: list[str]) -> bool:
-    remaining = list(uses_values)
-    run_block_indent = None
-    for line in text.splitlines():
-        indentation = len(line) - len(line.lstrip())
-        if run_block_indent is not None:
-            if not line.strip() or indentation > run_block_indent:
-                continue
-            run_block_indent = None
-        if re.match(r"^\s*(?:-\s*)?run\s*:\s*[|>]", line):
-            run_block_indent = indentation
-            continue
-        match = USES_LINE.search(line)
-        if match is None:
-            continue
-        value = match.group(1).strip("'\"")
-        try:
-            index = remaining.index(value)
-        except ValueError:
-            continue
-        if VERSION_COMMENT.search(line) is None:
-            return False
-        remaining.pop(index)
-    return not remaining
+def _uses_source_lines(path: Path) -> list[int]:
+    binary = shutil.which("yq")
+    if binary is None:
+        raise RuntimeError("yq v4 is required to locate workflow action uses")
+    result = subprocess.run(
+        [binary, "-o=json", "eval", USES_LOCATIONS_QUERY, str(path.resolve())],
+        capture_output=True,
+        text=True,
+        check=False,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("cannot locate workflow action uses")
+    locations = json.loads(result.stdout)
+    return [location["line"] for location in locations]
 
 
 def _events(workflow: dict) -> set[str]:
@@ -119,12 +119,9 @@ def lint(paths: list[Path]) -> list[str]:
 
         events = _events(workflow)
         jobs = _mapping(workflow.get("jobs"))
-        parsed_uses = []
         for job_name, raw_job in jobs.items():
             job = _mapping(raw_job)
             job_uses = job.get("uses")
-            if isinstance(job_uses, str):
-                parsed_uses.append(job_uses)
             if job_uses is not None and (
                 not isinstance(job_uses, str) or PINNED_USE.fullmatch(job_uses) is None
             ):
@@ -133,8 +130,6 @@ def lint(paths: list[Path]) -> list[str]:
             step_mappings = [_mapping(step) for step in steps] if isinstance(steps, list) else []
             for step in step_mappings:
                 step_uses = step.get("uses")
-                if isinstance(step_uses, str):
-                    parsed_uses.append(step_uses)
                 if step_uses is not None and (
                     not isinstance(step_uses, str) or PINNED_USE.fullmatch(step_uses) is None
                 ):
@@ -173,8 +168,19 @@ def lint(paths: list[Path]) -> list[str]:
                         f"{path}: event expression in run block is forbidden ({job_name})"
                     )
 
-        if not _uses_version_comments_present(text, parsed_uses):
-            errors.append(f"{path}: every uses must include a # vX.Y.Z comment")
+        try:
+            uses_lines = _uses_source_lines(path)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            errors.append(f"{path}: cannot locate workflow action uses")
+        else:
+            source_lines = text.splitlines()
+            if any(
+                line < 1
+                or line > len(source_lines)
+                or VERSION_COMMENT.search(source_lines[line - 1]) is None
+                for line in uses_lines
+            ):
+                errors.append(f"{path}: every uses must include a # vX.Y.Z comment")
 
     return errors
 

@@ -25,12 +25,17 @@ FIXTURES = Path("tests/fixtures/workflows")
         ("bad_e_flow.yml", "SHA-pinned"),
         ("bad_e_job.yml", "SHA-pinned"),
         ("bad_e_no_version.yml", "vX.Y.Z comment"),
+        ("bad_e_env_bypass.yml", "vX.Y.Z comment"),
+        ("bad_e_job_no_version.yml", "vX.Y.Z comment"),
         ("bad_f.yml", "event expression in run"),
         ("bad_f_format.yml", "event expression in run"),
         ("bad_f_tojson.yml", "event expression in run"),
         ("bad_f_index.yml", "event expression in run"),
         ("bad_f_context_index.yml", "event expression in run"),
         ("bad_f_context_function.yml", "event expression in run"),
+        ("bad_f_case_dot.yml", "event expression in run"),
+        ("bad_f_case_context.yml", "event expression in run"),
+        ("bad_f_case_index.yml", "event expression in run"),
     ],
 )
 def test_lint_reports_each_workflow_rule(filename: str, rule: str):
@@ -52,3 +57,7 @@ def test_lint_accepts_rendered_consumer_workflows(tmp_path: Path):
 
 def test_lint_ignores_uses_text_inside_run_block():
     assert lint([FIXTURES / "good_e_run_literal.yml"]) == []
+
+
+def test_lint_ignores_uses_text_inside_run_block_scalar():
+    assert lint([FIXTURES / "good_e_run_block.yml"]) == []

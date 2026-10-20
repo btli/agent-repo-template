@@ -74,6 +74,29 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
     tier2_steps = jobs["tier2"]["steps"]
     apply_steps = jobs["apply"]["steps"]
 
+    uploaded_names = [
+        (job_name, step.get("with", {}).get("name"))
+        for job_name, job in jobs.items()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    downloaded_names = [
+        (job_name, step.get("with", {}).get("name"))
+        for job_name, job in jobs.items()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/download-artifact@")
+    ]
+    assert all(
+        (upload_job == "gate" and name == "agent-triage-${{ github.event.issue.number }}")
+        or (upload_job == "apply" and name == "agent-decision-${{ github.run_id }}")
+        or any(
+            downloaded_name == name
+            and list(jobs).index(download_job) > list(jobs).index(upload_job)
+            for download_job, downloaded_name in downloaded_names
+        )
+        for upload_job, name in uploaded_names
+    )
+
     assert not any(step.get("name") == "Share marker source" for step in gate_steps)
 
     assert gate_steps[0]["name"] == "Prepare triage marker source"
