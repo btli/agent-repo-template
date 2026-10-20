@@ -1,0 +1,44 @@
+spec_version: 1
+name: agent-repo-fix
+description: Fix agent with sandboxed shell and edit tools in the agent-branch checkout.
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+async: false
+timers: false
+skills: none
+instructions: prompt.md
+os_env:
+  type: caller_process
+  cwd: .
+  # Never type none: it passes the full job environment, LLM_API_KEY included.
+  sandbox:
+    type: linux_bwrap
+    write_paths: [.]
+    allow_network: false
+    env_passthrough: []
+guardrails:
+  policies:
+    blast_radius:
+      type: function
+      on: [tool_call]
+      function:
+        path: omnigent.inner.nessie.policies.blast_radius
+        arguments:
+          gate_pushes: true
+    allowlist_fix_tools:
+      type: function
+      on: [tool_call]
+      function:
+        path: agent_repo.policies.allow_only
+        arguments:
+          allowed: [sys_os_read, sys_os_write, sys_os_edit, sys_os_shell]
+    tool_budget:
+      type: function
+      on: [tool_call]
+      function:
+        path: omnigent.policies.builtins.safety.max_tool_calls_per_session
+        # Rendered from limits.fix_max_turns in the default-branch config.
+        arguments:
+          limit: 40

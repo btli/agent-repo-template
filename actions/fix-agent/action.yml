@@ -1,0 +1,90 @@
+name: Fix agent (propose)
+description: >-
+  Run the bwrap-sandboxed fix agent in an agent-branch checkout and build fix.json plus
+  fix.patch from git. The checkout's .git directory is moved outside the sandbox root.
+  harden-runner blocks egress for the whole job, from job start, outside allowed-endpoints.
+  The outbound scan refuses a patch, or any changed binary file, over 64 KiB.
+  Any agent change to a .gitattributes file is refused; ones setup installs are kept.
+inputs:
+  work-path:
+    description: >-
+      Agent-branch checkout the agent edits, checked out at base-sha with
+      persist-credentials false. commands.setup must install everything the offline agent
+      needs inside it (gitignored, such as a project .venv); setup's HOME is discarded, so
+      test and lint commands must not depend on HOME.
+    required: true
+  policy-path:
+    description: >-
+      Separate default-branch checkout with .agents/, AGENTS.md and CONTRIBUTING.md, checked
+      out with persist-credentials false.
+    required: true
+  base-sha:
+    description: Commit checked out at work-path; fix.json echoes it.
+    required: true
+  issue-file:
+    description: File containing the issue text and maintainer notes.
+    required: true
+  output-dir:
+    description: Directory outside work-path that receives fix.json and fix.patch.
+    required: true
+  allowed-endpoints:
+    description: >-
+      harden-runner egress allowlist. It applies to the whole job from its start, so it must
+      include the gateway, the package registries commands.setup uses and, if bwrap is not
+      preinstalled, the distro package mirror.
+    required: true
+  api-key-env:
+    description: Caller environment variable holding the role key.
+    required: false
+    default: LLM_API_KEY
+  agent-timeout:
+    description: Seconds before the agent run is terminated.
+    required: false
+    default: "2400"
+outputs:
+  fix-file:
+    description: Path to fix.json.
+    value: ${{ inputs.output-dir }}/fix.json
+runs:
+  using: composite
+  steps:
+    # The runner hoists pre steps of nested actions to job start (runner ADR 1144), so the block
+    # covers the consumer's earlier checkout steps too.
+    - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+      with:
+        egress-policy: block
+        allowed-endpoints: ${{ inputs.allowed-endpoints }}
+    - name: Sandbox preflight
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/preflight.sh"
+    # Setup is the repository's own default-branch code and runs unsandboxed; a compromised setup
+    # dependency could tamper with the runner before the agent step (accepted: small per-role key).
+    - name: Project setup
+      shell: bash
+      env:
+        WORK_PATH: ${{ inputs.work-path }}
+        POLICY_PATH: ${{ inputs.policy-path }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        API_KEY_ENV: ${{ inputs.api-key-env }}
+      run: |
+        set -euo pipefail
+        template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
+        export PYTHONPATH="$template_root/lib"
+        python3 "$GITHUB_ACTION_PATH/run.py" setup
+    - name: Run fix agent
+      shell: bash
+      env:
+        WORK_PATH: ${{ inputs.work-path }}
+        POLICY_PATH: ${{ inputs.policy-path }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        RUN_ID: ${{ github.run_id }}
+        ISSUE_FILE: ${{ inputs.issue-file }}
+        OUTPUT_DIR: ${{ inputs.output-dir }}
+        API_KEY_ENV: ${{ inputs.api-key-env }}
+        AGENT_TIMEOUT: ${{ inputs.agent-timeout }}
+      run: |
+        set -euo pipefail
+        template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"
+        export PATH="$RUNNER_TEMP/agent-repo-omnigent/bin:$PATH"
+        export PYTHONPATH="$template_root/lib"
+        python "$GITHUB_ACTION_PATH/run.py" agent
