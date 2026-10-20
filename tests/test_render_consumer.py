@@ -1,5 +1,9 @@
+import ast
+import json
+import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -73,6 +77,87 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
     propose_steps = jobs["propose"]["steps"]
     tier2_steps = jobs["tier2"]["steps"]
     apply_steps = jobs["apply"]["steps"]
+
+    assert jobs["propose"]["if"] == (
+        "${{ needs.gate.outputs.reason != 'agent-off' && "
+        "(needs.gate.outputs.run == 'true' || needs.gate.outputs.capped == 'true') }}"
+    )
+    assert jobs["propose"]["environment"] == "agent-propose-triage"
+    assert jobs["propose"]["concurrency"] == {
+        "group": "agent-triage-${{ github.event.issue.number }}",
+        "cancel-in-progress": True,
+    }
+    assert jobs["tier2"]["if"] == (
+        "${{ needs.gate.outputs.reason != 'agent-off' && needs.propose.outputs.tier2 == 'true' }}"
+    )
+    assert jobs["tier2"]["environment"] == "agent-propose-triage"
+    assert jobs["tier2"]["concurrency"] == {
+        "group": "agent-triage-tier2",
+        "cancel-in-progress": False,
+    }
+    assert jobs["tier2"]["outputs"]["merged"] == (
+        "${{ steps.triage.outcome == 'success' && "
+        "steps.share-merged-decision.outcome == 'success' }}"
+    )
+    assert jobs["apply"]["if"] == (
+        "${{ always() && needs.gate.result == 'success' && "
+        "needs.propose.result != 'cancelled' && "
+        "(needs.propose.result == 'success' || "
+        "needs.gate.outputs.reason == 'agent-off' || "
+        "needs.gate.outputs.capped == 'true') }}"
+    )
+    assert jobs["apply"]["environment"] == "agent-apply"
+    for job_name in ("propose", "tier2"):
+        assert "needs.gate.outputs.reason != 'agent-off'" in jobs[job_name]["if"]
+
+    context_guard = (
+        "${{ steps.gate.outputs.run == 'true' && "
+        "steps.gate.outputs.tier2_allowed == 'true' && "
+        "steps.gate.outputs.reason != 'agent-off' }}"
+    )
+    context_steps = {
+        step["name"]: step
+        for step in gate_steps
+        if step.get("name")
+        in {
+            "Read default-branch triage policy",
+            "Build triage hand-off files",
+            "Share triage context",
+        }
+    }
+    assert set(context_steps) == {
+        "Read default-branch triage policy",
+        "Build triage hand-off files",
+        "Share triage context",
+    }
+    assert all(step["if"] == context_guard for step in context_steps.values())
+    assert "ISSUE_NUMBER" not in context_steps["Build triage hand-off files"].get("env", {})
+
+    context_output = tmp_path / "built-context"
+    context_builder = context_steps["Build triage hand-off files"]["run"]
+    subprocess.run(
+        ["bash", "-e", "-u", "-o", "pipefail", "-c", context_builder],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": os.environ["PATH"],
+            "POLICY_DIR": str(rendered / "consumer"),
+            "OUTPUT_DIR": str(context_output),
+        },
+    )
+    context_data = json.loads((context_output / "triage-context.json").read_text())
+    triage_run = ast.parse(Path("actions/triage-agent/run.py").read_text())
+    required_context = next(
+        ast.literal_eval(node.value)
+        for node in ast.walk(triage_run)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "required" for target in node.targets)
+    )
+    assert set(context_data) == required_context
+    assert all(isinstance(value, str) for value in context_data.values())
+
+    assert jobs["apply"].get("concurrency") is None
 
     uploaded_names = [
         (job_name, step.get("with", {}).get("name"))
@@ -157,6 +242,10 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
     apply_decision = next(
         step for step in apply_steps if step.get("name") == "Apply triage decision"
     )
+    assert apply_decision["with"]["capped"] == "${{ needs.gate.outputs.capped }}"
+    assert apply_decision["with"]["off-authorized"] == (
+        "${{ needs.gate.outputs.reason == 'agent-off' }}"
+    )
     assert apply_decision["with"]["canary"] == "${{ needs.gate.outputs.canary }}"
     assert apply_decision["with"]["scan-keys"] == "${{ secrets.AGENT_SCAN_KEYS }}"
     decision_record = next(
@@ -167,6 +256,24 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
     assert decision_record["with"]["name"] == "agent-decision-${{ github.run_id }}"
     assert decision_record["with"]["retention-days"] == 30
     assert any(step.get("id") == "triage" for step in tier2_steps)
+    tier2_step = next(step for step in tier2_steps if step.get("id") == "triage")
+    merged_upload = next(
+        step for step in tier2_steps if step.get("name") == "Share merged decision"
+    )
+    assert tier2_step["continue-on-error"] is True
+    assert merged_upload["id"] == "share-merged-decision"
+    assert merged_upload["if"] == "steps.triage.outcome == 'success'"
+
+    merged_download = next(
+        step for step in apply_steps if step.get("name") == "Download merged decision"
+    )
+    tier1_download = next(
+        step for step in apply_steps if step.get("name") == "Download Tier-1 decision"
+    )
+    assert merged_download["if"] == "needs.tier2.outputs.merged == 'true'"
+    assert tier1_download["if"] == (
+        "${{ needs.propose.result == 'success' && needs.tier2.outputs.merged != 'true' }}"
+    )
 
 
 def _secret_references(value: object) -> list[str]:
@@ -189,3 +296,14 @@ def test_render_consumer_rejects_destination_inside_repository_root(monkeypatch)
     finally:
         if rendered is not None:
             shutil.rmtree(rendered)
+
+
+def test_render_consumer_rejects_destination_outside_system_temporary_directory(
+    tmp_path: Path, monkeypatch
+):
+    import tools.render_consumer as render_module
+    from tools.render_consumer import render_consumer
+
+    monkeypatch.setattr(render_module.tempfile, "gettempdir", lambda: str(tmp_path / "system-temp"))
+    with pytest.raises(ValueError, match="system temporary directory"):
+        render_consumer("f" * 40, "v0.0.0", temporary_parent=tmp_path)

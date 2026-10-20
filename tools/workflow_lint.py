@@ -60,8 +60,16 @@ def _is_cache_restore(step: dict) -> bool:
 
 def _has_cache_input(step: dict) -> bool:
     inputs = _mapping(step.get("with"))
-    if _uses_path(step).casefold() == "astral-sh/setup-uv" and "enable-cache" not in inputs:
+    action = _uses_path(step).casefold()
+    if action == "astral-sh/setup-uv" and "enable-cache" not in inputs:
         return True
+    if action == "actions/setup-go":
+        cache = inputs.get("cache")
+        disabled = cache is False or (
+            isinstance(cache, str) and cache.strip().casefold() == "false"
+        )
+        if "cache" not in inputs or not disabled:
+            return True
     for name in ("cache", "enable-cache"):
         if name not in inputs:
             continue
@@ -152,7 +160,11 @@ def lint(paths: list[Path]) -> list[str]:
             environment_name = (
                 environment.get("name") if isinstance(environment, dict) else environment
             )
-            if environment_name == "agent-apply" and events & {"pull_request", "push"}:
+            if (
+                isinstance(environment_name, str)
+                and environment_name.casefold() == "agent-apply"
+                and events & {"pull_request", "push"}
+            ):
                 errors.append(
                     f"{path}: agent-apply environment is forbidden on pull_request or push "
                     f"({job_name})"
