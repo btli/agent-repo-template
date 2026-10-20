@@ -163,10 +163,14 @@ def binary_file_texts(work: Path, git_dir: Path, base_sha: str) -> list[str]:
     # Binary hunks are base85 in the patch, so those files' own bytes are scanned; text is in it.
     stats = run_git(work, git_dir, "diff", "--numstat", "-z", "--no-renames", base_sha)
     names = [stat.split(b"\t", 2)[2] for stat in stats.split(b"\0") if stat.startswith(b"-\t-\t")]
+    # A binary patch also encodes the base pre-image, so deleted or replaced bytes are read too.
+    base = set(run_git(work, git_dir, "ls-tree", "-r", "-z", "--name-only", base_sha).split(b"\0"))
+    show = [f"{base_sha}:{os.fsdecode(name)}" for name in names if name in base]
+    blobs = [run_git(work, git_dir, "cat-file", "blob", spec) for spec in show]
     paths = [work / os.fsdecode(name) for name in names]
     # A symlink's target is already text in the patch; following it could leave the tree.
-    files = [path for path in paths if path.is_file() and not path.is_symlink()]
-    return [path.read_bytes().decode("utf-8", "surrogateescape") for path in files]
+    files = [path.read_bytes() for path in paths if path.is_file() and not path.is_symlink()]
+    return [data.decode("utf-8", "surrogateescape") for data in blobs + files]
 
 
 def read_optional(path: Path) -> str:
@@ -252,7 +256,8 @@ def run_agent(output: Path, canary: str) -> str:
         artifact, patch = build_artifact(work, base_sha, run_id, answer, git_dir=git_dir)
     except ValueError:
         raise Refused("agent output rejected") from None
-    texts = [json.dumps(artifact, ensure_ascii=False) + (patch or ""), *string_values(artifact)]
+    # The patch is scanned on its own, so its documented limit is not shared with the fields.
+    texts = [json.dumps(artifact, ensure_ascii=False), patch or "", *string_values(artifact)]
     if patch is not None:
         texts += binary_file_texts(work, git_dir, base_sha)
     # Separator-aware scan; output too large to scan fails closed as well.

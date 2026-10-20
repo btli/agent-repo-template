@@ -46,7 +46,14 @@ if mode == "binary_attribute":
     (work / "notes.txt").write_text(canary)
 if mode == "outside_symlink":
     (home / "outside.txt").write_text(canary)
-    os.symlink(home / "outside.txt", work / "outside-link")
+    (work / "b.bin").unlink()
+    os.symlink(home / "outside.txt", work / "b.bin")
+if mode == "delete_binary":
+    (work / "secret.bin").unlink()
+if mode == "modify_binary":
+    (work / "secret.bin").write_bytes(b"\\0clean")
+if mode == "max_fields":
+    (work / "notes.txt").write_text(("y" * 99 + "\\n") * 590)
 if mode == "large_binary":
     (work / "notes.dat").write_bytes(b"\\0" * 70000)
 if mode == "large_text_edit":
@@ -70,6 +77,8 @@ if mode == "no_patch":
                   escalate={"to": "maintainer", "reason": "No repro."})
 if mode == "raw_key_summary":
     answer["summary"] += " " + key
+if mode == "max_fields":
+    answer.update(rca="r" * 4000, summary="s" * 4000, attempted="a" * 4000)
 splits = {"newline_key_summary": ("summary", key, "\\n"),
           "newline_canary_rca": ("rca", canary, "\\n"),
           "tab_key_rca": ("rca", key, "\\t"), "tab_canary_summary": ("summary", canary, "\\t")}
@@ -357,13 +366,32 @@ def test_one_line_change_to_a_large_text_file_produces_a_patch(action):
     assert "+# changed" in (action["out"] / "fix.patch").read_text()
 
 
+def commit_base_file(action: dict, name: str, data: bytes) -> None:
+    work = action["work"]
+    (work / name).write_bytes(data)
+    git(work, "add", name)
+    git(work, "commit", "-q", "-m", f"add {name}")
+    action["env"]["BASE_SHA"] = git(work, "rev-parse", "HEAD").strip()
+
+
 def test_changed_file_scan_never_follows_a_symlink_out_of_the_tree(action):
-    # The link's target holds the canary, so reading through it would refuse the run.
+    # A base binary replaced by a link stays a binary change; the link's target holds the canary.
+    commit_base_file(action, "b.bin", b"\0x")
     (action["home"] / "mode").write_text("outside_symlink")
     result = run_action(action, "agent")
     assert result.returncode == 0, result.stderr
     patch = (action["out"] / "fix.patch").read_text()
-    assert "diff --git a/outside-link b/outside-link\nnew file mode 120000" in patch
+    assert "b/b.bin" in patch and "new file mode 120000" in patch
+
+
+def test_patch_under_the_limit_passes_beside_maximal_fields(action):
+    # The patch has its own scan, so long rca, summary and attempted fields cannot crowd it out.
+    (action["home"] / "mode").write_text("max_fields")
+    result = run_action(action, "agent")
+    assert result.returncode == 0, result.stderr
+    patch = (action["out"] / "fix.patch").read_text()
+    fields = json.dumps(json.loads((action["out"] / "fix.json").read_text()), ensure_ascii=False)
+    assert len(patch) < 65536 < len(patch) + len(fields)
 
 
 @pytest.mark.parametrize("mode", ["setup", "agent"])
@@ -382,6 +410,9 @@ LEAKS = {
     "encoded_key": "credential or canary",
     "raw_key_summary": "credential or canary",
     "oversized": "outbound scan budget",
+    # The key sits only in the base pre-image, which the binary patch still encodes.
+    "delete_binary": "credential or canary",
+    "modify_binary": "credential or canary",
     # Binary hunks are base85 in the patch, so only the file scan sees these.
     "nul_canary": "credential or canary",
     "binary_attribute": "credential or canary",
@@ -396,6 +427,8 @@ LEAKS = {
 
 @pytest.mark.parametrize("mode", sorted(LEAKS))
 def test_canary_in_patch_fails_closed(action, mode):
+    if mode in ("delete_binary", "modify_binary"):
+        commit_base_file(action, "secret.bin", b"\0" + KEY.encode())
     (action["home"] / "mode").write_text(mode)
     result = run_action(action, "agent")
     assert result.returncode == 1
