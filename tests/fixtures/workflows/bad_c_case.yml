@@ -1,0 +1,10 @@
+name: Invalid mixed-case apply model action
+on:
+  issues:
+    types: [opened]
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: Actions/Create-GitHub-App-Token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      - uses: btli/agent-repo-template/actions/triage-agent@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v1.0.0

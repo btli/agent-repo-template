@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from agent_repo.charter import lint_charter
+from agent_repo.charter import _sections, lint_charter
 from agent_repo.schema import load_schema, validate
 from agent_repo.yamljson import load_yaml
 
@@ -69,6 +69,16 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
     from tools.render_consumer import render_consumer
 
     rendered = render_consumer("d" * 40, "v0.0.0", temporary_parent=tmp_path)
+    policy = rendered / "consumer"
+    charter_path = policy / ".agents/charter.md"
+    charter_text = charter_path.read_text().replace(
+        "Add links to maintained user and contributor documentation here.",
+        "- [User guide](https://example.com/user-guide)\n"
+        "- [Contributing](https://example.com/contributing)",
+    )
+    charter_path.write_text(charter_text)
+    contributing_text = "# Contributor guidance\n\nUse focused changes and run the checks.\n"
+    (policy / "CONTRIBUTING.md").write_text(contributing_text)
     workflow = load_yaml(rendered / "consumer/.github/workflows/agent-triage.yml")
     jobs = workflow["jobs"]
     gate_steps = jobs["gate"]["steps"]
@@ -156,6 +166,9 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
     )
     assert set(context_data) == required_context
     assert all(isinstance(value, str) for value in context_data.values())
+    assert context_data["charter"] == charter_text
+    assert context_data["contributing"] == contributing_text
+    assert context_data["docs_index"] == _sections(charter_text)["Docs index"]
 
     assert jobs["apply"].get("concurrency") is None
 
@@ -171,6 +184,15 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
         for step in job.get("steps", [])
         if str(step.get("uses", "")).startswith("actions/download-artifact@")
     ]
+    handoff_uploads = [
+        step
+        for job in jobs.values()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+        and str(step.get("with", {}).get("name", "")).startswith("agent-handoff-")
+    ]
+    assert handoff_uploads
+    assert all(step["with"]["retention-days"] == 1 for step in handoff_uploads)
     assert all(
         (upload_job == "gate" and name == "agent-triage-${{ github.event.issue.number }}")
         or (upload_job == "apply" and name == "agent-decision-${{ github.run_id }}")
@@ -191,6 +213,8 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
     )
     assert marker_step["with"]["name"] == "agent-triage-${{ github.event.issue.number }}"
     assert marker_step["with"]["retention-days"] == 90
+    policy_checkout = context_steps["Read default-branch triage policy"]
+    assert policy_checkout["with"]["persist-credentials"] is False
     assert (
         next(
             step

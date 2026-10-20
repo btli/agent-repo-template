@@ -18,6 +18,7 @@ FIXTURES = Path("tests/fixtures/workflows")
         ("bad_b_setup.yml", "cache write"),
         ("bad_b_setup_default.yml", "cache write"),
         ("bad_c.yml", "apply job model action"),
+        ("bad_c_case.yml", "apply job model action"),
         ("bad_c_setup_cache.yml", "cache restore"),
         ("bad_d.yml", "agent-apply environment"),
         ("bad_d_case.yml", "agent-apply environment"),

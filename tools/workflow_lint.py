@@ -45,7 +45,7 @@ def _is_model_action(step: dict) -> bool:
 
 
 def _is_app_token_action(step: dict) -> bool:
-    return _uses_path(step).endswith("/create-github-app-token")
+    return _uses_path(step).casefold().endswith("/create-github-app-token")
 
 
 def _is_cache_write(step: dict) -> bool:
