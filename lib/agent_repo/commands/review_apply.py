@@ -9,7 +9,7 @@ from pathlib import Path
 from agent_repo.apply.actions import ApplyContext
 from agent_repo.apply.review import apply_review, summary_only_review
 from agent_repo.commands.apply import _policy
-from agent_repo.commands.fetch_diff import _event_base_ref, _pull
+from agent_repo.commands.fetch_diff import _changed_files, _event_base_ref, _pull
 from agent_repo.config import ConfigError
 from agent_repo.diff import diff_index, fetch_files, summary_only
 from agent_repo.event import load_event
@@ -53,12 +53,17 @@ def main(argv: list[str]) -> int:
         ):
             summary.write_text("No review posted: pull request head moved.\n", encoding="utf-8")
             return 0
+        changed_files = _changed_files(pull)
         files_invalid = False
-        try:
-            files = fetch_files(gh, event.number)
-        except ValueError:
+        files_incomplete = changed_files is None or changed_files > 3000
+        if files_incomplete:
             files = []
-            files_invalid = True
+        else:
+            try:
+                files = fetch_files(gh, event.number)
+            except ValueError:
+                files = []
+                files_invalid = True
         current_pull = _pull(gh, event)
         if current_pull["head"]["sha"] != expected_head_sha:
             summary.write_text("No review posted: pull request head moved.\n", encoding="utf-8")
@@ -70,14 +75,7 @@ def main(argv: list[str]) -> int:
             return 0
         with tempfile.TemporaryDirectory(prefix="agent-review-policy-") as directory:
             _, config, charter = _policy(gh, base_sha, Path(directory))
-        changed_files = pull.get("changed_files")
-        files_incomplete = (
-            files_invalid
-            or type(changed_files) is not int
-            or changed_files < 0
-            or changed_files > 3000
-            or len(files) != changed_files
-        )
+        files_incomplete = files_incomplete or files_invalid or len(files) != changed_files
         limited, reason = (
             summary_only(files, config)
             if not files_incomplete

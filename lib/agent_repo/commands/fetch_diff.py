@@ -70,20 +70,30 @@ def fetch(files_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
     head_sha = pull["head"]["sha"]
     if head_sha != expected_head_sha:
         raise ValueError("pull request head changed since gate")
+    changed_files = _changed_files(pull)
     files_invalid = False
-    try:
-        files = fetch_files(gh, event.number)
-    except ValueError:
+    files_incomplete = changed_files is None or changed_files > 3000
+    if files_incomplete:
         files = []
-        files_invalid = True
+    else:
+        try:
+            files = fetch_files(gh, event.number)
+        except ValueError:
+            files = []
+            files_invalid = True
     current_pull = _pull(gh, event)
     if current_pull["head"]["sha"] != expected_head_sha:
         raise ValueError("pull request head changed while fetching diff")
-    changed_files = _changed_files(pull)
     config = load_config(config_dir)
-    if files_invalid:
+    if files_incomplete:
+        limited, reason = (
+            True,
+            "Pull request file count is missing, invalid, or exceeds the API limit; "
+            "needs-maintainer.",
+        )
+    elif files_invalid:
         limited, reason = True, "Pull request file list is malformed; needs-maintainer."
-    elif changed_files is None or changed_files > 3000 or len(files) != changed_files:
+    elif len(files) != changed_files:
         limited, reason = True, "Pull request file list is incomplete; needs-maintainer."
     else:
         limited, reason = summary_only(files, config)

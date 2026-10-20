@@ -378,6 +378,29 @@ def test_summary_only_review_writes_schema_artifact_without_model(tmp_path, monk
     assert "number" not in artifact and "repo" not in artifact
 
 
+def test_summary_only_review_bounds_long_filename_reason(tmp_path, monkeypatch):
+    module_spec = importlib.util.spec_from_file_location(
+        "review_agent_run", "actions/review-agent/run.py"
+    )
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    output = tmp_path / "review.json"
+    monkeypatch.setenv("OUTPUT_FILE", str(output))
+    monkeypatch.setenv("RUN_ID", "run-1")
+    monkeypatch.setenv("BASE_SHA", "a" * 40)
+    monkeypatch.setenv("HEAD_SHA", "b" * 40)
+    monkeypatch.setenv("AGENT_CANARY", "gate-canary-0123456789abcdef")
+    monkeypatch.setenv("SUMMARY_ONLY", "true")
+    filename = "f" * 4000
+    monkeypatch.setenv("SUMMARY_REASON", f"Patch unavailable for {filename}; needs-maintainer.")
+
+    assert module.main() == 0
+
+    artifact = json.loads(output.read_text())
+    assert len(artifact["summary"]) == 4000
+    assert artifact["escalate"]["to"] == "maintainer"
+
+
 def test_summary_only_review_requires_gate_canary(tmp_path, monkeypatch):
     module_spec = importlib.util.spec_from_file_location(
         "review_agent_run", "actions/review-agent/run.py"

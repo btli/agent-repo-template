@@ -35,7 +35,7 @@ def summary_only_review(run_id: str, base_sha: str, head_sha: str, reason: str) 
         "run_id": run_id,
         "base_sha": base_sha,
         "head_sha": head_sha,
-        "summary": f"Automated review skipped. {reason}",
+        "summary": f"Automated review skipped. {reason}"[:4000],
         "findings": [],
         "scope_ok": True,
         "tests_missing": False,

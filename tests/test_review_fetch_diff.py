@@ -18,6 +18,7 @@ class API:
         head_sha="b" * 40,
         changed_files=1,
         files=None,
+        files_status=200,
     ):
         self.calls = []
         self.queries = []
@@ -25,6 +26,7 @@ class API:
         self.base_sha = base_sha
         self.head_sha = head_sha
         self.changed_files = changed_files
+        self.files_status = files_status
         self.files = (
             files
             if files is not None
@@ -46,7 +48,7 @@ class API:
         self.calls.append((request.method, path, accept))
         self.queries.append(urlparse(request.full_url).query)
         if path.endswith("/pulls/24/files"):
-            return 200, {}, json.dumps(self.files).encode()
+            return self.files_status, {}, json.dumps(self.files).encode()
         return (
             200,
             {},
@@ -185,6 +187,21 @@ def test_fetch_routes_incomplete_file_list_to_summary_only(tmp_path, monkeypatch
 
     assert limited is True
     assert "needs-maintainer" in reason
+
+
+@pytest.mark.parametrize("changed_files", [3001, None, -1, True])
+def test_fetch_hands_off_before_fetching_oversized_or_invalid_count(
+    tmp_path, monkeypatch, changed_files
+):
+    api = API(changed_files=changed_files, files_status=422)
+    config_dir, output = _fetch_setup(tmp_path, monkeypatch, api)
+
+    _, _, limited, reason = fetch(tmp_path / "files.json", config_dir)
+
+    assert limited is True
+    assert "needs-maintainer" in reason
+    assert "summary_only=true" in output.read_text()
+    assert not any(call[1].endswith("/files") for call in api.calls)
 
 
 def test_fetch_routes_missing_patch_for_changed_file_to_summary_only(tmp_path, monkeypatch):
@@ -361,6 +378,7 @@ class ReviewApplyAPI:
         base_sha="a" * 40,
         changed_files=1,
         files=None,
+        files_status=200,
         move_head_during_files=False,
     ):
         self.head_sha = head_sha
@@ -368,6 +386,7 @@ class ReviewApplyAPI:
         self.base_sha = base_sha
         self.changed_files = changed_files
         self.files = files
+        self.files_status = files_status
         self.move_head_during_files = move_head_during_files
         self.calls = []
         self.review_posts = []
@@ -379,6 +398,8 @@ class ReviewApplyAPI:
         self.calls.append((request.method, path))
         body = json.loads(request.data) if request.data else None
         if path == "pulls/24/files":
+            if self.files_status != 200:
+                return self.files_status, {}, b'{"message":"too many files"}'
             value = self.files or [
                 {
                     "filename": "src/a.py",
@@ -584,6 +605,56 @@ def test_review_apply_limited_files_escalate_and_post_summary_only(
     assert "Unverified finding must be discarded." not in api.review_posts[0]["body"]
     assert "Automated review skipped." in api.review_posts[0]["body"]
     assert "needs-maintainer" in api.review_posts[0]["body"]
+
+
+@pytest.mark.parametrize("changed_files", [3001, None, -1, True])
+def test_review_apply_hands_off_before_fetching_oversized_or_invalid_count(
+    tmp_path, monkeypatch, changed_files
+):
+    api = ReviewApplyAPI(changed_files=changed_files, files_status=422)
+    command, review_path, _ = _review_apply_setup(tmp_path, monkeypatch, api=api)
+
+    assert command.main([str(review_path)]) == 0
+    assert not any(path.endswith("/files") for _, path in api.calls)
+    assert len(api.review_posts) == 1
+    assert api.review_posts[0]["comments"] == []
+    assert "Automated review skipped." in api.review_posts[0]["body"]
+    assert any("needs-maintainer" in post["labels"] for post in api.label_posts)
+
+
+def test_review_apply_bounds_long_filename_summary_handoff(tmp_path, monkeypatch):
+    from agent_repo.schema import load_schema, validate
+
+    filename = "src/" + "f" * 3993 + ".py"
+    assert len(filename) == 4000
+    api = ReviewApplyAPI(
+        files=[
+            {
+                "filename": filename,
+                "status": "modified",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+            }
+        ]
+    )
+    command, review_path, _ = _review_apply_setup(tmp_path, monkeypatch, api=api)
+    handoffs = []
+    build_handoff = command.summary_only_review
+
+    def capture_handoff(*args):
+        handoff = build_handoff(*args)
+        handoffs.append(handoff)
+        return handoff
+
+    monkeypatch.setattr(command, "summary_only_review", capture_handoff)
+
+    assert command.main([str(review_path)]) == 0
+    assert len(handoffs) == 1
+    assert validate(handoffs[0], load_schema("review")) == []
+    assert len(handoffs[0]["summary"]) == 4000
+    assert len(api.review_posts) == 1
+    assert any("needs-maintainer" in post["labels"] for post in api.label_posts)
 
 
 def test_review_apply_misplaced_no_newline_marker_hands_off_to_maintainer(tmp_path, monkeypatch):
