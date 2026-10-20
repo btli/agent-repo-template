@@ -1,0 +1,10 @@
+name: Invalid mapped apply environment
+on:
+  push:
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    environment:
+      name: agent-apply
+    steps:
+      - run: echo apply

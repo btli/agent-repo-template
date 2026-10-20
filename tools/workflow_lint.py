@@ -7,9 +7,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from agent_repo.yamljson import YamlError, load_yaml
 
 ALLOWED_MODEL_EVENTS = {"issues", "issue_comment", "pull_request_target"}
-PIN = re.compile(r"[^\s@]+@([0-9a-f]{40})\s+#\s+v\d+\.\d+\.\d+")
-USES_LINE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*(.*?)\s*$")
-EVENT_EXPRESSION = re.compile(r"\$\{\{\s*github\.event\.")
+PINNED_USE = re.compile(r"[^\s@]+@[0-9a-f]{40}")
+VERSION_COMMENT = re.compile(r"#\s*v\d+\.\d+\.\d+\s*$")
+EVENT_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
+EVENT_FIELD = re.compile(r"\bgithub\.event\b")
 
 
 def _mapping(value: object) -> dict:
@@ -39,12 +40,26 @@ def _is_app_token_action(step: dict) -> bool:
 
 def _is_cache_write(step: dict) -> bool:
     name = _uses_path(step).casefold()
-    return name == "actions/cache" or name.endswith("/cache/save")
+    return name == "actions/cache" or name.endswith("/cache/save") or _has_cache_input(step)
 
 
 def _is_cache_restore(step: dict) -> bool:
     name = _uses_path(step).casefold()
-    return name == "actions/cache" or name.endswith("/cache/restore")
+    return name == "actions/cache" or name.endswith("/cache/restore") or _has_cache_input(step)
+
+
+def _has_cache_input(step: dict) -> bool:
+    inputs = _mapping(step.get("with"))
+    for name in ("cache", "enable-cache"):
+        if name not in inputs:
+            continue
+        value = inputs[name]
+        if isinstance(value, str):
+            if value.strip().casefold() not in {"", "false"}:
+                return True
+        elif bool(value):
+            return True
+    return False
 
 
 def _events(workflow: dict) -> set[str]:
@@ -71,19 +86,29 @@ def lint(paths: list[Path]) -> list[str]:
             continue
 
         text = path.read_text(encoding="utf-8")
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            uses_line = USES_LINE.match(line)
-            if uses_line and PIN.fullmatch(uses_line.group(1)) is None:
-                errors.append(f"{path}:{line_number}: every uses must be SHA-pinned")
+        if any(
+            re.search(r"\buses\s*:", line) and VERSION_COMMENT.search(line) is None
+            for line in text.splitlines()
+        ):
+            errors.append(f"{path}: every uses must include a # vX.Y.Z comment")
 
         events = _events(workflow)
         jobs = _mapping(workflow.get("jobs"))
         for job_name, raw_job in jobs.items():
             job = _mapping(raw_job)
+            job_uses = job.get("uses")
+            if job_uses is not None and (
+                not isinstance(job_uses, str) or PINNED_USE.fullmatch(job_uses) is None
+            ):
+                errors.append(f"{path}: every uses must be SHA-pinned ({job_name})")
             steps = job.get("steps")
-            if not isinstance(steps, list):
-                continue
-            step_mappings = [_mapping(step) for step in steps]
+            step_mappings = [_mapping(step) for step in steps] if isinstance(steps, list) else []
+            for step in step_mappings:
+                step_uses = step.get("uses")
+                if step_uses is not None and (
+                    not isinstance(step_uses, str) or PINNED_USE.fullmatch(step_uses) is None
+                ):
+                    errors.append(f"{path}: every uses must be SHA-pinned ({job_name})")
             model_job = any(_is_model_action(step) for step in step_mappings)
             if model_job and (not events or not events <= ALLOWED_MODEL_EVENTS):
                 errors.append(
@@ -98,7 +123,11 @@ def lint(paths: list[Path]) -> list[str]:
                 errors.append(f"{path}: apply job model action is forbidden ({job_name})")
             if apply_job and any(_is_cache_restore(step) for step in step_mappings):
                 errors.append(f"{path}: apply job cache restore is forbidden ({job_name})")
-            if job.get("environment") == "agent-apply" and events & {"pull_request", "push"}:
+            environment = job.get("environment")
+            environment_name = (
+                environment.get("name") if isinstance(environment, dict) else environment
+            )
+            if environment_name == "agent-apply" and events & {"pull_request", "push"}:
                 errors.append(
                     f"{path}: agent-apply environment is forbidden on pull_request or push "
                     f"({job_name})"
@@ -106,7 +135,9 @@ def lint(paths: list[Path]) -> list[str]:
 
             for step in step_mappings:
                 run = step.get("run")
-                if isinstance(run, str) and EVENT_EXPRESSION.search(run):
+                if isinstance(run, str) and any(
+                    EVENT_FIELD.search(expression) for expression in EVENT_EXPRESSION.findall(run)
+                ):
                     errors.append(
                         f"{path}: event expression in run block is forbidden ({job_name})"
                     )

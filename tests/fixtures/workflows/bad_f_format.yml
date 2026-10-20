@@ -1,0 +1,9 @@
+name: Invalid formatted event expression
+on:
+  issues:
+    types: [opened]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "${{ format('{0}', github.event.issue.title) }}"

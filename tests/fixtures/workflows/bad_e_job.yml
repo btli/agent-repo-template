@@ -1,0 +1,5 @@
+name: Invalid reusable workflow pin
+on:
+  issues:
+    types: [opened]
+jobs: {reusable: {uses: ./.github/workflows/reusable.yml}}

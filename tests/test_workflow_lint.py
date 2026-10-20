@@ -15,10 +15,18 @@ FIXTURES = Path("tests/fixtures/workflows")
     [
         ("bad_a.yml", "model job trigger"),
         ("bad_b.yml", "cache write"),
+        ("bad_b_setup.yml", "cache write"),
         ("bad_c.yml", "apply job model action"),
+        ("bad_c_setup_cache.yml", "cache restore"),
         ("bad_d.yml", "agent-apply environment"),
+        ("bad_d_map.yml", "agent-apply environment"),
         ("bad_e.yml", "SHA-pinned"),
+        ("bad_e_flow.yml", "SHA-pinned"),
+        ("bad_e_job.yml", "SHA-pinned"),
         ("bad_f.yml", "event expression in run"),
+        ("bad_f_format.yml", "event expression in run"),
+        ("bad_f_tojson.yml", "event expression in run"),
+        ("bad_f_index.yml", "event expression in run"),
     ],
 )
 def test_lint_reports_each_workflow_rule(filename: str, rule: str):

@@ -1,0 +1,9 @@
+name: Invalid flow-style action pin
+on:
+  issues:
+    types: [opened]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - {uses: actions/checkout@v4} # v4.2.2
