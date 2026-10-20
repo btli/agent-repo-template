@@ -1,12 +1,12 @@
 import json
 import os
 import re
-import secrets
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from agent_repo.apply.review import summary_only_review
 from agent_repo.policies import agent_environment
 from agent_repo.prompting import extract_json, render_prompt
 from agent_repo.scan import find_leaks
@@ -19,29 +19,13 @@ def _write_review(output: Path, value: dict) -> None:
     output.write_text(encoded, encoding="utf-8")
 
 
-def _summary_review(run_id: str, base_sha: str, head_sha: str, reason: str) -> dict:
-    return {
-        "schema_version": "1",
-        "run_id": run_id,
-        "base_sha": base_sha,
-        "head_sha": head_sha,
-        "summary": f"Automated review skipped. {reason}",
-        "findings": [],
-        "scope_ok": True,
-        "tests_missing": False,
-        "docs_needed": False,
-        "escalate": {
-            "to": "maintainer",
-            "reason": reason[:500] or "Review needs a maintainer.",
-        },
-    }
-
-
 def main() -> int:
     output = Path(os.environ.get("OUTPUT_FILE", "review.json"))
     key_env = os.environ.get("API_KEY_ENV", "LLM_API_KEY")
-    canary = secrets.token_hex(24)
     try:
+        canary = os.environ.get("AGENT_CANARY", "")
+        if not canary:
+            raise ValueError
         run_id = os.environ["RUN_ID"]
         base_sha = os.environ["BASE_SHA"]
         head_sha = os.environ["HEAD_SHA"]
@@ -62,7 +46,7 @@ def main() -> int:
             if value
         ]
         if os.environ.get("SUMMARY_ONLY") == "true":
-            result = _summary_review(run_id, base_sha, head_sha, reason)
+            result = summary_only_review(run_id, base_sha, head_sha, reason)
             if validate(result, schema) or find_leaks(
                 json.dumps(result, ensure_ascii=False), secrets_to_scan, canary
             ):
@@ -139,7 +123,7 @@ def main() -> int:
             raise ValueError
         if output_leaks == ["scan_budget"] or artifact_leaks == ["scan_budget"]:
             reason = "Review response exceeded the outbound scan budget; needs-maintainer."
-            handoff = _summary_review(run_id, base_sha, head_sha, reason)
+            handoff = summary_only_review(run_id, base_sha, head_sha, reason)
             if validate(handoff, schema) or find_leaks(
                 json.dumps(handoff, ensure_ascii=False), secrets_to_scan, canary
             ):

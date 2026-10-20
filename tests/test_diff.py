@@ -83,6 +83,7 @@ def test_diff_index_accepts_pure_rename_without_patch():
     [
         ("@@ -1, +1 @@\n-old\n+new", 1, 1),
         ("@@ -1,3 +1,3 @@\n-old\n+new", 1, 1),
+        ("@@ -1 +1 @@x\n-old\n+new", 1, 1),
         ("@@ -1 +1 @@\n-old\n+new\ngarbage", 1, 1),
         ("@@ -1 +1 @@\n-old\n+new\n\\ evil", 1, 1),
         ("@@ -0,0 +1 @@\nxjunk\n+a", 1, 0),
@@ -91,6 +92,7 @@ def test_diff_index_accepts_pure_rename_without_patch():
     ids=[
         "malformed-hunk-header",
         "short-hunk",
+        "trailing-hunk-header-garbage",
         "stray-row",
         "wrong-marker",
         "unknown-row-prefix",

@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from agent_repo.apply.actions import ApplyContext
-from agent_repo.apply.review import apply_review
+from agent_repo.apply.review import apply_review, summary_only_review
 from agent_repo.commands.apply import _policy
 from agent_repo.commands.fetch_diff import _event_base_ref, _pull
 from agent_repo.config import ConfigError
@@ -87,11 +87,9 @@ def main(argv: list[str]) -> int:
             )
         )
         if limited:
-            review = dict(review)
-            review["escalate"] = {
-                "to": "maintainer",
-                "reason": reason[:500] or "Review needs a maintainer.",
-            }
+            review = summary_only_review(
+                review["run_id"], review["base_sha"], review["head_sha"], reason
+            )
         if event.head_sha is None:
             event = replace(event, head_sha=review["head_sha"])
         token = os.environ["GH_TOKEN"]

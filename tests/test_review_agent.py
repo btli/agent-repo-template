@@ -24,11 +24,18 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
 
     assert set(workflow["on"]) == {"pull_request_target", "issue_comment"}
     assert set(workflow["jobs"]) == {"agent-propose-review", "agent-apply-review"}
+    propose_job = workflow["jobs"]["agent-propose-review"]
+    concurrency_context = "${{ github.event.pull_request.number || github.event.issue.number }}"
+    assert propose_job["concurrency"] == {
+        "group": f"agent-review-{concurrency_context}",
+        "cancel-in-progress": True,
+    }
     assert workflow["jobs"]["agent-propose-review"]["permissions"]["pull-requests"] == "read"
     assert workflow["jobs"]["agent-propose-review"]["environment"] == "agent-propose-review"
     apply_job = workflow["jobs"]["agent-apply-review"]
     assert apply_job["permissions"] == {"actions": "read", "contents": "read"}
     assert apply_job["environment"] == "agent-apply"
+    assert "concurrency" not in apply_job
     assert "issues" not in apply_job["permissions"]
     propose_action = next(
         step
@@ -36,6 +43,7 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
         if step.get("name") == "Propose review"
     )
     assert propose_action["with"]["expected-head-sha"] == "${{ steps.gate.outputs.head_sha }}"
+    assert propose_action["with"]["canary"] == "${{ steps.gate.outputs.canary }}"
     token_step = next(step for step in apply_job["steps"] if step.get("id") == "app-token")
     assert token_step["uses"].startswith("actions/create-github-app-token@")
     permission_inputs = {
@@ -79,6 +87,10 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
         step.get("env", {}).get("EXPECTED_HEAD_SHA") == "${{ inputs.expected-head-sha }}"
         for step in review_action["runs"]["steps"]
     )
+    propose_run = next(
+        step for step in review_action["runs"]["steps"] if step.get("name") == "Run review agent"
+    )
+    assert propose_run["env"]["AGENT_CANARY"] == "${{ inputs.canary }}"
     assert "issues: write" not in Path("consumer/.github/workflows/agent-review.yml").read_text()
 
 
@@ -136,6 +148,7 @@ def _prepare_review_run(tmp_path, monkeypatch, fake_body):
         "RUN_ID": "run-1",
         "BASE_SHA": "a" * 40,
         "HEAD_SHA": "b" * 40,
+        "AGENT_CANARY": "gate-canary-0123456789abcdef",
         "SUMMARY_ONLY": "false",
         "FILES_FILE": str(files),
         "REVIEW_AGENT": str(Path("agents/review").resolve()),
@@ -220,7 +233,76 @@ def test_review_agent_supplies_rendered_file_list_as_model_input(tmp_path, monke
     prompt = captured.read_text()
     assert '"filename": "file.py"' in prompt
     assert '"patch": "@@ -0,0 +1 @@\\n+added"' in prompt
+    assert "gate-canary-0123456789abcdef" in prompt
     assert output.exists()
+
+
+def test_review_agent_rejects_gate_canary_leak_without_artifact(tmp_path, monkeypatch):
+    artifact = {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "summary": "gate-canary-0123456789abcdef",
+        "findings": [],
+        "scope_ok": True,
+        "tests_missing": False,
+        "docs_needed": False,
+        "escalate": None,
+    }
+    response = "```json\n" + json.dumps(artifact) + "\n```"
+    module, output = _prepare_review_run(
+        tmp_path, monkeypatch, "printf '%s\\n' " + shlex.quote(response)
+    )
+
+    assert module.main() == 1
+    assert not output.exists()
+
+
+def test_review_agent_requires_gate_canary(tmp_path, monkeypatch):
+    artifact = {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "summary": "Review summary.",
+        "findings": [],
+        "scope_ok": True,
+        "tests_missing": False,
+        "docs_needed": False,
+        "escalate": None,
+    }
+    response = "```json\n" + json.dumps(artifact) + "\n```"
+    module, output = _prepare_review_run(
+        tmp_path, monkeypatch, "printf '%s\\n' " + shlex.quote(response)
+    )
+    monkeypatch.delenv("AGENT_CANARY")
+
+    assert module.main() == 1
+    assert not output.exists()
+
+
+def test_review_agent_rejects_unrecognized_artifact_field(tmp_path, monkeypatch):
+    artifact = {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "summary": "Review summary.",
+        "findings": [],
+        "scope_ok": True,
+        "tests_missing": False,
+        "docs_needed": False,
+        "escalate": None,
+        "event": "APPROVE",
+    }
+    response = "```json\n" + json.dumps(artifact) + "\n```"
+    module, output = _prepare_review_run(
+        tmp_path, monkeypatch, "printf '%s\\n' " + shlex.quote(response)
+    )
+
+    assert module.main() == 1
+    assert not output.exists()
 
 
 def test_review_agent_routes_scan_budget_review_to_summary_only(tmp_path, monkeypatch):
@@ -270,6 +352,7 @@ def test_summary_only_review_writes_schema_artifact_without_model(tmp_path, monk
     monkeypatch.setenv("RUN_ID", "run-1")
     monkeypatch.setenv("BASE_SHA", "a" * 40)
     monkeypatch.setenv("HEAD_SHA", "b" * 40)
+    monkeypatch.setenv("AGENT_CANARY", "gate-canary-0123456789abcdef")
     monkeypatch.setenv("SUMMARY_ONLY", "true")
     monkeypatch.setenv("SUMMARY_REASON", "Sensitive area: needs-maintainer.")
 

@@ -191,6 +191,15 @@ def test_escalated_review_plans_needs_maintainer_label():
     )
 
 
+def test_out_of_scope_review_plans_needs_maintainer_label():
+    actions = plan_review(review(scope_ok=False), context(), {})
+
+    assert any(
+        action.kind == "add_labels" and "needs-maintainer" in action.payload["labels"]
+        for action in actions
+    )
+
+
 def test_head_sha_mismatch_does_not_plan_a_review():
     assert plan_review(review(head_sha="c" * 40), context(), {}) == []
 

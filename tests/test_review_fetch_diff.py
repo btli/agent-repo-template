@@ -546,8 +546,14 @@ def test_review_apply_limited_files_escalate_and_post_summary_only(
         tmp_path, monkeypatch, api=api, sensitive=sensitive
     )
     artifact = json.loads(review_path.read_text())
+    artifact["summary"] = "Model-only summary must be discarded."
     artifact["findings"] = [
-        {"severity": "low", "path": "src/a.py", "line": 1, "body": "Review this line."}
+        {
+            "severity": "low",
+            "path": "src/a.py",
+            "line": 1,
+            "body": "Unverified finding must be discarded.",
+        }
     ]
     review_path.write_text(json.dumps(artifact))
 
@@ -555,6 +561,10 @@ def test_review_apply_limited_files_escalate_and_post_summary_only(
     assert len(api.review_posts) == 1
     assert api.review_posts[0]["comments"] == []
     assert any("needs-maintainer" in post["labels"] for post in api.label_posts)
+    assert "Model-only summary must be discarded." not in api.review_posts[0]["body"]
+    assert "Unverified finding must be discarded." not in api.review_posts[0]["body"]
+    assert "Automated review skipped." in api.review_posts[0]["body"]
+    assert "needs-maintainer" in api.review_posts[0]["body"]
 
 
 def test_review_apply_changed_files_limit_escalates_independently_of_summary_helper(
@@ -595,9 +605,14 @@ def test_review_apply_changed_files_limit_escalates_independently_of_summary_hel
     assert any("needs-maintainer" in post["labels"] for post in api.label_posts)
 
 
-def test_review_apply_does_not_write_if_head_moves_during_files_fetch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("event_name", ["pull_request_target", "issue_comment"])
+def test_review_apply_does_not_write_if_head_moves_during_files_fetch(
+    tmp_path, monkeypatch, event_name
+):
     api = ReviewApplyAPI(move_head_during_files=True)
-    command, review_path, _ = _review_apply_setup(tmp_path, monkeypatch, api=api)
+    command, review_path, _ = _review_apply_setup(
+        tmp_path, monkeypatch, api=api, event_name=event_name
+    )
     policy_calls = []
     policy = command._policy
     monkeypatch.setattr(

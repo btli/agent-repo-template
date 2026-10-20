@@ -29,6 +29,24 @@ def _alert(ctx: ApplyContext, message: str) -> list[Action]:
     ]
 
 
+def summary_only_review(run_id: str, base_sha: str, head_sha: str, reason: str) -> dict:
+    return {
+        "schema_version": "1",
+        "run_id": run_id,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "summary": f"Automated review skipped. {reason}",
+        "findings": [],
+        "scope_ok": True,
+        "tests_missing": False,
+        "docs_needed": False,
+        "escalate": {
+            "to": "maintainer",
+            "reason": reason[:500] or "Review needs a maintainer.",
+        },
+    }
+
+
 def plan_review(review: dict, ctx: ApplyContext, index: dict[str, set[int]]) -> list[Action]:
     try:
         errors = check_identity(review, ctx, "review")

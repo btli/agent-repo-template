@@ -14,6 +14,9 @@ jobs:
   agent-propose-review:
     runs-on: ubuntu-24.04
     environment: agent-propose-review
+    concurrency:
+      group: agent-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     permissions:
       actions: read
       contents: read
@@ -61,6 +64,7 @@ jobs:
           mode: propose
           config-dir: ${{ github.workspace }}/agent-review-policy/.agents
           expected-head-sha: ${{ steps.gate.outputs.head_sha }}
+          canary: ${{ steps.gate.outputs.canary }}
           files-file: ${{ runner.temp }}/agent-review/files.json
           output-file: ${{ runner.temp }}/agent-review/review.json
           run-id: ${{ github.run_id }}

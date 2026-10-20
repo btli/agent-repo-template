@@ -15,9 +15,7 @@ def _valid_path(value: object) -> bool:
         and not any(character in value for character in "\x00\r\n")
         and not value.startswith("/")
         and "\\" not in value
-        and all(
-            component not in {"", ".", ".."} for component in value.removeprefix("/").split("/")
-        )
+        and all(component not in {"", ".", ".."} for component in value.split("/"))
     )
 
 

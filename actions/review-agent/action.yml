@@ -80,6 +80,7 @@ runs:
         RUN_ID: ${{ inputs.run-id }}
         BASE_SHA: ${{ steps.fetch.outputs.base_sha }}
         HEAD_SHA: ${{ steps.fetch.outputs.head_sha }}
+        AGENT_CANARY: ${{ inputs.canary }}
         SUMMARY_ONLY: ${{ steps.fetch.outputs.summary_only }}
         SUMMARY_REASON: ${{ steps.fetch.outputs.summary_reason }}
         API_KEY_ENV: ${{ inputs.api-key-env }}
