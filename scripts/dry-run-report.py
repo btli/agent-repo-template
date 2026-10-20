@@ -445,13 +445,22 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
             "its base_sha do not allow."
         )
         lines.extend(violations)
+        skipped_parts = []
         if policy is None:
             lines.append(
                 f"- Not evaluated: {unchecked} type:/area: labels, because the default "
                 "branch's `.agents/` could not be loaded."
             )
+            skipped_parts.append("taxonomy labels: `.agents/` could not be loaded")
+        if unverifiable:
+            # A close that cannot be judged must not let the criterion read as clean.
+            lines.append(
+                f"- Not evaluated: {len(unverifiable)} bot closes are unverifiable (listed below)."
+            )
+            skipped_parts.append(f"{len(unverifiable)} unverifiable bot closes")
+        if skipped_parts:
             repo_stats["not_evaluated"].append(
-                f"{ABORT_OUT_OF_POLICY} (taxonomy labels: `.agents/` could not be loaded)"
+                f"{ABORT_OUT_OF_POLICY} ({'; '.join(skipped_parts)})"
             )
     else:
         lines.append("- Not evaluated; pass --bot-login.")

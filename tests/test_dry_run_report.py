@@ -107,6 +107,7 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
         "- #3: closed 2026-10-12T12:00:00Z; its run 104's decision does not allow a close",
         "- #13: closed 2026-10-15T12:00:00Z; its run 111's decision does not allow a close",
         "- #27: closed 2026-10-19T12:00:00Z; its run 122's decision does not allow a close",
+        "- Not evaluated: 6 bot closes are unverifiable (listed below).",
     ]
     assert _lines(sections["Unverifiable bot closes"]) == [
         "- #5: closed 2026-10-01T12:00:00Z with no readable decision record",
@@ -121,6 +122,7 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
         "- ABORT: a reopen rate above 5% for `agent:closed`",
         "- ABORT: a Tier-2 key reaching 80% of its budget twice in one week. "
         "The response is to set `triage.rca_authors: known`.",
+        "- NOT EVALUATED: any out-of-policy action (6 unverifiable bot closes)",
     ]
 
     calls = [json.loads(line) for line in Path(os.environ["FAKE_GH_LOG"]).read_text().splitlines()]
@@ -178,6 +180,26 @@ def test_closes_are_judged_by_the_policy_at_their_base_sha(fake_gh, capsys):
     )
 
 
+def test_unverifiable_close_keeps_an_otherwise_clean_report_not_evaluated(fake_gh, capsys):
+    def only_issue_4_closed_without_history(responses):
+        for key in list(responses):
+            if key.endswith("/events") and key != f"{REPO}/issues/4/events":
+                responses[key] = {"json": []}
+        responses[f"{REPO}/contents/.agents/config.yml?ref={'a' * 40}"] = {"json": {}}
+
+    _edit(fake_gh, only_issue_4_closed_without_history)
+    sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
+    assert _lines(sections["Out-of-policy actions"])[1:] == [
+        "- Not evaluated: 1 bot closes are unverifiable (listed below)."
+    ]
+    assert "- 0 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert _lines(sections["Abort criteria"]) == [
+        "- NOT EVALUATED: any out-of-policy action (1 unverifiable bot closes)",
+        "- No evaluated criterion triggered.",
+    ]
+    assert "None triggered" not in sections["Abort criteria"]
+
+
 def test_area_label_needs_labels_yml_as_well_as_areas_yml(fake_gh, capsys):
     labels = (ROOT / "evals" / "labels.yml").read_text().replace("  - area:cli\n", "")
     _edit(fake_gh, lambda responses: _set_policy_file(responses, "labels.yml", labels))
@@ -191,7 +213,7 @@ def test_unloadable_policy_marks_taxonomy_and_close_checks_not_evaluated(fake_gh
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     # The P1 and P0 labels need no policy; type:bug, type:unauthorized and area:cli cannot be
     # checked. Closes are still judged by the policy at their own base_sha.
-    assert _lines(sections["Out-of-policy actions"])[-1] == (
+    assert _lines(sections["Out-of-policy actions"])[-2] == (
         "- Not evaluated: 3 type:/area: labels, because the default branch's `.agents/` could "
         "not be loaded."
     )
