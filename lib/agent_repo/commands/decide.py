@@ -72,6 +72,11 @@ def _writer_checker(gh: GitHub) -> Callable[[str], bool]:
     return is_writer
 
 
+def _credential_stop(scan_findings: list[str]) -> Proposal:
+    reason = "context-unscannable" if scan_findings == ["scan_budget"] else "credential-in-issue"
+    return Proposal(("needs-maintainer",), None, False, False, (reason,), False, None, False, True)
+
+
 def _candidate_list(gh: GitHub, event: Event) -> list[Candidate]:
     try:
         return duplicate_candidates(gh, event)
@@ -210,7 +215,6 @@ def main(argv: list[str]) -> int:
             [secret for secret in (gh_token, system_one_key) if secret],
             canary,
         )
-        scan_budget_exceeded = scan_findings == ["scan_budget"]
         context_scan_failed = bool(scan_findings)
         missing = (
             missing_fields(event.body, required)
@@ -219,20 +223,7 @@ def main(argv: list[str]) -> int:
         )
         security = not context_scan_failed and security_hit(issue_context)
         if context_scan_failed:
-            escalate_reason = (
-                "context-unscannable" if scan_budget_exceeded else "credential-in-issue"
-            )
-            proposal = Proposal(
-                ("needs-maintainer",),
-                None,
-                False,
-                False,
-                (escalate_reason,),
-                False,
-                None,
-                False,
-                True,
-            )
+            proposal = _credential_stop(scan_findings)
             answers = {}
             tier = 0
             issue_context = ""
@@ -250,28 +241,42 @@ def main(argv: list[str]) -> int:
             issue_context = ""
         else:
             candidates = _candidate_list(gh, event)
-            context_path.parent.mkdir(parents=True, exist_ok=True)
-            context_path.write_text(issue_context, encoding="utf-8")
-            questions = build_questions(charter, config, candidates)
-            answers = _model_answers(config, charter_text, issue_context, questions, canary)
-            proposal = route(answers, config, event, tier2_allowed, candidates)
-            if "security-uncertain" in proposal.escalate_reasons:
+            provider_context = "\n".join(
+                (issue_context, *(candidate.title for candidate in candidates))
+            )
+            candidate_scan_findings = find_leaks(
+                provider_context,
+                [secret for secret in (gh_token, system_one_key) if secret],
+                canary,
+            )
+            if candidate_scan_findings:
+                proposal = _credential_stop(candidate_scan_findings)
+                answers = {}
+                tier = 0
                 issue_context = ""
+            else:
+                context_path.parent.mkdir(parents=True, exist_ok=True)
                 context_path.write_text(issue_context, encoding="utf-8")
-            if proposal.escalate and tier2_allowed:
-                counter_time = datetime.now(UTC)
-                cap_status = tier2_cap_status(gh, config, event, counter_time)
-                if cap_status != "available":
-                    tier2_allowed = False
-                    proposal = route(
-                        answers,
-                        config,
-                        event,
-                        tier2_allowed,
-                        candidates,
-                        tier2_check_failed=cap_status == "error",
-                    )
-            tier = 1
+                questions = build_questions(charter, config, candidates)
+                answers = _model_answers(config, charter_text, issue_context, questions, canary)
+                proposal = route(answers, config, event, tier2_allowed, candidates)
+                if "security-uncertain" in proposal.escalate_reasons:
+                    issue_context = ""
+                    context_path.write_text(issue_context, encoding="utf-8")
+                if proposal.escalate and tier2_allowed:
+                    counter_time = datetime.now(UTC)
+                    cap_status = tier2_cap_status(gh, config, event, counter_time)
+                    if cap_status != "available":
+                        tier2_allowed = False
+                        proposal = route(
+                            answers,
+                            config,
+                            event,
+                            tier2_allowed,
+                            candidates,
+                            tier2_check_failed=cap_status == "error",
+                        )
+                tier = 1
         context_path.parent.mkdir(parents=True, exist_ok=True)
         context_path.write_text(issue_context, encoding="utf-8")
         artifact = to_decision(proposal, answers, run_id, base_sha, tier)

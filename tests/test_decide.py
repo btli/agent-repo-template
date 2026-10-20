@@ -1720,6 +1720,64 @@ def test_command_blocks_gate_canary_found_alone_in_issue(tmp_path, monkeypatch, 
     assert canary not in output_text
 
 
+def test_command_blocks_credential_in_duplicate_candidate_title(tmp_path, monkeypatch, capsys):
+    from agent_repo.commands import decide as command
+
+    gh_token = "synthetic-gh-token-0123456789abcdef"
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path, "Exports are slow"
+    )
+    context_path.write_text("stale sensitive issue text")
+    ask_calls = []
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            assert token == gh_token
+            assert repo == EVENT.repo
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {
+                    "items": [
+                        {
+                            "number": 30,
+                            "title": f"{EVENT.title} {gh_token}",
+                            "body": "A related export issue",
+                        }
+                    ]
+                }
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(
+        command,
+        "ask",
+        lambda *args, **kwargs: ask_calls.append((args, kwargs)),
+    )
+    set_command_environment(monkeypatch, tmp_path, event_path)
+    monkeypatch.setenv("GH_TOKEN", gh_token)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+
+    artifact_text = decision_path.read_text()
+    output_text = (tmp_path / "output").read_text()
+    context_text = context_path.read_text()
+    captured = capsys.readouterr()
+    artifact = json.loads(artifact_text)
+    assert validate(artifact, load_schema("decision")) == []
+    assert artifact["tier"] == 0
+    assert artifact["labels"] == ["needs-maintainer"]
+    assert artifact["escalate"] == {"to": "maintainer", "reason": "credential-in-issue"}
+    assert context_text == ""
+    assert ask_calls == []
+    assert "tier2=false" in output_text
+    for surface in (captured.out, captured.err, artifact_text, context_text, output_text):
+        assert gh_token not in surface
+
+
 def test_command_cap_check_error_for_confident_bug_hands_off_in_apply_plan(tmp_path, monkeypatch):
     from agent_repo.commands import decide as command
     from agent_repo.config import Area
