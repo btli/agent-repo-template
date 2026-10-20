@@ -175,8 +175,14 @@ def binary_file_bytes(work: Path, git_dir: Path, base_sha: str) -> list[bytes]:
     paths = [work / os.fsdecode(name) for name in names]
     # A link's target is text in the patch; a linked file or parent dir could leave the tree.
     regular = [path for path in paths if path.is_file() and not path.is_symlink()]
-    files = [path.read_bytes() for path in regular if path.resolve().is_relative_to(work)]
-    return blobs + files
+    inside = [path for path in regular if path.resolve().is_relative_to(work)]
+    # The patch encodes the blob git makes with the path's attributes, such as a re-encoding.
+    hashed = [
+        run_git(work, git_dir, "hash-object", "-w", f"--path={path.relative_to(work)}", str(path))
+        for path in inside
+    ]
+    encoded = [run_git(work, git_dir, "cat-file", "blob", oid.strip().decode()) for oid in hashed]
+    return blobs + [path.read_bytes() for path in inside] + encoded
 
 
 def read_optional(path: Path) -> str:
@@ -277,6 +283,12 @@ def run_agent(output: Path, canary: str) -> str:
         raise Refused("agent output exceeds the outbound scan budget")
     if leaks:
         raise Refused("credential or canary in agent output")
+    if patch is not None:
+        changed = run_git(work, git_dir, "diff", "--name-only", "-z", "--no-renames", base_sha)
+        # Attributes decide how git encodes shipped content, so a fix may not change them.
+        names = [os.path.basename(name).lower() for name in changed.split(b"\0")]
+        if b".gitattributes" in names:
+            raise Refused("agent output changes .gitattributes")
     write_artifact(output, artifact, patch)
     return artifact["status"]
 

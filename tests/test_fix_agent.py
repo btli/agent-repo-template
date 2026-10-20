@@ -32,8 +32,9 @@ with (home / "calls.jsonl").open("a") as stream:
 mode = (home / "mode").read_text()
 value = {key: re.search("^" + key + ": (\\\\S+)$", prompt, re.M)[1] for key in ["Run", "Base"]}
 canary = re.search("^Private canary: (\\\\S+)$", prompt, re.M)[1]
-(work / "lib.py").write_text("def add(a, b):\\n    return a + b\\n")
-(work / "test_lib.py").write_text("def test_add():\\n    assert add(1, 2) == 3\\n")
+if mode != "attributes_only":
+    (work / "lib.py").write_text("def add(a, b):\\n    return a + b\\n")
+    (work / "test_lib.py").write_text("def test_add():\\n    assert add(1, 2) == 3\\n")
 key = os.environ["LLM_API_KEY"]
 outputs = {"canary": canary, "split_canary": "-".join(canary), "oversized": "x" * 70000,
            "encoded_key": base64.b64encode(key.encode()).decode()}
@@ -44,6 +45,11 @@ if mode == "nul_canary":
 if mode == "binary_attribute":
     (work / ".gitattributes").write_text("* binary\\n")
     (work / "notes.txt").write_text(canary)
+if mode == "ebcdic_attribute":
+    (work / ".gitattributes").write_text("secret.dat binary working-tree-encoding=IBM037\\n")
+    (work / "secret.dat").write_bytes(("token=" + canary).encode("cp037"))
+if mode == "attributes_only":
+    (work / ".gitattributes").write_text("*.py text eol=crlf\\n")
 if mode == "outside_symlink":
     (home / "outside.txt").write_text(canary)
     (work / "b.bin").unlink()
@@ -432,6 +438,10 @@ LEAKS = {
     "nul_canary": "credential or canary",
     "binary_attribute": "credential or canary",
     "large_binary": "outbound scan budget",
+    # The raw bytes are EBCDIC, but the patch encodes the blob git re-encodes to UTF-8.
+    "ebcdic_attribute": "credential or canary",
+    # Attributes decide how git encodes shipped content, so a fix may not change them.
+    "attributes_only": "agent output changes .gitattributes",
     # The limit is in bytes, and these are under it in decoded characters.
     "wide_text": "outbound scan budget",
     "wide_binary": "outbound scan budget",
