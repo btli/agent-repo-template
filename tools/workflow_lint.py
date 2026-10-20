@@ -16,11 +16,13 @@ def _mapping(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _action_name(step: dict) -> str:
+def _uses_path(step: dict) -> str:
     uses = step.get("uses")
-    if not isinstance(uses, str):
-        return ""
-    return uses.split("@", 1)[0].rstrip("/").rsplit("/", 1)[-1].casefold()
+    return uses.split("@", 1)[0] if isinstance(uses, str) else ""
+
+
+def _action_name(step: dict) -> str:
+    return _uses_path(step).rstrip("/").rsplit("/", 1)[-1].casefold()
 
 
 def _is_model_action(step: dict) -> bool:
@@ -32,24 +34,16 @@ def _is_model_action(step: dict) -> bool:
 
 
 def _is_app_token_action(step: dict) -> bool:
-    uses = step.get("uses")
-    return isinstance(uses, str) and uses.split("@", 1)[0].endswith("/create-github-app-token")
-
-
-def _cache_name(step: dict) -> str:
-    uses = step.get("uses")
-    if not isinstance(uses, str):
-        return ""
-    return uses.split("@", 1)[0].casefold()
+    return _uses_path(step).endswith("/create-github-app-token")
 
 
 def _is_cache_write(step: dict) -> bool:
-    name = _cache_name(step)
+    name = _uses_path(step).casefold()
     return name == "actions/cache" or name.endswith("/cache/save")
 
 
 def _is_cache_restore(step: dict) -> bool:
-    name = _cache_name(step)
+    name = _uses_path(step).casefold()
     return name == "actions/cache" or name.endswith("/cache/restore")
 
 
@@ -90,17 +84,17 @@ def lint(paths: list[Path]) -> list[str]:
             if not isinstance(steps, list):
                 continue
             step_mappings = [_mapping(step) for step in steps]
-            model_steps = [step for step in step_mappings if _is_model_action(step)]
-            if model_steps and (not events or not events <= ALLOWED_MODEL_EVENTS):
+            model_job = any(_is_model_action(step) for step in step_mappings)
+            if model_job and (not events or not events <= ALLOWED_MODEL_EVENTS):
                 errors.append(
                     f"{path}: model job trigger must be a subset of "
                     f"{sorted(ALLOWED_MODEL_EVENTS)} ({job_name})"
                 )
-            if model_steps and any(_is_cache_write(step) for step in step_mappings):
+            if model_job and any(_is_cache_write(step) for step in step_mappings):
                 errors.append(f"{path}: model job cache write is forbidden ({job_name})")
 
             apply_job = any(_is_app_token_action(step) for step in step_mappings)
-            if apply_job and any(_is_model_action(step) for step in step_mappings):
+            if apply_job and model_job:
                 errors.append(f"{path}: apply job model action is forbidden ({job_name})")
             if apply_job and any(_is_cache_restore(step) for step in step_mappings):
                 errors.append(f"{path}: apply job cache restore is forbidden ({job_name})")
