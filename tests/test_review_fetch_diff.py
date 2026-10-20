@@ -61,7 +61,13 @@ class API:
 
 
 def _event_file(
-    tmp_path, name="pull_request_target", *, head="b" * 40, base="a" * 40, base_ref="main"
+    tmp_path,
+    name="pull_request_target",
+    *,
+    head="b" * 40,
+    base="a" * 40,
+    base_ref="main",
+    action="opened",
 ):
     source = (
         "tests/fixtures/events/issue_comment.created.pr.json"
@@ -71,6 +77,7 @@ def _event_file(
     payload = json.loads(Path(source).read_text())
     payload["repository"]["full_name"] = "your-org/project"
     payload["repository"]["default_branch"] = "main"
+    payload["action"] = action
     if name == "pull_request_target":
         payload["pull_request"]["base"].update({"ref": base_ref, "sha": base})
         payload["pull_request"]["head"]["sha"] = head
@@ -88,8 +95,16 @@ def _fetch_env(monkeypatch, event_path, output, *, name, base="a" * 40, expected
     monkeypatch.setenv("EXPECTED_HEAD_SHA", expected_head)
 
 
-def _fetch_setup(tmp_path, monkeypatch, api, *, name="pull_request_target"):
-    event_path = _event_file(tmp_path, name)
+def _fetch_setup(
+    tmp_path,
+    monkeypatch,
+    api,
+    *,
+    name="pull_request_target",
+    event_base="a" * 40,
+    event_action="opened",
+):
+    event_path = _event_file(tmp_path, name, base=event_base, action=event_action)
     output = tmp_path / "github-output"
     output.write_text("")
     config_dir = tmp_path / "agents"
@@ -255,14 +270,32 @@ def test_fetch_rejects_event_head_that_differs_from_api(tmp_path):
         _pull(GitHub("test-token", event.repo, transport=transport), event)
 
 
-def test_fetch_rejects_policy_sha_that_differs_from_event_base(tmp_path, monkeypatch):
-    api = API()
-    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
+@pytest.mark.parametrize("action", ["ready_for_review", "reopened"])
+def test_fetch_binds_policy_sha_when_target_event_has_stale_base(tmp_path, monkeypatch, action):
+    api = API(base_sha="a" * 40)
+    config_dir, output = _fetch_setup(
+        tmp_path, monkeypatch, api, event_base="a" * 40, event_action=action
+    )
     monkeypatch.setenv("GITHUB_SHA", "c" * 40)
 
-    with pytest.raises(ValueError, match="event base does not match policy SHA"):
-        fetch(tmp_path / "files.json", config_dir)
-    assert not any(call[1].endswith("/files") for call in api.calls)
+    base_sha, head_sha, limited, reason = fetch(tmp_path / "files.json", config_dir)
+
+    assert base_sha == "c" * 40
+    assert head_sha == "b" * 40
+    assert limited is False
+    assert reason == ""
+    assert "base_sha=" + "c" * 40 in output.read_text()
+    assert "head_sha=" + "b" * 40 in output.read_text()
+
+
+def test_fetch_accepts_api_base_sha_different_from_event(tmp_path, monkeypatch):
+    api = API(base_sha="a" * 40)
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api, event_base="c" * 40)
+    monkeypatch.setenv("GITHUB_SHA", "c" * 40)
+
+    base_sha, head_sha, limited, _ = fetch(tmp_path / "files.json", config_dir)
+
+    assert (base_sha, head_sha, limited) == ("c" * 40, "b" * 40, False)
 
 
 def test_fetch_rejects_event_base_ref_retarget_race(tmp_path, monkeypatch):
@@ -276,11 +309,11 @@ def test_fetch_rejects_event_base_ref_retarget_race(tmp_path, monkeypatch):
     assert not api.calls
 
 
-def test_fetch_rejects_api_base_sha_that_changed_since_target_event(tmp_path, monkeypatch):
-    api = API(base_sha="c" * 40)
+def test_fetch_rejects_api_base_ref_that_is_not_default_branch(tmp_path, monkeypatch):
+    api = API(base_ref="release")
     config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
 
-    with pytest.raises(ValueError, match="base changed since event"):
+    with pytest.raises(ValueError, match="not based on the default branch"):
         fetch(tmp_path / "files.json", config_dir)
     assert not any(call[1].endswith("/files") for call in api.calls)
 
@@ -355,17 +388,25 @@ def _review_apply_setup(
     scan_keys="scan-key",
     event_name="pull_request_target",
     sensitive=False,
+    event_base_sha=None,
+    review_base_sha="a" * 40,
+    event_action="opened",
 ):
     from agent_repo.commands import review_apply
 
-    event_path = _event_file(tmp_path, event_name, base=base_sha)
+    event_path = _event_file(
+        tmp_path,
+        event_name,
+        base=base_sha if event_base_sha is None else event_base_sha,
+        action=event_action,
+    )
     review_path = tmp_path / "review.json"
     review_path.write_text(
         json.dumps(
             {
                 "schema_version": "1",
                 "run_id": "99",
-                "base_sha": "a" * 40,
+                "base_sha": review_base_sha,
                 "head_sha": "b" * 40,
                 "summary": "Review summary.",
                 "findings": [],
@@ -379,7 +420,7 @@ def _review_apply_setup(
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
-    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_SHA", base_sha)
     monkeypatch.setenv("GITHUB_RUN_ID", "99")
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     monkeypatch.setenv("GH_TOKEN", "test-token")
@@ -423,6 +464,39 @@ def test_review_apply_fetches_its_own_file_list_at_bound_head(tmp_path, monkeypa
     assert api.review_posts[0]["comments"][0]["path"] == "src/a.py"
     assert api.review_posts[0]["comments"][0]["line"] == 1
     assert "COMMENT review posted" in summary.read_text()
+
+
+def test_review_apply_accepts_stale_target_base_and_keeps_policy_sha(tmp_path, monkeypatch):
+    api = ReviewApplyAPI(base_sha="a" * 40)
+    command, review_path, _ = _review_apply_setup(
+        tmp_path,
+        monkeypatch,
+        api=api,
+        base_sha="c" * 40,
+        event_base_sha="a" * 40,
+        review_base_sha="c" * 40,
+        event_action="reopened",
+    )
+
+    assert command.main([str(review_path)]) == 0
+    assert ("GET", "pulls/24/files") in api.calls
+    assert len(api.review_posts) == 1
+    assert api.review_posts[0]["commit_id"] == "b" * 40
+
+
+def test_review_apply_accepts_api_base_sha_different_from_event(tmp_path, monkeypatch):
+    api = ReviewApplyAPI(base_sha="a" * 40)
+    command, review_path, _ = _review_apply_setup(
+        tmp_path,
+        monkeypatch,
+        api=api,
+        base_sha="c" * 40,
+        event_base_sha="c" * 40,
+        review_base_sha="c" * 40,
+    )
+
+    assert command.main([str(review_path)]) == 0
+    assert len(api.review_posts) == 1
 
 
 @pytest.mark.parametrize(
@@ -546,9 +620,9 @@ def test_review_apply_main_rejects_base_mismatch_before_policy_or_write(tmp_path
         command, "_policy", lambda *args: (policy_calls.append(args[1]), policy(*args))[1]
     )
 
-    assert command.main([str(review_path)]) == 1
+    assert command.main([str(review_path)]) == 0
     assert not any(method == "POST" for method, _ in api.calls)
-    assert "trusted review inputs unavailable" in summary.read_text()
+    assert "policy base identity mismatch" in summary.read_text()
     assert not policy_calls
 
 

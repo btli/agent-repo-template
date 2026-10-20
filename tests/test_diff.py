@@ -120,6 +120,15 @@ def test_malformed_file_patch_fails_closed(patch, additions, deletions):
         [_file("@@ -1 +1 @@\n-old\n+new", status=[])],
         [_file("@@ -1 +1 @@\n-old\n+new", status="renamed")],
         [_file("@@ -1 +1 @@\n-old\n+new", additions=True)],
+        [
+            {
+                "filename": "src/file.py",
+                "status": "modified",
+                "additions": -1,
+                "deletions": 1,
+                "changes": 0,
+            }
+        ],
         [_file("@@ -1 +1 @@\n-old\n+new", changes=3)],
         [_file("@@ -1 +1 @@\n-old\n+new", patch=3)],
         [_file("@@ -1 +1 @@\n-old\n+new", previous_filename="src/old.py")],
@@ -134,6 +143,7 @@ def test_malformed_file_patch_fails_closed(patch, additions, deletions):
         "nonstr-status",
         "rename-without-previous-filename",
         "boolean-count",
+        "negative-count",
         "count-mismatch",
         "nontext-patch",
         "previous-filename-on-modified",
@@ -151,8 +161,26 @@ def test_invalid_file_entries_fail_closed(entries):
 
 @pytest.mark.parametrize(
     "filename",
-    ["../.github/workflows/ci.yml", "a//b", "./a", "a\\b", "/absolute/path"],
-    ids=["parent-component", "empty-component", "dot-component", "backslash", "absolute"],
+    [
+        "../.github/workflows/ci.yml",
+        "a//b",
+        "./a",
+        "a\\b",
+        "/absolute/path",
+        "a\nb",
+        "a\x00b",
+        "a\rb",
+    ],
+    ids=[
+        "parent-component",
+        "empty-component",
+        "dot-component",
+        "backslash",
+        "absolute",
+        "newline",
+        "nul",
+        "carriage-return",
+    ],
 )
 def test_noncanonical_paths_fail_closed(filename):
     entry = _file(

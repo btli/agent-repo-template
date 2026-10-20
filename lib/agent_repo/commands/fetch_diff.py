@@ -17,9 +17,6 @@ def _pull(gh: GitHub, event: Event) -> dict:
     base = value.get("base")
     if not isinstance(base, dict) or base.get("ref") != event.default_branch:
         raise ValueError("pull request is not based on the default branch")
-    if event.name == "pull_request_target":
-        if event.base_sha != base.get("sha"):
-            raise ValueError("pull request base changed since event")
     head_sha = value["head"].get("sha")
     if not isinstance(head_sha, str) or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
         raise ValueError("invalid pull request head")
@@ -60,8 +57,6 @@ def fetch(files_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
     base_sha = os.environ["GITHUB_SHA"]
     if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
         raise ValueError("invalid policy SHA")
-    if event.name == "pull_request_target" and event.base_sha != base_sha:
-        raise ValueError("event base does not match policy SHA")
     if _event_base_ref(event_name, event_path) not in (None, event.default_branch):
         raise ValueError("event pull request is not based on the default branch")
     expected_head_sha = os.environ["EXPECTED_HEAD_SHA"]

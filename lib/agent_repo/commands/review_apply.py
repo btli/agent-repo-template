@@ -39,8 +39,6 @@ def main(argv: list[str]) -> int:
                 return 0
             raise
         base_sha = os.environ["GITHUB_SHA"]
-        if event.name == "pull_request_target" and event.base_sha != base_sha:
-            raise ValueError
         if (
             pull["head"]["sha"] != expected_head_sha
             or (event.head_sha is not None and event.head_sha != expected_head_sha)
