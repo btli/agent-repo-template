@@ -1,0 +1,11 @@
+issue:
+  title: "Colored output shows escape codes in the Windows console"
+  body: |
+    Larkspur 2.4.1, Python 3.12, Windows 11 cmd.exe.
+
+    `larkspur check config.toml` prints `\x1b[31m` before every error. Expected plain or colored text. `--no-color` works around it.
+expected:
+  labels: [type:bug, area:cli, P3]
+  area: cli
+  priority: P3
+  outcome: label

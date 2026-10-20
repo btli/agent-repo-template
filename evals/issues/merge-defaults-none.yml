@@ -1,0 +1,15 @@
+issue:
+  title: "Default values are not applied when a key is explicitly null"
+  body: |
+    Larkspur 2.3.2, Python 3.11.
+
+    ```yaml
+    workers: null
+    ```
+
+    with schema default `workers: 4` returns `None`. Expected 4, per the merge-order guide. Removing the key works around it.
+expected:
+  labels: [type:bug, area:merge, P2]
+  area: merge
+  priority: P2
+  outcome: label

@@ -1,0 +1,16 @@
+issue:
+  title: "INI values containing % are mangled"
+  body: |
+    Larkspur 2.4.0, Python 3.12.
+
+    ```ini
+    [log]
+    format = %(asctime)s %(message)s
+    ```
+
+    The loaded value is `%(asctime)s` with the rest dropped. Expected the full string. Error output: none, the value is just truncated. Doubling the percent signs avoids it.
+expected:
+  labels: [type:bug, area:parser, P2]
+  area: parser
+  priority: P2
+  outcome: label

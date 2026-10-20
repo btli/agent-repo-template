@@ -1,0 +1,9 @@
+issue:
+  title: "Validation is wrong for my schema"
+  body: |
+    Some of my keys are reported as invalid even though they look right to me. It started recently.
+expected:
+  labels: [type:bug, area:validation, P2, needs-info]
+  area: validation
+  priority: P2
+  outcome: needs-info

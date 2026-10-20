@@ -1,0 +1,19 @@
+issue:
+  title: "YAML merge keys (<<) are ignored"
+  body: |
+    Larkspur 2.4.1, Python 3.11.
+
+    ```yaml
+    base: &base
+      timeout: 5
+    prod:
+      <<: *base
+      retries: 3
+    ```
+
+    `larkspur.load("c.yml")["prod"]["timeout"]` raises KeyError. Expected 5. Repeating the keys by hand works.
+expected:
+  labels: [type:bug, area:parser, P2]
+  area: parser
+  priority: P2
+  outcome: label

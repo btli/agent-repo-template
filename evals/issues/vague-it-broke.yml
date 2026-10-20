@@ -1,0 +1,9 @@
+issue:
+  title: "It doesn't work anymore"
+  body: |
+    After upgrading, loading my config fails. Please fix.
+expected:
+  labels: [type:bug, area:unknown, P2, needs-info]
+  area: unknown
+  priority: P2
+  outcome: needs-info

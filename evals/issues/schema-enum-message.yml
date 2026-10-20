@@ -1,0 +1,9 @@
+issue:
+  title: "Show the allowed values when an enum check fails"
+  body: |
+    When a value fails an enum check, the error says `invalid value`. It would help to list the allowed values in the message, like `expected one of: debug, info, warning`.
+expected:
+  labels: [type:feature, area:validation, P3]
+  area: validation
+  priority: P3
+  outcome: label

@@ -1,0 +1,22 @@
+issue:
+  title: "Loader crashes on nested inline tables in TOML"
+  body: |
+    Larkspur 2.4.1, Python 3.12.
+
+    Loading this file raises `KeyError: 'db'` instead of returning the tree:
+
+    ```toml
+    [app]
+    db = { host = "localhost", pool = { size = 5 } }
+    ```
+
+    ```python
+    larkspur.load("app.toml")
+    ```
+
+    Expected: a nested mapping. Actual: KeyError from `larkspur/parsers/toml.py`. Flattening the inline table works around it.
+expected:
+  labels: [type:bug, area:parser, P2]
+  area: parser
+  priority: P2
+  outcome: label

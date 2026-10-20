@@ -1,0 +1,18 @@
+issue:
+  title: "Validation errors report line 1 for every key in YAML files"
+  body: |
+    Larkspur 2.4.1, Python 3.12.
+
+    Any schema error in a YAML file says `config.yml:1`. The key `server.port` is on line 14. TOML files report the right line. Minimal example attached below.
+
+    ```yaml
+    server:
+      port: "not-a-number"
+    ```
+
+    Expected `config.yml:2`. Actual `config.yml:1: server.port: expected int`.
+expected:
+  labels: [type:bug, area:validation, P2]
+  area: validation
+  priority: P2
+  outcome: label

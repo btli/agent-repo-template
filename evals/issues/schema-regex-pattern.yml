@@ -1,0 +1,9 @@
+issue:
+  title: "Support regular-expression patterns for string keys"
+  body: |
+    Please add a `pattern` constraint to string fields in the schema so values such as hostnames can be checked without a custom validator.
+expected:
+  labels: [type:feature, area:validation, P3]
+  area: validation
+  priority: P3
+  outcome: label
