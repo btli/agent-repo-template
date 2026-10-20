@@ -18,6 +18,8 @@ def render_consumer(
 
     temporary_root = Path(tempfile.gettempdir()).resolve()
     temporary_parent = temporary_parent.resolve() if temporary_parent else temporary_root
+    if temporary_parent.is_relative_to(ROOT.resolve()):
+        raise ValueError("render destination must be outside the repository root")
     if not temporary_parent.is_relative_to(temporary_root):
         raise ValueError("render destination must be inside the system temporary directory")
     output = Path(tempfile.mkdtemp(prefix="agent-repo-consumer-", dir=temporary_parent))

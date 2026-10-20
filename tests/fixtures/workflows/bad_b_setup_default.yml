@@ -1,0 +1,10 @@
+name: Invalid model setup default cache
+on:
+  issues:
+    types: [opened]
+jobs:
+  model:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: astral-sh/setup-uv@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v1.0.0
+      - uses: btli/agent-repo-template/actions/triage-agent@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v1.0.0

@@ -16,6 +16,7 @@ FIXTURES = Path("tests/fixtures/workflows")
         ("bad_a.yml", "model job trigger"),
         ("bad_b.yml", "cache write"),
         ("bad_b_setup.yml", "cache write"),
+        ("bad_b_setup_default.yml", "cache write"),
         ("bad_c.yml", "apply job model action"),
         ("bad_c_setup_cache.yml", "cache restore"),
         ("bad_d.yml", "agent-apply environment"),
@@ -23,10 +24,13 @@ FIXTURES = Path("tests/fixtures/workflows")
         ("bad_e.yml", "SHA-pinned"),
         ("bad_e_flow.yml", "SHA-pinned"),
         ("bad_e_job.yml", "SHA-pinned"),
+        ("bad_e_no_version.yml", "vX.Y.Z comment"),
         ("bad_f.yml", "event expression in run"),
         ("bad_f_format.yml", "event expression in run"),
         ("bad_f_tojson.yml", "event expression in run"),
         ("bad_f_index.yml", "event expression in run"),
+        ("bad_f_context_index.yml", "event expression in run"),
+        ("bad_f_context_function.yml", "event expression in run"),
     ],
 )
 def test_lint_reports_each_workflow_rule(filename: str, rule: str):
@@ -44,3 +48,7 @@ def test_lint_accepts_rendered_consumer_workflows(tmp_path: Path):
 
     assert {path.name for path in workflows} == {"agent-review.yml", "agent-triage.yml"}
     assert lint(workflows) == []
+
+
+def test_lint_ignores_uses_text_inside_run_block():
+    assert lint([FIXTURES / "good_e_run_literal.yml"]) == []

@@ -95,13 +95,6 @@ jobs:
               json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
           )
           PY
-      - name: Share marker source
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: agent-handoff-marker-${{ github.run_id }}
-          path: ${{ runner.temp }}/agent-triage/marker
-          if-no-files-found: error
-          retention-days: 1
       - name: Share triage context
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
