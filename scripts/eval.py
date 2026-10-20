@@ -11,6 +11,7 @@ Results are reported, not gated.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -21,7 +22,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from agent_repo.apply.actions import ApplyContext  # noqa: E402
 from agent_repo.apply.triage import _answer_label, plan_triage  # noqa: E402
 from agent_repo.charter import Charter, lint_charter, parse_charter  # noqa: E402
-from agent_repo.config import ConfigError, RepoConfig, load_config  # noqa: E402
+from agent_repo.config import ConfigError, RepoConfig, is_llm_only, load_config  # noqa: E402
 from agent_repo.event import Event  # noqa: E402
 from agent_repo.schema import load_schema, validate  # noqa: E402
 from agent_repo.yamljson import YamlError, load_yaml  # noqa: E402
@@ -96,7 +97,7 @@ def abort_flags(stats: dict) -> list[str]:
     return flags
 
 
-def close_eligible(
+def plan_actions(
     decision: dict,
     config: RepoConfig,
     charter: Charter,
@@ -104,11 +105,11 @@ def close_eligible(
     number: int = 1,
     repo: str = "your-org/example",
     github: object | None = None,
-) -> bool:
-    """Whether apply's full triage plan for the decision includes the close."""
-    close = decision["close"]
-    if close is None or decision.get("mode") == "llm-only":
-        return False
+) -> list:
+    """Return apply's triage plan for the decision, raising any target-lookup failure."""
+    if decision.get("mode") == "llm-only" and not is_llm_only(config):
+        # An LLM-only decision is planned under the policy that produced it: no System One.
+        config = dataclasses.replace(config, raw={**config.raw, "system_one": None})
     event = Event(
         name="issues",
         action="opened",
@@ -148,6 +149,12 @@ def close_eligible(
     # Apply turns a failed target lookup into a maintainer hand-off; surface it instead.
     if lookup is not None and lookup.error is not None:
         raise lookup.error
+    return actions
+
+
+def close_eligible(decision: dict, config: RepoConfig, charter: Charter, **lookup) -> bool:
+    """Whether apply's full triage plan for the decision includes the close."""
+    actions = plan_actions(decision, config, charter, **lookup)
     return any(action.kind == "close" for action in actions)
 
 
@@ -248,19 +255,20 @@ def _expected(document: dict) -> dict[str, object]:
 def outcome(
     decision: dict, config: RepoConfig, charter: Charter, targets: RecordedTargets | None = None
 ) -> str:
-    """Name the visible result apply would produce for a decision; raises
+    """Name the visible result of apply's triage plan for a decision; raises
     TargetNotRecorded when a duplicate close cannot be judged offline."""
-    if close_eligible(decision, config, charter, github=targets or RecordedTargets(None)):
+    actions = plan_actions(decision, config, charter, github=targets or RecordedTargets(None))
+    labels = {
+        label
+        for action in actions
+        if action.kind == "add_labels"
+        for label in action.payload["labels"]
+    }
+    if any(action.kind == "close" for action in actions):
         return "close"
-    if (
-        decision["close"] is not None
-        or decision["security"]
-        or decision["escalate"] is not None
-        or decision["suggestions"]["priority"] is not None
-        or "needs-maintainer" in decision["labels"]
-    ):
+    if "needs-maintainer" in labels:
         return "needs-maintainer"
-    if decision["needs_info"] is not None:
+    if "needs-info" in labels:
         return "needs-info"
     return "label"
 

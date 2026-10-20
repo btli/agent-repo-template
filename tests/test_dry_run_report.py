@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 NOW = datetime(2026, 10, 20, tzinfo=UTC)
 REPO = "repos/your-org/example"
+DECISION_RECORD_IDS = (2, 5, 7, 9, 13, 22, 24, 26, 28, 30, 32, 34, 36, 40, 42, 44, 46, 48, 50, 52)
+DECISION_RECORD_IDS += (55, 57, 59, 61, 63)
 
 
 def _load_report():
@@ -66,15 +68,16 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     # Only exact agent-decision-<run_id> records count, never hand-off artifacts or copies;
     # the fork run and the run older than 30 days are ignored; issue 1 uses its newest record.
     system_one = sections["Mode: system-one"]
-    assert "- Decided issues: 13" in system_one
+    assert "- Decided issues: 17" in system_one
     # An issue carrying two type: labels is not compared.
     assert "- Type agreement: 67% (3 maintainer-labelled issues)" in system_one
     assert "- Area agreement: 100% (3 maintainer-labelled issues)" in system_one
     # Tier-2-disagreed and below-close_min closes are not candidates; the duplicate of an
     # open target is.
-    # Issue 29's eligible close was left open by the maintainer, so agreement drops to 75%.
-    # Issues 30 (security) and 31 (P1 suggestion) go to a maintainer before any close.
-    assert "- Close candidates: 4, maintainer agreement 75%; close_enable_ready: no" in system_one
+    # Issue 29's eligible close was left open by the maintainer, so agreement is 80% over 4, 26,
+    # 29, 34 and 35. Issues 30 (security) and 31 (P1 suggestion) go to a maintainer first; the
+    # duplicate targets of 19 and 33 are closed now; 37's newest run has no close.
+    assert "- Close candidates: 5, maintainer agreement 80%; close_enable_ready: no" in system_one
 
     llm_only = sections["Mode: llm-only"]
     assert "- Decided issues: 1" in llm_only
@@ -82,7 +85,8 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     assert "Close readiness: not applicable; LLM-only mode never auto-closes." in llm_only
     assert "close_enable_ready" not in llm_only
 
-    # Expired, absent, schema-invalid and undownloadable records are listed, not fatal.
+    # Expired, absent, schema-invalid and undownloadable records are listed, not fatal; the run
+    # whose only marker expired (#32) is ignored.
     assert _lines(sections["Missing decision records"]) == [
         "- #8: run 107 has no readable agent-decision-107",
         "- #11: run 109 has no readable agent-decision-109",
@@ -96,40 +100,56 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
         "- #18: duplicate target lookup failed",
     ]
     # Each bot close followed by the bot's agent:closed label (apply's order) counts: 4, 5, 6,
-    # 21, 26, 27, 30 and both closes of 28, whose first close was reopened. Issue 5 reopened then
+    # 18, 19, 21, 26, 27, 30, 33-37 (36's label shares the close's second) and both closes of 28,
+    # whose first close was reopened. Issue 5 reopened then
     # reclosed; 21 reopened before its close; 22's label came from a person; 23 was never
     # closed; 24's label preceded the close; 25's followed a reopen.
     assert _lines(sections["Reopen rate for agent:closed"]) == [
-        "- 2 of 9 bot closes with agent:closed in the window were reopened (22%)"
+        "- 2 of 16 bot closes with agent:closed in the window were reopened (12%)"
     ]
     # The bot's P1, its P0 on a missing-record issue, type:unauthorized, its LLM-only close,
     # its close under a Tier-2-disagreed decision, and issue 27's close, whose newer run had
     # no close (issue 26's newer run allowed its close), and issue 30's close under a security
     # decision.
-    assert "- 7 actions by example-agent[bot] across 28 issues" in sections["Out-of-policy actions"]
+    # 19's duplicate target closed only after the bot close, so that close stays in policy.
+    # 33's duplicate target was already closed at the bot close; 35's run policy was dry-run;
+    # 37's newer run, whose marker shares the close's second, has no close.
+    assert (
+        "- 10 actions by example-agent[bot] across 33 issues" in sections["Out-of-policy actions"]
+    )
     assert _lines(sections["Out-of-policy actions"])[1:] == [
         "- #3: closed 2026-10-12T12:00:00Z; its run 104's decision does not allow a close",
         "- #13: closed 2026-10-15T12:00:00Z; its run 111's decision does not allow a close",
         "- #27: closed 2026-10-19T12:00:00Z; its run 122's decision does not allow a close",
         "- #30: closed 2026-10-17T12:00:00Z; its run 124's decision does not allow a close",
-        "- Not evaluated: 8 bot closes are unverifiable (listed below).",
+        "- #33: closed 2026-10-17T12:00:00Z; its run 127's decision does not allow a close",
+        "- #35: closed 2026-10-17T12:00:00Z; triage was dry-run in the policy at " + "c" * 40,
+        "- #37: closed 2026-10-18T12:00:00Z; its run 131's decision does not allow a close",
+        "- Not evaluated: 11 bot closes are unverifiable (listed below).",
     ]
     assert _lines(sections["Unverifiable bot closes"]) == [
         "- #5: closed 2026-10-01T12:00:00Z with no readable decision record",
         "- #6: closed 2026-10-05T12:00:00Z with no readable decision record",
+        # The duplicate target #99 cannot be looked up.
+        "- #18: closed 2026-10-17T12:00:00Z with no established duplicate-target state at "
+        "that time",
         "- #21: closed 2026-10-09T12:00:00Z with no readable decision record",
         "- #22: closed 2026-10-08T12:00:00Z with no readable decision record",
         "- #24: closed 2026-10-08T12:00:01Z with no readable decision record",
         "- #25: closed 2026-10-08T12:00:00Z with no readable decision record",
         "- #28: closed 2026-10-10T12:00:00Z with no readable decision record",
         "- #28: closed 2026-10-12T12:00:00Z with no readable decision record",
+        # The duplicate target #44 exists but has no dated history, so its past state is unknown.
+        "- #34: closed 2026-10-17T12:00:00Z with no established duplicate-target state at "
+        "that time",
+        "- #36: closed 2026-10-18T12:00:00Z with no readable decision record",
     ]
     assert _lines(sections["Abort criteria"]) == [
         "- ABORT: any out-of-policy action",
         "- ABORT: a reopen rate above 5% for `agent:closed`",
         "- ABORT: a Tier-2 key reaching 80% of its budget twice in one week. "
         "The response is to set `triage.rca_authors: known`.",
-        "- NOT EVALUATED: any out-of-policy action (8 unverifiable bot closes)",
+        "- NOT EVALUATED: any out-of-policy action (11 unverifiable bot closes)",
     ]
 
     calls = [json.loads(line) for line in Path(os.environ["FAKE_GH_LOG"]).read_text().splitlines()]
@@ -137,28 +157,8 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     downloads = {call[-1] for call in calls if call[-1].endswith("/zip")}
     assert downloads == {
         f"{REPO}/actions/artifacts/{artifact_id}/zip"
-        for artifact_id in (
-            2,
-            5,
-            7,
-            9,
-            13,
-            22,
-            24,
-            26,
-            28,
-            30,
-            32,
-            34,
-            36,
-            40,
-            42,
-            44,
-            46,
-            48,
-            50,
-            52,
-        )
+        # The only zip downloads are the exact-name, unexpired decision records.
+        for artifact_id in (*DECISION_RECORD_IDS,)
     }
 
 
@@ -176,7 +176,7 @@ def test_closes_are_judged_by_their_own_run_after_close_is_disabled(fake_gh, cap
         in (sections["Mode: system-one"])
     )
     # Issue 4's close was eligible under the policy at its run's base_sha, so it stays in policy.
-    assert "- 7 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- 10 actions by example-agent[bot]" in sections["Out-of-policy actions"]
     assert "- #5: closed 2026-10-01T12:00:00Z" in sections["Unverifiable bot closes"]
 
 
@@ -193,15 +193,16 @@ def test_closes_are_judged_by_the_policy_at_their_base_sha(fake_gh, capsys):
     _edit(fake_gh, lambda responses: _set_policy_file(responses, "config.yml", raised))
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     # A later, stricter close_min does not turn issue 4's p=0.95 close into a violation.
-    assert "- 7 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- 10 actions by example-agent[bot]" in sections["Out-of-policy actions"]
 
     def unloadable_history(responses):
         responses[f"{REPO}/contents/.agents/config.yml?ref={'a' * 40}"] = {"json": {}}
 
     _edit(fake_gh, unloadable_history)
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
-    # Without the historical policy, the closes of 3, 4, 13, 26, 27 and 30 cannot be judged.
-    assert "- 3 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    # Without the historical policy at that sha, the closes judged under it cannot be judged;
+    # #35's close, under the dry-run policy at another sha, still counts.
+    assert "- 4 actions by example-agent[bot]" in sections["Out-of-policy actions"]
     assert (
         f"- #4: closed 2026-10-13T12:00:00Z with no loadable policy at {'a' * 40}"
         in (sections["Unverifiable bot closes"])
@@ -237,13 +238,13 @@ def test_failed_event_lookups_make_event_criteria_not_evaluated(fake_gh, capsys)
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     assert "- #4: issue events lookup failed" in sections["Skipped issues"]
     assert (
-        "- Not evaluated: 28 issue event lookups failed (listed under Skipped issues)."
+        "- Not evaluated: 33 issue event lookups failed (listed under Skipped issues)."
         in (sections["Reopen rate for agent:closed"])
     )
     assert _lines(sections["Abort criteria"]) == [
         "- NOT EVALUATED: a reopen rate above 5% for `agent:closed` "
-        "(28 issue event lookups failed)",
-        "- NOT EVALUATED: any out-of-policy action (28 issue event lookups failed)",
+        "(33 issue event lookups failed)",
+        "- NOT EVALUATED: any out-of-policy action (33 issue event lookups failed)",
         "- No evaluated criterion triggered.",
     ]
     assert "None triggered" not in sections["Abort criteria"]
@@ -289,7 +290,7 @@ def test_area_label_needs_labels_yml_as_well_as_areas_yml(fake_gh, capsys):
     _edit(fake_gh, lambda responses: _set_policy_file(responses, "labels.yml", labels))
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     # cli stays in areas.yml, but apply cannot add area:cli without it in labels.yml.
-    assert "- 8 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- 11 actions by example-agent[bot]" in sections["Out-of-policy actions"]
 
 
 def test_unloadable_policy_marks_taxonomy_and_close_checks_not_evaluated(fake_gh, capsys):
@@ -301,7 +302,7 @@ def test_unloadable_policy_marks_taxonomy_and_close_checks_not_evaluated(fake_gh
         "- Not evaluated: 3 type:/area: labels, because the default branch's `.agents/` could "
         "not be loaded."
     )
-    assert "- 6 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- 9 actions by example-agent[bot]" in sections["Out-of-policy actions"]
     assert (
         "- NOT EVALUATED: any out-of-policy action (taxonomy labels: "
         in (sections["Abort criteria"])

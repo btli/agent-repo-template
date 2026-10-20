@@ -112,6 +112,8 @@ def triage_runs(
             run.get("repository_id") != repository_id
             or run.get("head_repository_id") != repository_id
             or not _since(artifact, "created_at", since)
+            # An expired marker or record no longer proves anything about its run.
+            or artifact.get("expired")
         ):
             continue
         entry = runs.setdefault(run["id"], {"issue": None, "started": "", "record": None})
@@ -119,9 +121,7 @@ def triage_runs(
             # The marker is uploaded by propose, before apply acts.
             entry["issue"] = int(match.group(1))
             entry["started"] = artifact["created_at"]
-        elif artifact["name"] == DECISION_RECORD.format(run_id=run["id"]) and not artifact.get(
-            "expired"
-        ):
+        elif artifact["name"] == DECISION_RECORD.format(run_id=run["id"]):
             entry["record"] = artifact
     schema = load_schema("decision")
     decisions: dict[int, dict] = {}
@@ -181,11 +181,31 @@ class _IssueLookup:
         return gh_json(f"repos/{self.repo}/{path}")
 
 
-class _TargetWasOpen:
-    """Apply re-checked a duplicate target when it closed; that past state is not recorded."""
+class TargetStateUnknown(Exception):
+    """Raised when a duplicate target's state at a past moment cannot be established."""
+
+
+class _TargetAt:
+    """Answers apply's duplicate-target lookup with the target's state at a past moment,
+    rebuilt from its dated close and reopen events."""
+
+    def __init__(self, repo: str, moment: str):
+        self.repo = repo
+        self.moment = moment
 
     def request(self, method: str, path: str, *, params: dict | None = None) -> object:
-        return {"state": "open"}
+        issue = gh_json(f"repos/{self.repo}/{path}")
+        changes = sorted(
+            (event["created_at"], event["event"])
+            for event in gh_items(f"repos/{self.repo}/{path}/events?per_page=100")
+            if event.get("event") in {"closed", "reopened"} and event["created_at"] <= self.moment
+        )
+        if changes:
+            return {**issue, "state": "closed" if changes[-1][1] == "closed" else "open"}
+        created = issue.get("created_at")
+        if not isinstance(created, str) or created > self.moment:
+            raise TargetStateUnknown(path)
+        return {**issue, "state": "open"}
 
 
 def _rate(outcomes: list[bool]) -> float | None:
@@ -335,9 +355,29 @@ def out_of_policy_closes(
                 unverifiable.append(
                     f"- #{number}: closed {event['created_at']} with no loadable policy at {sha}"
                 )
-            elif not close_eligible(
-                decision, *policies[sha], number=number, github=_TargetWasOpen()
-            ):
+                continue
+            if policies[sha][0].mode_for("triage") != "live":
+                # A dry-run apply executes no actions, so no close from that run is allowed.
+                violations.append(
+                    f"- #{number}: closed {event['created_at']}; triage was dry-run in the "
+                    f"policy at {sha}"
+                )
+                continue
+            try:
+                eligible = close_eligible(
+                    decision,
+                    *policies[sha],
+                    number=number,
+                    repo=repo,
+                    github=_TargetAt(repo, event["created_at"]),
+                )
+            except (GhError, TargetStateUnknown, ValueError):
+                unverifiable.append(
+                    f"- #{number}: closed {event['created_at']} with no established duplicate-"
+                    "target state at that time"
+                )
+                continue
+            if not eligible:
                 violations.append(
                     f"- #{number}: closed {event['created_at']}; its run "
                     f"{decision['run_id']}'s decision does not allow a close"

@@ -155,6 +155,24 @@ def test_close_routed_to_a_maintainer_first_is_not_eligible(change):
     assert evals.outcome(decision, *policy) == "needs-maintainer"
 
 
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ({"answers": {"type": {"value": None, "p": 0.95}}}, "needs-maintainer"),
+        ({"answers": {"type": {"value": "bug", "p": 0.5}}}, "needs-maintainer"),
+        ({"answers": {"security_sensitive": {"value": True, "p": 0.9}}}, "needs-maintainer"),
+        # Request text without a true needs_info answer is not posted by apply.
+        ({"needs_info": {"text": "Please share the versions."}}, "label"),
+    ],
+)
+def test_outcome_follows_apply_plan_for_answers_apply_routes(change, expected):
+    decision = json.loads((FIXTURES / "system-one/cli-check-exit-code.json").read_text())
+    for key, value in change.items():
+        decision[key] = {**decision[key], **value} if key == "answers" else value
+    policy = evals.load_policy(ROOT / "evals")
+    assert evals.outcome(decision, *policy) == expected
+
+
 def test_golden_set_has_twenty_issues_and_a_lintable_charter():
     charter_text = (ROOT / "evals" / "charter.md").read_text()
     assert lint_charter(charter_text) == []
@@ -179,8 +197,9 @@ def test_eval_scores_recorded_decisions_per_mode(capsys):
         report.split("## Mode: llm-only")[1],
     )
     assert "| type | 80% | 10 | 0.9 |" in system_one
-    # The Tier-2-disagreed and below-close_min closes do not score as closes.
-    assert "| outcome | 80% | 10 | n/a |" in system_one
+    # The Tier-2-disagreed and below-close_min closes do not score as closes, and apply
+    # escalates cli-json-output's low-confidence type answer to a maintainer.
+    assert "| outcome | 70% | 10 | n/a |" in system_one
     assert "Outcome not evaluated" not in report
     # LLM-only never closes, so the out-of-scope issue scores as a maintainer suggestion.
     assert "| outcome | 100% | 4 | n/a |" in llm_only.split("## Mode:")[0]
@@ -194,7 +213,7 @@ def test_duplicate_close_without_recorded_target_is_not_evaluated(tmp_path, caps
     argv = ["--evals", str(tmp_path / "evals"), "--decisions", str(FIXTURES / "system-one")]
     assert evals.main(argv) == 0
     report = capsys.readouterr().out
-    assert "| outcome | 78% | 9 | n/a |" in report
+    assert "| outcome | 67% | 9 | n/a |" in report
     assert (
         "Outcome not evaluated (no recorded duplicate-target facts): "
         "duplicate-check-passes-invalid-file" in report
