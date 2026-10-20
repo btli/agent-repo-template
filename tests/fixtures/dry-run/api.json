@@ -6,7 +6,7 @@
  },
  "repos/your-org/example/actions/artifacts": {
   "json": {
-   "total_count": 67,
+   "total_count": 73,
    "artifacts": [
     {
      "id": 1,
@@ -719,6 +719,72 @@
      "created_at": "2026-10-16T10:06:00Z",
      "workflow_run": {
       "id": 133,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 68,
+     "name": "agent-triage-41",
+     "expired": false,
+     "created_at": "2026-10-15T10:00:00Z",
+     "workflow_run": {
+      "id": 134,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 69,
+     "name": "agent-decision-134",
+     "expired": false,
+     "created_at": "2026-10-15T10:00:00Z",
+     "workflow_run": {
+      "id": 134,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 70,
+     "name": "agent-triage-45",
+     "expired": false,
+     "created_at": "2026-09-10T00:00:00Z",
+     "workflow_run": {
+      "id": 135,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 71,
+     "name": "agent-decision-135",
+     "expired": false,
+     "created_at": "2026-09-10T00:00:00Z",
+     "workflow_run": {
+      "id": 135,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 72,
+     "name": "agent-triage-46",
+     "expired": false,
+     "created_at": "2026-10-15T10:00:00Z",
+     "workflow_run": {
+      "id": 136,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 73,
+     "name": "agent-decision-136",
+     "expired": false,
+     "created_at": "2026-10-15T10:00:00Z",
+     "workflow_run": {
+      "id": 136,
       "repository_id": 1,
       "head_repository_id": 1
      }
@@ -1915,6 +1981,124 @@
    "labels": []
   }
  },
+ "repos/your-org/example/actions/artifacts/69/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "134",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "cli",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:cli"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": null,
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/actions/artifacts/71/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "135",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "cli",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:cli"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": null,
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/actions/artifacts/73/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "999",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "cli",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:cli"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": null,
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/issues/41": {
+  "json": {
+   "number": 41,
+   "state": "open",
+   "html_url": "https://github.com/your-org/example/issues/41",
+   "labels": []
+  }
+ },
+ "repos/your-org/example/issues/45": {
+  "json": {
+   "number": 45,
+   "state": "open",
+   "html_url": "https://github.com/your-org/example/issues/45",
+   "labels": []
+  }
+ },
  "repos/your-org/example/issues/33": {
   "json": {
    "number": 33,
@@ -3105,6 +3289,15 @@
    }
   ]
  },
+ "repos/your-org/example/issues/41/events": {
+  "json": []
+ },
+ "repos/your-org/example/issues/45/events": {
+  "json": []
+ },
+ "repos/your-org/example/issues/46/events": {
+  "json": []
+ },
  "repos/your-org/example/actions/runs/101": {
   "json": {
    "id": 101,
@@ -3289,6 +3482,24 @@
   "json": {
    "id": 133,
    "run_started_at": "2026-10-16T10:02:00Z"
+  }
+ },
+ "repos/your-org/example/actions/runs/134": {
+  "json": {
+   "id": 134,
+   "run_started_at": "2026-09-01T00:00:00Z"
+  }
+ },
+ "repos/your-org/example/actions/runs/135": {
+  "json": {
+   "id": 135,
+   "run_started_at": "2026-10-15T09:00:00Z"
+  }
+ },
+ "repos/your-org/example/actions/runs/136": {
+  "json": {
+   "id": 136,
+   "run_started_at": "2026-10-15T09:59:00Z"
   }
  },
  "repos/your-org/example/actions/runs/108": {

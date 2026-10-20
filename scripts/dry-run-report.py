@@ -117,7 +117,6 @@ def triage_runs(
         if (
             run.get("repository_id") != repository_id
             or run.get("head_repository_id") != repository_id
-            or not _since(artifact, "created_at", since)
             # An expired marker or record no longer proves anything about its run.
             or artifact.get("expired")
         ):
@@ -138,6 +137,9 @@ def triage_runs(
             started = None
         if isinstance(started, str):
             entry["started"] = started
+            # The window selects runs by their own start, not by when they uploaded anything.
+            if not _since(entry, "started", since):
+                entry["issue"] = None
         else:
             unstarted.append((entry["issue"], run_id))
             entry["issue"] = None
@@ -156,7 +158,9 @@ def triage_runs(
                 decision = json.loads(zipfile.ZipFile(io.BytesIO(content)).read("decision.json"))
             except (GhError, KeyError, ValueError, zipfile.BadZipFile):
                 decision = None
-        if decision is not None and validate(decision, schema):
+        if decision is not None and (
+            validate(decision, schema) or decision["run_id"] != str(run_id)
+        ):
             decision = None
         by_issue.setdefault(entry["issue"], []).append((entry["started"], decision))
         if decision is None:

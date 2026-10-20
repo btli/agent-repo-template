@@ -13,7 +13,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 NOW = datetime(2026, 10, 20, tzinfo=UTC)
 REPO = "repos/your-org/example"
 DECISION_RECORD_IDS = (2, 5, 7, 9, 13, 22, 24, 26, 28, 30, 32, 34, 36, 40, 42, 44, 46, 48, 50, 52)
-DECISION_RECORD_IDS += (55, 57, 59, 61, 63, 65, 67)
+DECISION_RECORD_IDS += (55, 57, 59, 61, 63, 65, 67, 71, 73)
 
 
 def _load_report():
@@ -68,15 +68,13 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     # Only exact agent-decision-<run_id> records count, never hand-off artifacts or copies;
     # the fork run and the run older than 30 days are ignored; issue 1 uses its newest record.
     system_one = sections["Mode: system-one"]
-    assert "- Decided issues: 18" in system_one
+    # A run started in the window counts even though its marker upload predates it (#45).
+    assert "- Decided issues: 19" in system_one
     # An issue carrying two type: labels is not compared.
     assert "- Type agreement: 67% (3 maintainer-labelled issues)" in system_one
     assert "- Area agreement: 100% (3 maintainer-labelled issues)" in system_one
-    # Tier-2-disagreed and below-close_min closes are not candidates; the duplicate of an
-    # open target is.
-    # Issue 29's eligible close was left open by the maintainer, so agreement is 83% over 4, 26,
-    # 29, 34, 35 and 38. Issues 30 (security) and 31 (P1 suggestion) go to a maintainer first;
-    # the duplicate targets of 19 and 33 are closed now; 37's newest run has no close.
+    # Only closes apply would execute count; a candidate the maintainer left open (#29)
+    # lowers agreement.
     assert "- Close candidates: 6, maintainer agreement 83%; close_enable_ready: no" in system_one
 
     llm_only = sections["Mode: llm-only"]
@@ -85,37 +83,30 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     assert "Close readiness: not applicable; LLM-only mode never auto-closes." in llm_only
     assert "close_enable_ready" not in llm_only
 
-    # Expired, absent, schema-invalid and undownloadable records are listed, not fatal; the run
-    # whose only marker expired (#32) is ignored.
+    # Expired, absent, invalid, mismatched-run and undownloadable records are listed; runs with
+    # an expired marker (#32) or a start before the window (#41) are ignored.
     assert _lines(sections["Missing decision records"]) == [
         "- #8: run 107 has no readable agent-decision-107",
         "- #11: run 109 has no readable agent-decision-109",
         "- #13: run 118 has no readable agent-decision-118",
         "- #15: run 113 has no readable agent-decision-113",
         "- #16: run 114 has no readable agent-decision-114",
+        "- #46: run 136 has no readable agent-decision-136",
     ]
     # A failed duplicate-target lookup is listed rather than dropping the candidate silently.
     assert _lines(sections["Skipped issues"]) == [
         "- #17: issue lookup failed",
         "- #18: duplicate target lookup failed",
     ]
-    # A bot close counts when the bot labels it agent:closed at or after the close (4, 5, 6, 18,
-    # 19, 21, 26, 27, 30, 33-38, 28 twice; 36 in the same second) or the bot's label is still on
-    # the issue (24; 39's re-close). Reopened: 5 (then reclosed), 24, 28's first, 39's and 40's
-    # first. Not counted: 22 (a person's label), 23 (no close), 25 (label after a reopen), 40's
-    # re-close (label removed) and 21's earlier reopen.
+    # Each bot close correlated with the bot's agent:closed label counts, including re-closes
+    # that kept the label; labels from people, after a reopen, or removed do not.
     assert _lines(sections["Reopen rate for agent:closed"]) == [
         "- 5 of 21 bot closes with agent:closed in the window were reopened (24%)"
     ]
-    # The bot's P1, its P0 on a missing-record issue, type:unauthorized, its LLM-only close,
-    # its close under a Tier-2-disagreed decision, and issue 27's close, whose newer run had
-    # no close (issue 26's newer run allowed its close), and issue 30's close under a security
-    # decision.
-    # 19's duplicate target closed only after the bot close, so that close stays in policy.
-    # 33's duplicate target was already closed at the bot close; 35's run policy was dry-run;
-    # 37's newer run, whose marker shares the close's second, has no close.
+    # Bot labels outside the taxonomy and closes its run's decision, dated target state or
+    # dry-run policy did not allow are counted; each close is listed below.
     assert (
-        "- 10 actions by example-agent[bot] across 36 issues" in sections["Out-of-policy actions"]
+        "- 10 actions by example-agent[bot] across 38 issues" in sections["Out-of-policy actions"]
     )
     assert _lines(sections["Out-of-policy actions"])[1:] == [
         "- #3: closed 2026-10-12T12:00:00Z; its run 104's decision does not allow a close",
@@ -242,13 +233,13 @@ def test_failed_event_lookups_make_event_criteria_not_evaluated(fake_gh, capsys)
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     assert "- #4: issue events lookup failed" in sections["Skipped issues"]
     assert (
-        "- Not evaluated: 36 issue event lookups failed (listed under Skipped issues)."
+        "- Not evaluated: 38 issue event lookups failed (listed under Skipped issues)."
         in (sections["Reopen rate for agent:closed"])
     )
     assert _lines(sections["Abort criteria"]) == [
         "- NOT EVALUATED: a reopen rate above 5% for `agent:closed` "
-        "(36 issue event lookups failed)",
-        "- NOT EVALUATED: any out-of-policy action (36 issue event lookups failed)",
+        "(38 issue event lookups failed)",
+        "- NOT EVALUATED: any out-of-policy action (38 issue event lookups failed)",
         "- No evaluated criterion triggered.",
     ]
     assert "None triggered" not in sections["Abort criteria"]
@@ -257,7 +248,7 @@ def test_failed_event_lookups_make_event_criteria_not_evaluated(fake_gh, capsys)
 def test_failed_agent_closed_listing_keeps_other_sections(fake_gh, capsys):
     _edit(fake_gh, lambda responses: responses.pop(f"{REPO}/issues"))
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
-    assert "- Decided issues: 18" in sections["Mode: system-one"]
+    assert "- Decided issues: 19" in sections["Mode: system-one"]
     assert (
         "- #8: run 107 has no readable agent-decision-107" in sections["Missing decision records"]
     )
