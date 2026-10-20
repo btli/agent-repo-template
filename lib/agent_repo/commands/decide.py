@@ -22,6 +22,7 @@ from agent_repo.decide import (
 from agent_repo.event import Event, load_event
 from agent_repo.github import GitHub, GitHubError
 from agent_repo.prompting import render_prompt
+from agent_repo.scan import find_leaks
 from agent_repo.schema import load_schema, validate
 from agent_repo.systemone import Answer, ProviderConfig, Question, SystemOneError, ask
 from agent_repo.tier0 import (
@@ -187,18 +188,46 @@ def main(argv: list[str]) -> int:
         run_id = os.environ["GITHUB_RUN_ID"]
         base_sha = os.environ["GITHUB_SHA"]
         tier2_allowed = os.environ.get("TIER2_ALLOWED") == "true"
-        gh = GitHub(os.environ["GH_TOKEN"], os.environ.get("GITHUB_REPOSITORY", event.repo))
-        missing = (
-            missing_fields(event.body, required)
-            if has_field_heading(event.body, form_headings)
-            else []
-        )
+        gh_token = os.environ["GH_TOKEN"]
+        key_name = os.environ.get("SYSTEM_ONE_API_KEY_ENV", "LLM_API_KEY")
+        system_one_key = os.environ.get(key_name, "")
+        canary = os.environ.get("GATE_CANARY") or secrets.token_hex(16)
+        gh = GitHub(gh_token, os.environ.get("GITHUB_REPOSITORY", event.repo))
         try:
             issue_context = model_context(gh, event, _writer_checker(gh))
         except GitHubError:
             issue_context = f"Title: {event.title}\n\nIssue body:\n{event.body}"
-        security = security_hit(issue_context)
-        if security:
+        credential_in_issue = bool(
+            find_leaks(
+                issue_context,
+                [secret for secret in (gh_token, system_one_key) if secret],
+                canary,
+            )
+        )
+        missing = (
+            missing_fields(event.body, required)
+            if not credential_in_issue and has_field_heading(event.body, form_headings)
+            else []
+        )
+        security = not credential_in_issue and security_hit(issue_context)
+        if credential_in_issue:
+            proposal = Proposal(
+                ("needs-maintainer",),
+                None,
+                False,
+                False,
+                ("credential-in-issue",),
+                False,
+                None,
+                False,
+                True,
+            )
+            answers = {}
+            tier = 0
+            issue_context = ""
+            context_path.parent.mkdir(parents=True, exist_ok=True)
+            context_path.write_text(issue_context, encoding="utf-8")
+        elif security:
             proposal = Proposal(
                 ("needs-maintainer",), None, False, False, ("security",), False, None, True, True
             )
@@ -215,7 +244,6 @@ def main(argv: list[str]) -> int:
             context_path.parent.mkdir(parents=True, exist_ok=True)
             context_path.write_text(issue_context, encoding="utf-8")
             questions = build_questions(charter, config, candidates)
-            canary = os.environ.get("GATE_CANARY") or secrets.token_hex(16)
             answers = _model_answers(config, charter_text, issue_context, questions, canary)
             proposal = route(answers, config, event, tier2_allowed, candidates)
             if "security-uncertain" in proposal.escalate_reasons:

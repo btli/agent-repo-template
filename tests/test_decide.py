@@ -158,6 +158,7 @@ def test_route_follows_each_spec_43_rule(answers_value, expected_label, expected
     [
         ("priority", ["P0"], 0.9),
         ("type", {"bug": True}, 0.9),
+        ("type", "bug", True),
         ("priority", "P0", float("nan")),
     ],
 )
@@ -1451,6 +1452,84 @@ def test_command_bounds_long_docs_reference_suggestion_note(tmp_path, monkeypatc
     assert len(suggestion) == 500
     assert suggestion.endswith("…")
     assert validate(artifact, load_schema("decision")) == []
+
+
+@pytest.mark.parametrize("llm_only", [False, True])
+@pytest.mark.parametrize("split_key", [False, True])
+@pytest.mark.parametrize("missing_fields", [False, True])
+def test_command_blocks_credentials_in_issue_context(
+    tmp_path, monkeypatch, capsys, llm_only, split_key, missing_fields
+):
+    from agent_repo.commands import decide as command
+
+    gh_token = "gh-secret"
+    system_one_key = "llm-secret-value-12345"
+    canary = "canary-secret"
+    issue_key = "llm-secret:value-12345" if split_key else system_one_key
+    version = "_No response_" if missing_fields else "1.2.3"
+    steps = "_No response_" if missing_fields else "Open the app"
+    body = (
+        f"### Version\n{version}\n\n### Steps to reproduce\n{steps}\n\n"
+        f"Credentials: {gh_token} | {issue_key} | {canary}"
+    )
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path, body, llm_only=llm_only
+    )
+    ask_calls = []
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            assert token == gh_token
+            assert repo == EVENT.repo
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {"items": []}
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    def ask_questions(_config, _base_url, _key, _prompt, questions):
+        ask_calls.append(questions)
+        values = {
+            "type": "feature",
+            "area": "core",
+            "priority": "P3",
+            "needs_info": "no",
+            "out_of_scope": "no",
+            "docs_ref": "none",
+            "security_sensitive": "no",
+        }
+        return {
+            question.id: Answer(question.id, values[question.id], 0.95) for question in questions
+        }
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(command, "ask", ask_questions)
+    set_command_environment(monkeypatch, tmp_path, event_path)
+    monkeypatch.setenv("GH_TOKEN", gh_token)
+    monkeypatch.setenv("LLM_API_KEY", system_one_key)
+    monkeypatch.setenv("GATE_CANARY", canary)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+
+    artifact_text = decision_path.read_text()
+    output_text = (tmp_path / "output").read_text()
+    stderr = capsys.readouterr().err
+    artifact = json.loads(artifact_text)
+    assert validate(artifact, load_schema("decision")) == []
+    assert artifact["labels"] == ["needs-maintainer"]
+    assert artifact["escalate"] == {"to": "maintainer", "reason": "credential-in-issue"}
+    assert artifact["security"] is False
+    assert context_path.read_text() == ""
+    assert ask_calls == []
+    assert "tier2=false" in output_text
+    for secret in (gh_token, system_one_key, canary):
+        assert secret not in stderr
+        assert secret not in artifact_text
+        assert secret not in context_path.read_text()
+        assert secret not in output_text
 
 
 def test_command_cap_check_error_for_confident_bug_hands_off_in_apply_plan(tmp_path, monkeypatch):
