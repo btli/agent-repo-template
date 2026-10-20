@@ -23,8 +23,7 @@
   },
   "labels": [
     "type:bug",
-    "area:merge",
-    "needs-maintainer"
+    "area:merge"
   ],
   "suggestions": {
     "priority": "P0",

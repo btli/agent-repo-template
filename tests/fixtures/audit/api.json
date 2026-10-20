@@ -68,6 +68,16 @@
     ]
    },
    {
+    "number": 11,
+    "state": "open",
+    "html_url": "https://github.com/your-org/example/issues/11",
+    "labels": [
+     {
+      "name": "agent:closed"
+     }
+    ]
+   },
+   {
     "number": 9,
     "state": "open",
     "html_url": "https://github.com/your-org/example/issues/9",

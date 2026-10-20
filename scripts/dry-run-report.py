@@ -3,19 +3,21 @@
 Usage: dry-run-report.py --repo OWNER/REPO [--days 30] [--bot-login LOGIN]
                          [--tier2-budget-alerts N]
 
-Reads each triage run's `agent-decision-<run_id>` record and current labels through
-`gh api`, prints Markdown, and always exits 0 so a failed lookup never blocks the
-maintainer reading the report.
+Reads each triage run's `agent-decision-<run_id>` record, the `.agents/` policy, current
+labels and issue events through `gh api`, prints Markdown, and always exits 0 so a failed
+lookup never blocks the maintainer reading the report.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import io
 import json
 import re
 import subprocess
 import sys
+import tempfile
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,9 +29,17 @@ sys.path.insert(0, str(SCRIPTS))
 
 from agent_repo.apply.actions import canonical_bot_login  # noqa: E402
 from agent_repo.apply.triage import _answer_label  # noqa: E402
+from agent_repo.charter import parse_charter  # noqa: E402
+from agent_repo.config import ConfigError, is_llm_only, load_config  # noqa: E402
 from agent_repo.gate import TRIAGE_MARKER_NAME  # noqa: E402
 from agent_repo.schema import load_schema, validate  # noqa: E402
-from eval import abort_flags, close_enable_ready  # noqa: E402
+from eval import (  # noqa: E402
+    ABORT_OUT_OF_POLICY,
+    ABORT_TIER2_BUDGET,
+    abort_flags,
+    close_eligible,
+    close_enable_ready,
+)
 
 MARKER_ARTIFACT = re.compile(
     re.escape(TRIAGE_MARKER_NAME).replace(re.escape("{issue_number}"), "([1-9][0-9]*)")
@@ -87,9 +97,12 @@ def _since(item: dict, field: str, since: datetime) -> bool:
     return isinstance(value, str) and datetime.fromisoformat(value) >= since
 
 
-def latest_decisions(repo: str, since: datetime) -> tuple[dict[int, dict], list[tuple[int, int]]]:
-    """Return the newest applied decision per issue, and the (issue, run) pairs whose
-    triage run left a marker but no readable `agent-decision-<run_id>` record."""
+def latest_decisions(
+    repo: str, since: datetime
+) -> tuple[dict[int, dict], list[tuple[int, int]], set[int]]:
+    """Return the newest applied decision per issue, the (issue, run) pairs whose triage
+    run left a marker but no readable `agent-decision-<run_id>` record, and every marker
+    issue."""
     repository_id = gh_json(f"repos/{repo}")["id"]
     runs: dict[int, dict] = {}
     for artifact in gh_items(f"repos/{repo}/actions/artifacts?per_page=100", "artifacts"):
@@ -117,23 +130,49 @@ def latest_decisions(repo: str, since: datetime) -> tuple[dict[int, dict], list[
             continue
         decision = None
         if entry["record"] is not None:
-            content = _gh([], f"repos/{repo}/actions/artifacts/{entry['record']['id']}/zip")
             try:
+                content = _gh([], f"repos/{repo}/actions/artifacts/{entry['record']['id']}/zip")
                 decision = json.loads(zipfile.ZipFile(io.BytesIO(content)).read("decision.json"))
-            except (KeyError, ValueError, zipfile.BadZipFile):
+            except (GhError, KeyError, ValueError, zipfile.BadZipFile):
                 decision = None
         if decision is None or validate(decision, schema):
             missing.append((entry["issue"], run_id))
         elif entry["issue"] not in decisions:
             decisions[entry["issue"]] = decision
-    return decisions, missing
+    marked = {entry["issue"] for entry in runs.values() if entry["issue"] is not None}
+    return decisions, missing, marked
+
+
+def load_policy(repo: str):
+    """Load the repository's `.agents` policy from its default branch, or None."""
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ("config.yml", "areas.yml", "labels.yml", "charter.md"):
+                content = gh_json(f"repos/{repo}/contents/.agents/{name}")["content"]
+                (Path(directory) / name).write_bytes(base64.b64decode(content))
+            charter = parse_charter((Path(directory) / "charter.md").read_text(encoding="utf-8"))
+            return load_config(Path(directory)), charter
+    except (GhError, ConfigError, KeyError, TypeError, ValueError):
+        return None
+
+
+class _IssueLookup:
+    """Lets apply's close predicate re-check a duplicate target through `gh api`."""
+
+    def __init__(self, repo: str):
+        self.repo = repo
+
+    def request(self, method: str, path: str, *, params: dict | None = None) -> object:
+        return gh_json(f"repos/{self.repo}/{path}")
 
 
 def _rate(outcomes: list[bool]) -> float | None:
     return sum(outcomes) / len(outcomes) if outcomes else None
 
 
-def mode_stats(decisions: dict[int, dict], issues: dict[int, dict]) -> dict[str, dict]:
+def mode_stats(
+    decisions: dict[int, dict], issues: dict[int, dict], policy, repo: str
+) -> dict[str, dict]:
     """Compare each decision with the issue's current labels, grouped by triage mode."""
     by_mode: dict[str, dict] = {}
     for number, decision in decisions.items():
@@ -149,7 +188,9 @@ def mode_stats(decisions: dict[int, dict], issues: dict[int, dict]) -> dict[str,
             if len(current) == 1:
                 predicted = _answer_label(question, answer["value"]) if answer else None
                 stats[question].append(predicted == current[0])
-        if decision["close"] is not None:
+        if policy is not None and close_eligible(
+            decision, *policy, number=number, repo=repo, github=_IssueLookup(repo)
+        ):
             stats["close"].append(issues[number]["state"] == "closed")
     for stats in by_mode.values():
         for question in ("type", "area"):
@@ -160,19 +201,58 @@ def mode_stats(decisions: dict[int, dict], issues: dict[int, dict]) -> dict[str,
     return by_mode
 
 
-def out_of_policy_labels(repo: str, numbers: set[int], bot_login: str, since: datetime) -> int:
-    count = 0
+def issue_events(repo: str, numbers: set[int]) -> tuple[dict[int, list], list[int]]:
+    events, skipped = {}, []
     for number in sorted(numbers):
-        for event in gh_items(f"repos/{repo}/issues/{number}/events?per_page=100"):
+        try:
+            events[number] = gh_items(f"repos/{repo}/issues/{number}/events?per_page=100")
+        except GhError:
+            skipped.append(number)
+    return events, skipped
+
+
+def reopen_counts(events: dict[int, list], bot_login: str, since: datetime) -> tuple[int, int]:
+    """Count in-window agent closes (agent:closed added) and those later reopened."""
+    closed = reopened = 0
+    for timeline in events.values():
+        closes = [
+            event["created_at"]
+            for event in timeline
+            if event.get("event") == "labeled"
+            and (event.get("label") or {}).get("name") == "agent:closed"
+            and (
+                not bot_login
+                or canonical_bot_login((event.get("actor") or {}).get("login", "")) == bot_login
+            )
+            and _since(event, "created_at", since)
+        ]
+        if not closes:
+            continue
+        closed += 1
+        reopened += any(
+            event.get("event") == "reopened" and event["created_at"] > min(closes)
+            for event in timeline
+        )
+    return closed, reopened
+
+
+def out_of_policy_actions(
+    events: dict[int, list], bot_login: str, since: datetime, no_close: set[int]
+) -> int:
+    """Count bot label additions outside the triage allowlist, and bot closes on issues
+    where closing is not allowed (LLM-only mode or close disabled)."""
+    count = 0
+    for number, timeline in events.items():
+        for event in timeline:
             actor = (event.get("actor") or {}).get("login", "")
+            if canonical_bot_login(actor) != bot_login or not _since(event, "created_at", since):
+                continue
             label = (event.get("label") or {}).get("name", "")
-            if (
-                event.get("event") == "labeled"
-                and canonical_bot_login(actor) == bot_login
-                and _since(event, "created_at", since)
-                and not label.startswith(("type:", "area:"))
-                and label not in TRIAGE_FIXED_LABELS
+            if event.get("event") == "labeled" and not (
+                label.startswith(("type:", "area:")) or label in TRIAGE_FIXED_LABELS
             ):
+                count += 1
+            elif event.get("event") == "closed" and number in no_close:
                 count += 1
     return count
 
@@ -183,11 +263,20 @@ def _percent(value: float | None) -> str:
 
 def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
     since = now - timedelta(days=args.days)
+    bot_login = canonical_bot_login(args.bot_login or "")
     lines: list[str] = []
-    decisions, missing = latest_decisions(args.repo, since)
-    issues = {number: gh_json(f"repos/{args.repo}/issues/{number}") for number in decisions}
-    repo_stats: dict = {}
-    for mode, stats in sorted(mode_stats(decisions, issues).items()):
+    decisions, missing, marked = latest_decisions(args.repo, since)
+    policy = load_policy(args.repo)
+    issues, skipped = {}, []
+    for number in sorted(decisions):
+        try:
+            issues[number] = gh_json(f"repos/{args.repo}/issues/{number}")
+        except GhError:
+            skipped.append(f"- #{number}: issue lookup failed")
+    decided = {number: decisions[number] for number in issues}
+    close_enabled = policy is not None and policy[0].raw["close"]["enabled"]
+    repo_stats: dict = {"flags": [], "not_evaluated": []}
+    for mode, stats in sorted(mode_stats(decided, issues, policy, args.repo).items()):
         lines += ["", f"## Mode: {mode}", "", f"- Decided issues: {stats['agreement_issues']}"]
         for question in ("type", "area"):
             lines.append(
@@ -197,6 +286,13 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
             )
         if mode == "llm-only":
             lines.append("- Close readiness: not applicable; LLM-only mode never auto-closes.")
+        elif policy is None:
+            lines.append("- Close readiness: not evaluated; `.agents/` could not be loaded.")
+        elif not close_enabled:
+            lines.append(
+                "- Close candidates: none; candidates are only collected while "
+                "`close.enabled: true` runs in dry-run mode."
+            )
         else:
             ready = close_enable_ready(stats["close"])
             lines.append(
@@ -207,7 +303,7 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
             )
         flags = abort_flags({key: stats[key] for key in stats if key != "close"})
         lines.extend(f"- ABORT: {flag}" for flag in flags)
-        repo_stats.setdefault("flags", []).extend(flags)
+        repo_stats["flags"].extend(flags)
 
     lines += ["", "## Missing decision records", ""]
     lines += [
@@ -215,40 +311,49 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
         for number, run_id in sorted(missing)
     ] or ["- None."]
 
-    since_text = since.strftime("%Y-%m-%dT%H:%M:%SZ")
-    closed = [
-        item
+    labelled = {
+        item["number"]
         for item in gh_items(
-            f"repos/{args.repo}/issues?labels={quote('agent:closed')}&state=all"
-            f"&since={since_text}&per_page=100"
+            f"repos/{args.repo}/issues?labels={quote('agent:closed')}&state=all&per_page=100"
         )
         if "pull_request" not in item
-    ]
-    reopened = sum(item["state"] == "open" for item in closed)
-    repo_stats.update({"agent_closed": len(closed), "reopened": reopened})
+    }
+    numbers = marked | labelled
+    events, events_skipped = issue_events(args.repo, numbers)
+    skipped += [f"- #{number}: issue events lookup failed" for number in events_skipped]
+    lines += ["", "## Skipped issues", "", *(skipped or ["- None."])]
+
+    closed, reopened = reopen_counts(events, bot_login, since)
+    repo_stats.update({"agent_closed": closed, "reopened": reopened})
     lines += ["", "## Reopen rate for agent:closed", ""]
     lines.append(
-        f"- {reopened} of {len(closed)} reopened "
-        f"({_percent(_rate([item['state'] == 'open' for item in closed]))})"
+        f"- {reopened} of {closed} agent closes in the window were reopened "
+        f"({_percent(reopened / closed if closed else None)})"
     )
 
     lines += ["", "## Out-of-policy actions", ""]
-    bot_login = canonical_bot_login(args.bot_login or "")
     if bot_login:
-        numbers = set(decisions) | {item["number"] for item in closed}
-        repo_stats["out_of_policy_actions"] = out_of_policy_labels(
-            args.repo, numbers, bot_login, since
+        no_close = {
+            number for number in numbers if decisions.get(number, {}).get("mode") == "llm-only"
+        }
+        if policy is not None and (is_llm_only(policy[0]) or not close_enabled):
+            no_close = set(numbers)
+        repo_stats["out_of_policy_actions"] = out_of_policy_actions(
+            events, bot_login, since, no_close
         )
         lines.append(
-            f"- Labels outside the triage allowlist added by {bot_login}: "
-            f"{repo_stats['out_of_policy_actions']}"
+            f"- {repo_stats['out_of_policy_actions']} actions by {bot_login} across "
+            f"{len(events)} issues from triage marker runs and agent:closed items: labels "
+            "outside the triage allowlist, and closes in LLM-only mode or with close disabled."
         )
     else:
-        lines.append("- Not checked; pass --bot-login.")
+        lines.append("- Not evaluated; pass --bot-login.")
+        repo_stats["not_evaluated"].append(f"{ABORT_OUT_OF_POLICY} (pass --bot-login)")
 
     lines += ["", "## Tier-2 budget", ""]
     if args.tier2_budget_alerts is None:
-        lines.append("- Not checked; pass --tier2-budget-alerts from the gateway's budget alerts.")
+        lines.append("- Not evaluated; pass --tier2-budget-alerts from the gateway's alerts.")
+        repo_stats["not_evaluated"].append(f"{ABORT_TIER2_BUDGET} (pass --tier2-budget-alerts)")
     else:
         repo_stats["tier2_budget_alerts_per_week"] = args.tier2_budget_alerts
         lines.append(
@@ -279,10 +384,16 @@ def main(argv: list[str], now: datetime | None = None) -> int:
     except Exception as exc:
         print(f"\nReport incomplete: unexpected {type(exc).__name__}.")
         return 0
-    flags = list(dict.fromkeys(repo_stats.pop("flags", []) + abort_flags(repo_stats)))
+    flags = list(dict.fromkeys(repo_stats.pop("flags") + abort_flags(repo_stats)))
+    skipped = repo_stats.pop("not_evaluated")
     print("\n".join(lines))
     print("\n## Abort criteria\n")
-    print("\n".join(f"- ABORT: {flag}" for flag in flags) if flags else "- None triggered.")
+    results = [f"- ABORT: {flag}" for flag in flags]
+    results += [f"- NOT EVALUATED: {criterion}" for criterion in skipped]
+    if not flags:
+        # A skipped criterion must not read as a clean result.
+        results.append("- No evaluated criterion triggered." if skipped else "- None triggered.")
+    print("\n".join(results))
     return 0
 
 

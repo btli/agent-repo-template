@@ -2,8 +2,10 @@
 
 Usage: eval.py --decisions DIR [--decisions DIR ...] [--evals DIR]
 
-Each DIR holds one decision.json per golden issue, named <issue-id>.json, recorded by
-running decide (and the Tier-2 merge) on the issue. Results are reported, not gated.
+Each DIR holds one decision.json per golden issue, named <issue-id>.json. The decisions
+under tests/fixtures/evals are hand-authored examples; live recordings come from running
+decide and the Tier-2 merge against evals/ (labels.yml, areas.yml, config.yml, charter.md).
+Results are reported, not gated.
 """
 
 from __future__ import annotations
@@ -16,8 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
-from agent_repo.apply.triage import _answer_label  # noqa: E402
-from agent_repo.charter import lint_charter  # noqa: E402
+from agent_repo.apply.actions import ApplyContext  # noqa: E402
+from agent_repo.apply.triage import _answer_label, _can_close  # noqa: E402
+from agent_repo.charter import Charter, lint_charter, parse_charter  # noqa: E402
+from agent_repo.config import ConfigError, RepoConfig, load_config  # noqa: E402
+from agent_repo.event import Event  # noqa: E402
 from agent_repo.schema import load_schema, validate  # noqa: E402
 from agent_repo.yamljson import YamlError, load_yaml  # noqa: E402
 
@@ -77,8 +82,9 @@ def abort_flags(stats: dict) -> list[str]:
     flags = []
     if stats.get("out_of_policy_actions", 0) > 0:
         flags.append(ABORT_OUT_OF_POLICY)
-    if stats.get("agreement_issues", 0) >= 50 and (
-        stats.get("type_agreement", 1.0) < 0.8 or stats.get("area_agreement", 1.0) < 0.8
+    if any(
+        stats.get(f"{question}_pairs", 0) >= 50 and stats.get(f"{question}_agreement", 1.0) < 0.8
+        for question in ("type", "area")
     ):
         flags.append(ABORT_AGREEMENT)
     if stats.get("agent_closed", 0) and stats.get("reopened", 0) / stats["agent_closed"] > 0.05:
@@ -88,10 +94,66 @@ def abort_flags(stats: dict) -> list[str]:
     return flags
 
 
-def load_golden(evals_dir: Path) -> dict[str, dict]:
-    errors = lint_charter((evals_dir / "charter.md").read_text(encoding="utf-8"))
+def close_eligible(
+    decision: dict,
+    config: RepoConfig,
+    charter: Charter,
+    *,
+    number: int = 1,
+    repo: str = "your-org/example",
+    github: object | None = None,
+) -> bool:
+    """Whether apply would execute the decision's close, using apply's own predicate."""
+    close = decision["close"]
+    if close is None or decision.get("mode") == "llm-only":
+        return False
+    event = Event(
+        name="issues",
+        action="opened",
+        repo=repo,
+        number=number,
+        is_pr=False,
+        sender="",
+        sender_is_bot=False,
+        author="",
+        author_association="NONE",
+        comment_body=None,
+        comment_author=None,
+        label=None,
+        head_ref=None,
+        head_repo=None,
+        base_sha=decision["base_sha"],
+        head_sha=None,
+        default_branch="main",
+        title="",
+        body="",
+        labels=(),
+        draft=False,
+    )
+    context = ApplyContext(
+        event, config, charter, decision["run_id"], decision["base_sha"], [], "", False, github
+    )
+    duplicate_of = decision["answers"].get("duplicate_of", {}).get("value")
+    try:
+        return _can_close(close, context, duplicate_of)
+    except Exception:
+        return False
+
+
+def load_policy(evals_dir: Path) -> tuple[RepoConfig, Charter]:
+    charter_text = (evals_dir / "charter.md").read_text(encoding="utf-8")
+    errors = lint_charter(charter_text)
     if errors:
         raise EvalError("evals/charter.md: " + "; ".join(errors))
+    try:
+        return load_config(evals_dir), parse_charter(charter_text)
+    except ConfigError as exc:
+        raise EvalError(f"evals policy: {exc}") from exc
+
+
+def load_golden(evals_dir: Path) -> dict[str, dict]:
+    config, _ = load_policy(evals_dir)
+    labels = set(config.labels) | {"area:unknown"}
     golden = {}
     for path in sorted((evals_dir / "issues").glob("*.yml")):
         try:
@@ -111,6 +173,7 @@ def load_golden(evals_dir: Path) -> dict[str, dict]:
             or not isinstance(expected["labels"], list)
             or sum(str(label).startswith("type:") for label in expected["labels"]) != 1
             or f"area:{expected['area']}" not in expected["labels"]
+            or not set(expected["labels"]) <= labels
             or expected["priority"] not in {"P0", "P1", "P2", "P3"}
             or expected["priority"] not in expected["labels"]
             or expected["outcome"] not in OUTCOMES
@@ -130,9 +193,9 @@ def _expected(document: dict) -> dict[str, object]:
     }
 
 
-def outcome(decision: dict) -> str:
+def outcome(decision: dict, config: RepoConfig, charter: Charter) -> str:
     """Name the visible result apply would produce for a decision."""
-    if decision["close"] is not None and decision.get("mode") != "llm-only":
+    if close_eligible(decision, config, charter):
         return "close"
     if (
         decision["close"] is not None
@@ -147,7 +210,9 @@ def outcome(decision: dict) -> str:
     return "label"
 
 
-def score(golden: dict[str, dict], decisions: list[tuple[str, dict]]) -> dict[str, dict]:
+def score(
+    golden: dict[str, dict], decisions: list[tuple[str, dict]], config: RepoConfig, charter: Charter
+) -> dict[str, dict]:
     """Group recorded decisions by mode and score each question and the outcome."""
     by_mode: dict[str, dict] = {}
     seen: set[tuple[str, str]] = set()
@@ -179,7 +244,7 @@ def score(golden: dict[str, dict], decisions: list[tuple[str, dict]]) -> dict[st
         # LLM-only mode never auto-closes, so a close becomes a maintainer suggestion.
         if mode == "llm-only" and wanted == "close":
             wanted = "needs-maintainer"
-        result["pairs"]["outcome"].append((wanted, outcome(decision)))
+        result["pairs"]["outcome"].append((wanted, outcome(decision, config, charter)))
     return by_mode
 
 
@@ -229,7 +294,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         golden = load_golden(args.evals)
-        by_mode = score(golden, load_decisions(args.decisions, golden))
+        by_mode = score(golden, load_decisions(args.decisions, golden), *load_policy(args.evals))
     except (EvalError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

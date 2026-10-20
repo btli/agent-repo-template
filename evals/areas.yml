@@ -1,0 +1,36 @@
+areas:
+  - name: parser
+    description: TOML, YAML and INI parsing into the configuration tree
+    paths:
+      - larkspur/parsers/**
+    owners:
+      - "@your-org/larkspur-maintainers"
+    sensitive: false
+  - name: validation
+    description: Schema validation and typed error reporting
+    paths:
+      - larkspur/schema/**
+    owners:
+      - "@your-org/larkspur-maintainers"
+    sensitive: false
+  - name: merge
+    description: Merge order, environment overrides and defaults
+    paths:
+      - larkspur/merge/**
+    owners:
+      - "@your-org/larkspur-maintainers"
+    sensitive: true
+  - name: cli
+    description: The larkspur check command-line tool
+    paths:
+      - larkspur/cli/**
+    owners:
+      - "@your-org/larkspur-maintainers"
+    sensitive: false
+  - name: docs
+    description: User guide, reference pages and examples
+    paths:
+      - docs/**
+    owners:
+      - "@your-org/larkspur-maintainers"
+    sensitive: false

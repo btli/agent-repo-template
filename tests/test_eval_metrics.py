@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -74,16 +76,18 @@ def test_close_enable_ready_needs_twenty_candidates_at_95_percent(agreements, re
     [
         ({"out_of_policy_actions": 0}, None),
         ({"out_of_policy_actions": 1}, "any out-of-policy action"),
-        ({"agreement_issues": 50, "type_agreement": 0.8, "area_agreement": 0.8}, None),
+        ({"type_pairs": 50, "type_agreement": 0.8, "area_pairs": 50, "area_agreement": 0.8}, None),
         (
-            {"agreement_issues": 50, "type_agreement": 0.79, "area_agreement": 0.9},
+            {"type_pairs": 50, "type_agreement": 0.79, "area_pairs": 50, "area_agreement": 0.9},
             "dry-run agreement on type or area under 80% after 50 issues",
         ),
         (
-            {"agreement_issues": 50, "type_agreement": 0.9, "area_agreement": 0.79},
+            {"type_pairs": 50, "type_agreement": 0.9, "area_pairs": 50, "area_agreement": 0.79},
             "dry-run agreement on type or area under 80% after 50 issues",
         ),
-        ({"agreement_issues": 49, "type_agreement": 0.5, "area_agreement": 0.5}, None),
+        ({"type_pairs": 49, "type_agreement": 0.5, "area_pairs": 49, "area_agreement": 0.5}, None),
+        # Each question needs 50 compared issues of its own, not 50 decided issues.
+        ({"type_pairs": 1, "type_agreement": 0.0, "area_pairs": 50, "area_agreement": 0.9}, None),
         ({"agent_closed": 100, "reopened": 5}, None),
         ({"agent_closed": 100, "reopened": 6}, "a reopen rate above 5% for `agent:closed`"),
         ({"tier2_budget_alerts_per_week": 1}, None),
@@ -96,6 +100,37 @@ def test_close_enable_ready_needs_twenty_candidates_at_95_percent(agreements, re
 )
 def test_abort_flags_at_each_spec_boundary(stats, flag):
     assert evals.abort_flags(stats) == ([flag] if flag else [])
+
+
+def test_larkspur_policy_loads_and_covers_every_golden_label():
+    config, charter = evals.load_policy(ROOT / "evals")
+    assert config.raw["close"]["enabled"] is True
+    assert {area.name for area in config.areas} == {"parser", "validation", "merge", "cli", "docs"}
+    for document in evals.load_golden(ROOT / "evals").values():
+        assert set(document["expected"]["labels"]) <= set(config.labels) | {"area:unknown"}
+    assert charter.docs_index
+
+
+@pytest.mark.parametrize(
+    ("issue_id", "expected"),
+    [
+        ("system-one/out-of-scope-remote-store", "close"),
+        # Tier 2 disagreed, or the close is below close_min: apply only suggests it.
+        ("system-one/out-of-scope-gui-editor", "needs-maintainer"),
+        ("system-one/out-of-scope-eol-python", "needs-maintainer"),
+        ("llm-only/out-of-scope-remote-store", "needs-maintainer"),
+        ("system-one/merge-order-env-wins-wrongly", "needs-maintainer"),
+        ("system-one/schema-all-errors-blocked", "needs-maintainer"),
+        ("system-one/security-env-secret-logged", "needs-maintainer"),
+        ("llm-only/security-env-secret-logged", "needs-maintainer"),
+        ("llm-only/merge-order-env-wins-wrongly", "needs-maintainer"),
+        ("system-one/vague-it-broke", "needs-info"),
+        ("system-one/cli-check-exit-code", "label"),
+    ],
+)
+def test_outcome_mirrors_what_apply_would_do(issue_id, expected):
+    decision = json.loads((FIXTURES / f"{issue_id}.json").read_text())
+    assert evals.outcome(decision, *evals.load_policy(ROOT / "evals")) == expected
 
 
 def test_golden_set_has_twenty_issues_and_a_lintable_charter():
@@ -121,13 +156,30 @@ def test_eval_scores_recorded_decisions_per_mode(capsys):
         report.split("## Mode: system-one")[1],
         report.split("## Mode: llm-only")[1],
     )
-    assert "| type | 75% | 4 | 0.9 |" in system_one
-    assert "| outcome | 100% | 4 | n/a |" in system_one
+    assert "| type | 78% | 9 | 0.9 |" in system_one
+    # The Tier-2-disagreed and below-close_min closes do not score as closes.
+    assert "| outcome | 78% | 9 | n/a |" in system_one
     # LLM-only never closes, so the out-of-scope issue scores as a maintainer suggestion.
-    assert "| outcome | 100% | 3 | n/a |" in llm_only.split("## Mode:")[0]
+    assert "| outcome | 100% | 4 | n/a |" in llm_only.split("## Mode:")[0]
 
 
 def test_eval_rejects_a_decision_that_fails_the_schema(tmp_path, capsys):
     (tmp_path / "cli-check-exit-code.json").write_text('{"schema_version": "1"}')
     assert evals.main(["--decisions", str(tmp_path)]) == 2
     assert "does not match schema" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("outcome", "archive"), ("area", "storage"), ("labels", ["type:bug", "area:cli", "P2", "x"])],
+)
+def test_eval_rejects_a_malformed_golden_issue(tmp_path, capsys, field, value):
+    for name in ("charter.md", "config.yml", "areas.yml", "labels.yml"):
+        shutil.copy(ROOT / "evals" / name, tmp_path / name)
+    (tmp_path / "issues").mkdir()
+    expected = {"labels": ["type:bug", "area:cli", "P2"], "area": "cli", "priority": "P2"}
+    expected = {**expected, "outcome": "label", field: value}
+    document = {"issue": {"title": "Broken", "body": "It fails."}, "expected": expected}
+    (tmp_path / "issues" / "broken.yml").write_text(json.dumps(document))
+    assert evals.main(["--evals", str(tmp_path), "--decisions", str(tmp_path / "issues")]) == 2
+    assert "malformed golden issue: broken.yml" in capsys.readouterr().err

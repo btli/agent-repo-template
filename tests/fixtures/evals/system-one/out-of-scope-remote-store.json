@@ -35,7 +35,7 @@
   "close": {
     "kind": "out_of_scope",
     "target": null,
-    "docs_ref": "https://example.org/larkspur/faq#remote-stores",
+    "docs_ref": "https://example.org/larkspur/faq",
     "p": 0.95,
     "lexical": null,
     "tier2_agrees": true
