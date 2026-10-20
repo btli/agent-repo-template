@@ -35,6 +35,8 @@ jobs:
           rendered="$(uv run --frozen python tools/render_consumer.py \
             --template-sha 0000000000000000000000000000000000000000 \
             --template-version v0.0.0)"
+          # shellcheck disable=SC2155
+          export PATH="$(go env GOPATH)/bin:$PATH"
           actionlint "$rendered"/consumer/.github/workflows/*.yml
           uv tool run zizmor --offline "$rendered"/consumer/.github/
           uv run --frozen python tools/workflow_lint.py \
