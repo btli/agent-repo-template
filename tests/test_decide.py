@@ -1202,6 +1202,8 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
             if path.endswith("/permission"):
                 login = path.split("/")[1]
                 permission_calls[login] = permission_calls.get(login, 0) + 1
+                if login.casefold() == "writer":
+                    return {"permission": "write", "role_name": "writer"}
                 if login == "custom-writer":
                     return {"permission": "write", "role_name": "custom-writer"}
                 if login == "maintainer":
@@ -1225,6 +1227,8 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
                     "body": "writer comment three",
                     "user": {"login": "custom-writer", "type": "User"},
                 },
+                {"body": "upper-case writer comment", "user": {"login": "Writer", "type": "User"}},
+                {"body": "lower-case writer comment", "user": {"login": "writer", "type": "User"}},
                 {"body": "maintain comment", "user": {"login": "maintainer", "type": "User"}},
                 {"body": "admin comment", "user": {"login": "repository-admin", "type": "User"}},
                 {"body": "triage role comment", "user": {"login": "triage-writer", "type": "User"}},
@@ -1265,6 +1269,8 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
         "writer comment one",
         "writer comment two",
         "writer comment three",
+        "upper-case writer comment",
+        "lower-case writer comment",
         "maintain comment",
         "admin comment",
     ):
@@ -1278,6 +1284,7 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
         assert excluded not in prompts[0]
         assert excluded not in context_path.read_text()
     assert permission_calls["custom-writer"] == 1
+    assert permission_calls.get("Writer", 0) + permission_calls.get("writer", 0) == 1
     assert permission_calls["maintainer"] == 1
     assert permission_calls["repository-admin"] == 1
     assert permission_calls.get(EVENT.author.swapcase(), 0) == 0

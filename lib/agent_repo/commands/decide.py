@@ -5,7 +5,6 @@ import sys
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
-from functools import cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -55,13 +54,20 @@ def _issue_form_fields(checkout: Path) -> tuple[tuple[str, ...], tuple[str, ...]
 
 
 def _writer_checker(gh: GitHub) -> Callable[[str], bool]:
-    @cache
+    permissions: dict[str, bool] = {}
+
     def is_writer(login: str) -> bool:
-        try:
-            permission = gh.request("GET", f"collaborators/{quote(login, safe='')}/permission")
-        except GitHubError:
-            return False
-        return isinstance(permission, dict) and permission.get("permission") in {"admin", "write"}
+        normalized_login = login.casefold()
+        if normalized_login not in permissions:
+            try:
+                permission = gh.request("GET", f"collaborators/{quote(login, safe='')}/permission")
+            except GitHubError:
+                permissions[normalized_login] = False
+            else:
+                permissions[normalized_login] = isinstance(permission, dict) and permission.get(
+                    "permission"
+                ) in {"admin", "write"}
+        return permissions[normalized_login]
 
     return is_writer
 
