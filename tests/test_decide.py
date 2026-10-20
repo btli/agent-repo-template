@@ -1558,8 +1558,10 @@ def test_command_bounds_long_docs_reference_suggestion_note(tmp_path, monkeypatc
     "credential_kind",
     ["gh-token", "system-one-key", "split-system-one-key", "canary"],
 )
+@pytest.mark.parametrize("llm_only", [False, True], ids=["system-one", "llm-only"])
+@pytest.mark.parametrize("missing_fields", [False, True], ids=["complete-form", "missing-fields"])
 def test_command_blocks_credentials_in_issue_context(
-    tmp_path, monkeypatch, capsys, credential_kind
+    tmp_path, monkeypatch, capsys, credential_kind, llm_only, missing_fields
 ):
     from agent_repo.commands import decide as command
 
@@ -1572,8 +1574,15 @@ def test_command_blocks_credentials_in_issue_context(
         "split-system-one-key": "llm-secret:value-12345",
         "canary": canary,
     }[credential_kind]
-    body = f"Credentials: {issue_credential}"
-    checkout, event_path, decision_path, context_path = prepare_command_checkout(tmp_path, body)
+    form = (
+        "### Version\n_No response_\n\n### Steps to reproduce\n_No response_"
+        if missing_fields
+        else "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app"
+    )
+    body = f"{form}\n\nCredentials: {issue_credential}"
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path, body, llm_only=llm_only
+    )
     context_path.write_text("stale sensitive issue text")
     ask_calls = []
 
