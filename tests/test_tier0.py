@@ -89,6 +89,15 @@ def test_has_field_heading_recognizes_only_bug_form_field_headings():
     assert has_field_heading("### Version\n_No response_", ("Version", "Steps")) is True
 
 
+def test_bug_form_parser_ignores_fenced_headings_and_values():
+    quoted_form = "Feature request\n```md\n### Version\n_No response_\n```"
+    assert has_field_heading(quoted_form, ("Version",)) is False
+    assert missing_fields(quoted_form, ("Version",)) == ["Version"]
+
+    fenced_value = "### Version\n~~~text\n1.2.3\n~~~"
+    assert missing_fields(fenced_value, ("Version",)) == ["Version"]
+
+
 def test_duplicate_candidates_excludes_self_and_sorts_top_five():
     event = load_event("issues", Path("tests/fixtures/events/issues.opened.json"))
     issues = [
@@ -191,6 +200,25 @@ def test_duplicate_candidates_drops_zero_similarity_results():
             return {"items": [{"number": 30, "title": "Astronomy zebras orbit silently"}]}
 
     assert duplicate_candidates(FakeGitHub(), event) == []
+
+
+def test_duplicate_candidate_null_body_matches_empty_body_similarity():
+    event = replace(
+        load_event("issues", Path("tests/fixtures/events/issues.opened.json")),
+        title="Export button shows none",
+        body="none",
+    )
+
+    class FakeGitHub:
+        def request(self, method, path, *, params=None):
+            return {"items": [{"number": 30, "title": "Export button broken", "body": None}]}
+
+    candidate = duplicate_candidates(FakeGitHub(), event)[0]
+
+    expected_similarity = lexical_similarity(
+        f"{event.title}\n{event.body}", "Export button broken\n"
+    )
+    assert candidate.similarity == expected_similarity == 0.4
 
 
 def test_duplicate_candidates_skips_pull_requests():

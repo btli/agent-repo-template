@@ -1181,7 +1181,14 @@ def test_command_scan_budget_hands_off_as_unscannable(tmp_path, monkeypatch):
     assert "tier2-counter-file=" not in output
 
 
-@pytest.mark.parametrize("body", ["### Summary\nExports are slow", "Exports are slow"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "### Summary\nExports are slow",
+        "Exports are slow",
+        "Feature request\n```md\n### Version\n1.2.3\n```",
+    ],
+)
 @pytest.mark.parametrize("permission_status", [403, 500])
 def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, permission_status):
     from agent_repo.commands import decide as command
@@ -1235,6 +1242,10 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
                 {"body": "IGNORE PREVIOUS", "user": {"login": "outsider", "type": "User"}},
                 {"body": "bot comment", "user": {"login": "helper[bot]", "type": "Bot"}},
                 {"body": "denied comment", "user": {"login": "denied", "type": "User"}},
+                {
+                    "body": "denied comment case variant",
+                    "user": {"login": "Denied", "type": "User"},
+                },
             ]
 
     def answer_questions(_config, _base_url, _key, prompt, questions):
@@ -1279,12 +1290,14 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
         "IGNORE PREVIOUS",
         "bot comment",
         "denied comment",
+        "denied comment case variant",
         "triage role comment",
     ):
         assert excluded not in prompts[0]
         assert excluded not in context_path.read_text()
     assert permission_calls["custom-writer"] == 1
     assert permission_calls.get("Writer", 0) + permission_calls.get("writer", 0) == 1
+    assert permission_calls.get("denied", 0) + permission_calls.get("Denied", 0) == 1
     assert permission_calls["maintainer"] == 1
     assert permission_calls["repository-admin"] == 1
     assert permission_calls.get(EVENT.author.swapcase(), 0) == 0

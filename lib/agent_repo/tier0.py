@@ -43,6 +43,7 @@ class Candidate:
 
 
 def missing_fields(body: str, required: tuple[str, ...]) -> list[str]:
+    body = _without_fenced_code(body)
     sections = {
         match.group(1).strip(): body[match.end() : next_start].strip()
         for match, next_start in _heading_spans(body)
@@ -53,7 +54,34 @@ def missing_fields(body: str, required: tuple[str, ...]) -> list[str]:
 
 
 def has_field_heading(body: str, fields: tuple[str, ...]) -> bool:
+    body = _without_fenced_code(body)
     return any(match.group(1).strip() in fields for match, _ in _heading_spans(body))
+
+
+def _without_fenced_code(body: str) -> str:
+    lines = []
+    fence_character = None
+    fence_length = 0
+    for line in body.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        line_ending = line[len(content) :]
+        if fence_character is not None:
+            closing_fence = rf"[ \t]{{0,3}}{re.escape(fence_character)}{{{fence_length},}}[ \t]*"
+            if re.fullmatch(closing_fence, content):
+                fence_character = None
+                fence_length = 0
+            lines.append(line_ending)
+            continue
+
+        opening_fence = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})(.*)$", content)
+        if opening_fence:
+            marker = opening_fence.group(1)
+            fence_character = marker[0]
+            fence_length = len(marker)
+            lines.append(line_ending)
+        else:
+            lines.append(line)
+    return "".join(lines)
 
 
 def _heading_spans(body: str):
@@ -115,7 +143,9 @@ def duplicate_candidates(gh: GitHub, event: Event, k: int = 5) -> list[Candidate
         title = item.get("title")
         if type(number) is not int or number == event.number or not isinstance(title, str):
             continue
-        similarity = lexical_similarity(source, f"{title}\n{item.get('body', '')}")
+        body = item.get("body")
+        candidate_text = f"{title}\n{body if isinstance(body, str) else ''}"
+        similarity = lexical_similarity(source, candidate_text)
         if similarity > 0:
             candidates.append(Candidate(number, title, similarity))
     candidates.sort(key=lambda candidate: (-candidate.similarity, candidate.number))
