@@ -136,15 +136,22 @@ def marker_script(tmp_path: Path) -> Path:
     return script
 
 
-# Worktree-scoped config (extensions.worktreeConfig) is outside --local but still applies.
+# Worktree-scoped config (extensions.worktreeConfig) is outside --local but still applies,
+# and a filter defined in an included file runs just like a local one.
 @pytest.mark.parametrize(
-    ("kind", "scope"), [("clean", "--local"), ("process", "--local"), ("clean", "--worktree")]
+    ("kind", "scope"),
+    [("clean", "--local"), ("process", "--local"), ("clean", "--worktree"), ("clean", "include")],
 )
 def test_configured_filter_never_runs_on_edited_attributes(tmp_path, kind, scope):
     repo = tmp_path / "repo"
     base_sha = make_repo(repo)
     git(repo, "config", "extensions.worktreeConfig", "true")
-    git(repo, "config", scope, f"filter.hooked.{kind}", str(marker_script(tmp_path)))
+    if scope == "include":
+        included = tmp_path / "filters.config"
+        included.write_text(f'[filter "hooked"]\n\t{kind} = {marker_script(tmp_path)}\n')
+        git(repo, "config", "include.path", str(included))
+    else:
+        git(repo, "config", scope, f"filter.hooked.{kind}", str(marker_script(tmp_path)))
     plant_fix(repo)
     (repo / ".gitattributes").write_text("*.py filter=hooked\n")
     with pytest.raises(ValueError, match="filters"):

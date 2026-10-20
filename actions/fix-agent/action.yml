@@ -63,6 +63,7 @@ runs:
         WORK_PATH: ${{ inputs.work-path }}
         POLICY_PATH: ${{ inputs.policy-path }}
         BASE_SHA: ${{ inputs.base-sha }}
+        API_KEY_ENV: ${{ inputs.api-key-env }}
       run: |
         set -euo pipefail
         template_root="$(cd "$GITHUB_ACTION_PATH/../.." && pwd)"

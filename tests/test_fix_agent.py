@@ -39,6 +39,11 @@ outputs = {"canary": canary, "split_canary": "-".join(canary), "oversized": "x" 
            "encoded_key": base64.b64encode(key.encode()).decode()}
 if mode in outputs:
     (work / "notes.txt").write_text(outputs[mode])
+if mode == "nul_canary":
+    (work / "notes.dat").write_bytes(b"\\0" + canary.encode())
+if mode == "binary_attribute":
+    (work / ".gitattributes").write_text("* binary\\n")
+    (work / "notes.txt").write_text(canary)
 if mode == "nested_repo":
     vendor = work / "vendor"
     vendor.mkdir()
@@ -105,6 +110,7 @@ def action(tmp_path):
     (home / "mode").write_text("patch")
     policy = tmp_path / "policy"
     agents_dir(policy / ".agents", "\nDEFAULT-BRANCH CHARTER\n", setup="echo default > source.txt")
+    git(policy, "init", "-q")
     work = tmp_path / "work"
     work.mkdir()
     git(work, "init", "-q")
@@ -248,6 +254,8 @@ def test_harden_runner_is_the_first_step():
     ]
     assert not any("if" in step or "continue-on-error" in step for step in steps)
     assert steps[2]["env"]["BASE_SHA"] == steps[3]["env"]["BASE_SHA"] == "${{ inputs.base-sha }}"
+    key_setting = "${{ inputs.api-key-env }}"
+    assert steps[2]["env"]["API_KEY_ENV"] == steps[3]["env"]["API_KEY_ENV"] == key_setting
 
 
 def test_preflight_reports_missing_bwrap_distinctly(tmp_path):
@@ -328,6 +336,9 @@ LEAKS = {
     "encoded_key": "credential or canary",
     "raw_key_summary": "credential or canary",
     "oversized": "outbound scan budget",
+    # Binary hunks are base85 in the patch, so only the file scan sees these.
+    "nul_canary": "credential or canary",
+    "binary_attribute": "credential or canary",
 }
 
 
@@ -375,6 +386,13 @@ def plant_worktree_config(work: Path, problem: str) -> None:
     git(work, "config", "--worktree", *WORKTREE_SETTINGS[problem])
 
 
+def replace_policy_git(policy: Path, problem: str, tmp_path: Path) -> None:
+    # A policy directory without its own plain .git is not a checkout at all.
+    shutil.rmtree(policy / ".git")
+    if problem == "policy_gitfile":
+        (policy / ".git").write_text(f"gitdir: {tmp_path / 'elsewhere'}\n")
+
+
 REFUSALS = {
     "wrong_base": "not at the base SHA",
     "policy_inside_work": "policy checkout must be separate",
@@ -401,6 +419,7 @@ REFUSALS = {
     "worktree_filter": "git config defines filters",
     "worktree_extraheader": "persisted credentials",
     "policy_gitfile": "policy checkout must be a plain git checkout",
+    "missing_policy_git": "policy checkout must be a plain git checkout",
     "key_in_issue": "credential in prompt",
     "oversized_issue": "prompt byte cap exceeded",
 }
@@ -448,12 +467,10 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         git(work, "config", *CREDENTIAL_SETTINGS[problem])
     elif problem in WORKTREE_SETTINGS:
         plant_worktree_config(work, problem)
-    elif problem == "policy_gitfile":
-        (Path(env["POLICY_PATH"]) / ".git").write_text(f"gitdir: {tmp_path / 'elsewhere'}\n")
+    elif problem in ("policy_gitfile", "missing_policy_git"):
+        replace_policy_git(Path(env["POLICY_PATH"]), problem, tmp_path)
     elif problem == "policy_checkout_token":
-        policy = Path(env["POLICY_PATH"])
-        git(policy, "init", "-q")
-        git(policy, "config", "http.extraheader", "basic eHg=")
+        git(Path(env["POLICY_PATH"]), "config", "http.extraheader", "basic eHg=")
     elif problem == "key_in_issue":
         Path(env["ISSUE_FILE"]).write_text(f"Please use {KEY} to reproduce.")
     else:
@@ -502,13 +519,15 @@ def test_repository_filters_never_run_before_the_agent(action):
     assert calls(action) == []
 
 
-def test_setup_runs_default_branch_command_without_key(action):
+@pytest.mark.parametrize("key_env", ["ROLE_KEY", "LC_SECRET"])
+def test_setup_runs_default_branch_command_without_key(action, key_env):
     policy = Path(action["env"]["POLICY_PATH"]) / ".agents"
     config = (policy / "config.yml").read_text()
     command = 'echo default > source.txt; env > setup-env.txt; echo "$HOME" > home.txt'
     config = config.replace('setup: "echo default > source.txt"', f"setup: {json.dumps(command)}")
     (policy / "config.yml").write_text(config)
-    action["env"]["LLM_API_KEY"] = KEY
+    # LC_* names pass the allowlist, so a key setting that uses one is removed by name.
+    action["env"].update({"API_KEY_ENV": key_env, key_env: KEY, "LLM_API_KEY": KEY})
     commands = ["GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "GITHUB_STATE"]
     action["env"].update({name: str(action["home"] / name.lower()) for name in commands})
     result = run_action(action, "setup")
@@ -536,8 +555,6 @@ def test_setup_refuses_persisted_credentials_before_running(action, checkout, se
     config = config.replace('setup: "echo default > source.txt"', f"setup: {command}")
     (policy / ".agents" / "config.yml").write_text(config)
     tree = action["work"] if checkout == "work" else policy
-    if checkout == "policy":
-        git(policy, "init", "-q")
     git(tree, "config", *setting)
     result = run_action(action, "setup")
     assert result.returncode == 1
@@ -557,6 +574,7 @@ SETUP_REFUSALS = {
     "worktree_extraheader": "checkout persisted credentials; use persist-credentials: false",
     "symlinked_work_git": "work tree must be a plain git checkout",
     "policy_gitfile": "policy checkout must be a plain git checkout",
+    "missing_policy_git": "policy checkout must be a plain git checkout",
 }
 
 
@@ -592,8 +610,8 @@ def test_setup_never_runs_code_outside_base_sha(action, problem, tmp_path):
     elif problem == "symlinked_work_git":
         shutil.move(work / ".git", tmp_path / "real-git")
         (work / ".git").symlink_to(tmp_path / "real-git")
-    elif problem == "policy_gitfile":
-        (policy.parent / ".git").write_text(f"gitdir: {tmp_path / 'elsewhere'}\n")
+    elif problem in ("policy_gitfile", "missing_policy_git"):
+        replace_policy_git(policy.parent, problem, tmp_path)
     result = run_action(action, "setup")
     assert not marker.exists()
     assert result.returncode == 1

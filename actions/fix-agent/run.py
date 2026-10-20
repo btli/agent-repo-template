@@ -105,9 +105,8 @@ def refuse_untrusted_checkouts(work: Path, policy: Path) -> None:
     # Policy paths and both .git dirs are confirmed before any git command or policy read.
     refuse_escaping_policy_paths(policy)
     refuse_unplain_git_dir(work, "work tree")
-    if os.path.lexists(policy / ".git"):
-        refuse_unplain_git_dir(policy, "policy checkout")
-        refuse_persisted_credentials(policy, policy / ".git")
+    refuse_unplain_git_dir(policy, "policy checkout")
+    refuse_persisted_credentials(policy, policy / ".git")
     refuse_persisted_credentials(work, work / ".git")
 
 
@@ -137,11 +136,23 @@ def setup() -> int:
     # The allowlist drops the key and runner file-command paths; a fresh HOME hides user state.
     env = agent_environment(dict(os.environ), tool=True)
     env.pop("PYTHONPATH", None)
+    # The allowlist keeps every LC_* name, so a key setting such as LC_SECRET is dropped by name.
+    for name in (os.environ.get("API_KEY_ENV", "LLM_API_KEY"), "LLM_API_KEY"):
+        env.pop(name, None)
     with tempfile.TemporaryDirectory(prefix="agent-setup-home-") as home:
         env["HOME"] = home
         return subprocess.run(
             ["bash", "-c", command], cwd=work, env=env, stdin=subprocess.DEVNULL
         ).returncode
+
+
+def changed_file_texts(work: Path, git_dir: Path, base_sha: str) -> list[str]:
+    # Binary hunks are base85 in the patch, so each changed file's own bytes are scanned too.
+    names = run_git(work, git_dir, "diff", "--name-only", "-z", base_sha).split(b"\0")
+    paths = [work / os.fsdecode(name) for name in names if name]
+    # A symlink's target is already text in the patch; following it could leave the tree.
+    files = [path for path in paths if path.is_file() and not path.is_symlink()]
+    return [path.read_bytes().decode("utf-8", "surrogateescape") for path in files]
 
 
 def read_optional(path: Path) -> str:
@@ -227,9 +238,11 @@ def run_agent(output: Path, canary: str) -> str:
         artifact, patch = build_artifact(work, base_sha, run_id, answer, git_dir=git_dir)
     except ValueError:
         raise Refused("agent output rejected") from None
-    text = json.dumps(artifact, ensure_ascii=False) + (patch or "")
+    texts = [json.dumps(artifact, ensure_ascii=False) + (patch or "")]
+    if patch is not None:
+        texts += changed_file_texts(work, git_dir, base_sha)
     # Separator-aware scan; output too large to scan fails closed as well.
-    leaks = find_leaks(text, [key], canary)
+    leaks = sorted({leak for text in texts for leak in find_leaks(text, [key], canary)})
     if leaks == ["scan_budget"]:
         raise Refused("agent output exceeds the outbound scan budget")
     if leaks:
