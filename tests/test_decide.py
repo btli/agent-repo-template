@@ -160,6 +160,8 @@ def test_route_follows_each_spec_43_rule(answers_value, expected_label, expected
         ("type", {"bug": True}, 0.9),
         ("type", "bug", True),
         ("priority", "P0", float("nan")),
+        ("area", "core", 1.5),
+        ("area", "core", -0.1),
     ],
 )
 def test_route_fails_closed_on_direct_malformed_answers(question, value, probability):
@@ -897,6 +899,14 @@ def test_decide_action_uploads_both_gate_counter_artifacts():
     }
 
 
+def test_decide_action_maps_gate_canary_to_environment():
+    action = load_yaml(Path("actions/decide/action.yml"))
+    decide_step = next(step for step in action["runs"]["steps"] if step.get("id") == "decide")
+
+    assert action["inputs"].get("canary", {}).get("required") is True
+    assert decide_step["env"].get("GATE_CANARY") == "${{ inputs.canary }}"
+
+
 def test_decide_command_writes_llm_only_decision_and_filtered_context(
     tmp_path, monkeypatch, capsys
 ):
@@ -1530,6 +1540,55 @@ def test_command_blocks_credentials_in_issue_context(
         assert secret not in artifact_text
         assert secret not in context_path.read_text()
         assert secret not in output_text
+
+
+def test_command_blocks_gate_canary_found_alone_in_issue(tmp_path, monkeypatch, capsys):
+    from agent_repo.commands import decide as command
+
+    canary = "isolated-gate-canary"
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(tmp_path, canary)
+    ask_calls = []
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            pass
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {"items": []}
+            if path == f"/repos/{EVENT.repo}":
+                return {"id": 7}
+            if path == "actions/artifacts":
+                return {"artifacts": []}
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    def record_ask(*args, **kwargs):
+        ask_calls.append((args, kwargs))
+        return {}
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(command, "ask", record_ask)
+    set_command_environment(monkeypatch, tmp_path, event_path)
+    monkeypatch.setenv("GATE_CANARY", canary)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+
+    artifact_text = decision_path.read_text()
+    context_text = context_path.read_text()
+    output_text = (tmp_path / "output").read_text()
+    captured = capsys.readouterr()
+    artifact = json.loads(artifact_text)
+    assert artifact["escalate"] == {"to": "maintainer", "reason": "credential-in-issue"}
+    assert context_text == ""
+    assert ask_calls == []
+    assert canary not in captured.out
+    assert canary not in captured.err
+    assert canary not in artifact_text
+    assert canary not in context_text
+    assert canary not in output_text
 
 
 def test_command_cap_check_error_for_confident_bug_hands_off_in_apply_plan(tmp_path, monkeypatch):

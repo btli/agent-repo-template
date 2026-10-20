@@ -4,6 +4,9 @@ inputs:
   token:
     description: 'Read-only token for issue comments and search; also requires actions: read for Tier 2 cap checks.'
     required: true
+  canary:
+    description: Canary supplied by the gate for this decide run.
+    required: true
   default-branch:
     description: Consumer default branch containing agent policy and issue forms.
     default: ${{ github.event.repository.default_branch }}
@@ -48,6 +51,7 @@ runs:
       env:
         PYTHONPATH: ${{ github.action_path }}/../../lib
         GH_TOKEN: ${{ inputs.token }}
+        GATE_CANARY: ${{ inputs.canary }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         TIER2_ALLOWED: ${{ inputs.tier2-allowed }}
         DECISION_FILE: ${{ inputs.decision-file }}
