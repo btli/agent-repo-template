@@ -105,7 +105,7 @@ def refuse_unplain_git_dir(tree: Path, label: str) -> None:
         raise Refused(f"{label} must be a plain git checkout")
 
 
-def refuse_untrusted_checkouts(work: Path, policy: Path) -> None:
+def refuse_untrusted_checkouts(work: Path, policy: Path, base_sha: str) -> None:
     # Policy paths and both .git dirs are confirmed before any git command or policy read.
     refuse_escaping_policy_paths(policy)
     refuse_unplain_git_dir(work, "work tree")
@@ -113,6 +113,8 @@ def refuse_untrusted_checkouts(work: Path, policy: Path) -> None:
     # Git follows a linked config file anywhere, so even an in-checkout link is refused.
     if any((policy / ".git" / name).is_symlink() for name in ("config", "config.worktree")):
         raise Refused("policy checkout must be a plain git checkout")
+    # A checkout at any other commit is refused before its repository config is inspected.
+    refuse_unexpected_head(work / ".git", base_sha)
     refuse_persisted_credentials(policy, policy / ".git")
     refuse_persisted_credentials(work, work / ".git")
 
@@ -120,13 +122,12 @@ def refuse_untrusted_checkouts(work: Path, policy: Path) -> None:
 def setup() -> int:
     try:
         work, policy = checkouts()
-        # Setup runs unsandboxed, so a persisted token must be refused before it starts.
-        refuse_untrusted_checkouts(work, policy)
         # Setup trusts only base_sha code, so a checkout at any other commit never runs it.
         base_sha = os.environ.get("BASE_SHA", "")
         if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
             raise Refused("invalid inputs")
-        refuse_unexpected_head(work / ".git", base_sha)
+        # Setup runs unsandboxed, so a persisted token must be refused before it starts.
+        refuse_untrusted_checkouts(work, policy, base_sha)
         # An untracked, ignored or edited script would otherwise run as if it were base_sha code.
         reason = "work tree is not clean before setup"
         refuse_unclean_work_tree(work, work / ".git", reason, ignored=True)
@@ -185,6 +186,27 @@ def binary_file_bytes(work: Path, git_dir: Path, base_sha: str) -> list[bytes]:
     return blobs + [path.read_bytes() for path in inside] + encoded
 
 
+def refuse_changed_attributes(work: Path, git_dir: Path, base_sha: str) -> None:
+    # Attributes decide how git encodes shipped content, and an ignored file still applies,
+    # so every attributes file in the tree must be the base copy.
+    tree = run_git(work, git_dir, "ls-tree", "-r", "-z", "--name-only", base_sha).split(b"\0")
+    names = [os.fsdecode(name) for name in tree]
+    base = {name for name in names if Path(name).name.casefold() == ".gitattributes"}
+    found = {
+        (Path(root) / name).relative_to(work).as_posix()
+        for root, dirs, files in os.walk(work)
+        for name in dirs + files
+        if name.casefold() == ".gitattributes"
+    }
+    if found != base:
+        raise Refused("agent output changes .gitattributes")
+    for name in found:
+        path = work / name
+        base_copy = run_git(work, git_dir, "cat-file", "blob", f"{base_sha}:{name}")
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != base_copy:
+            raise Refused("agent output changes .gitattributes")
+
+
 def read_optional(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.is_file() else ""
 
@@ -215,11 +237,10 @@ def run_agent(output: Path, canary: str) -> str:
     )
     if preflight.returncode != 0:
         raise Refused("bwrap sandbox unavailable")
-    refuse_untrusted_checkouts(work, policy)
+    refuse_untrusted_checkouts(work, policy, base_sha)
     config = load_config(policy / ".agents")
     scratch = Path(tempfile.mkdtemp(prefix="agent-fix-", dir=temp))
     dot_git = work / ".git"
-    refuse_unexpected_head(dot_git, base_sha)
     # Setup output that is not gitignored would otherwise land in the patch as agent work.
     reason = "work tree is not clean after setup; gitignore setup outputs"
     refuse_unclean_work_tree(work, dot_git, reason, ignored=False)
@@ -284,11 +305,7 @@ def run_agent(output: Path, canary: str) -> str:
     if leaks:
         raise Refused("credential or canary in agent output")
     if patch is not None:
-        changed = run_git(work, git_dir, "diff", "--name-only", "-z", "--no-renames", base_sha)
-        # Attributes decide how git encodes shipped content, so a fix may not change them.
-        names = [os.path.basename(name).lower() for name in changed.split(b"\0")]
-        if b".gitattributes" in names:
-            raise Refused("agent output changes .gitattributes")
+        refuse_changed_attributes(work, git_dir, base_sha)
     write_artifact(output, artifact, patch)
     return artifact["status"]
 

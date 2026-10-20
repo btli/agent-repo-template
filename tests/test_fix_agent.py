@@ -50,6 +50,13 @@ if mode == "ebcdic_attribute":
     (work / "secret.dat").write_bytes(("token=" + canary).encode("cp037"))
 if mode == "attributes_only":
     (work / ".gitattributes").write_text("*.py text eol=crlf\\n")
+if mode == "ignored_attributes":
+    (work / "sub").mkdir()
+    (work / "sub" / ".gitignore").write_text(".gitattributes\\n")
+    (work / "sub" / ".gitattributes").write_text("x.txt binary\\n")
+    (work / "sub" / "x.txt").write_text("hello\\n")
+if mode == "ebcdic_base_attribute":
+    (work / "secret.dat").write_bytes(("token=" + canary).encode("cp037"))
 if mode == "outside_symlink":
     (home / "outside.txt").write_text(canary)
     (work / "b.bin").unlink()
@@ -442,6 +449,9 @@ LEAKS = {
     "ebcdic_attribute": "credential or canary",
     # Attributes decide how git encodes shipped content, so a fix may not change them.
     "attributes_only": "agent output changes .gitattributes",
+    "ignored_attributes": "agent output changes .gitattributes",
+    # The base already re-encodes secret.dat, so only the encoded-blob scan sees the canary.
+    "ebcdic_base_attribute": "credential or canary",
     # The limit is in bytes, and these are under it in decoded characters.
     "wide_text": "outbound scan budget",
     "wide_binary": "outbound scan budget",
@@ -457,6 +467,9 @@ LEAKS = {
 def test_canary_in_patch_fails_closed(action, mode):
     if mode in ("delete_binary", "modify_binary"):
         commit_base_file(action, "secret.bin", b"\0" + KEY.encode())
+    if mode == "ebcdic_base_attribute":
+        attribute = b"secret.dat binary working-tree-encoding=IBM037\n"
+        commit_base_file(action, ".gitattributes", attribute)
     (action["home"] / "mode").write_text(mode)
     result = run_action(action, "agent")
     assert result.returncode == 1
@@ -524,6 +537,7 @@ def replace_policy_git(policy: Path, problem: str, tmp_path: Path) -> None:
 
 REFUSALS = {
     "wrong_base": "not at the base SHA",
+    "wrong_base_malformed_config": "not at the base SHA",
     "policy_inside_work": "policy checkout must be separate",
     "policy_nested_in_work": "policy checkout must be separate",
     "work_nested_in_policy": "policy checkout must be separate",
@@ -559,8 +573,11 @@ REFUSALS = {
 @pytest.mark.parametrize("problem", sorted(REFUSALS))
 def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
     work, env = action["work"], action["env"]
-    if problem == "wrong_base":
+    if problem.startswith("wrong_base"):
         env["BASE_SHA"] = "b" * 40
+        if problem.endswith("malformed_config"):
+            # The base check comes first, so unreadable repository config never masks it.
+            (work / ".git" / "config").write_text("[core\n")
     elif problem == "policy_inside_work":
         env["POLICY_PATH"] = str(work)
     elif problem == "policy_nested_in_work":
@@ -695,6 +712,7 @@ def test_setup_refuses_persisted_credentials_before_running(action, checkout, se
 
 SETUP_REFUSALS = {
     "commit_after_base": "work tree is not at the base SHA",
+    "wrong_base_malformed_config": "work tree is not at the base SHA",
     "missing_base": "invalid inputs",
     "malformed_base": "invalid inputs",
     "untracked_script": "work tree is not clean before setup",
@@ -732,6 +750,9 @@ def test_setup_never_runs_code_outside_base_sha(action, problem, tmp_path):
     if problem == "commit_after_base":
         git(work, "add", "bootstrap.sh")
         git(work, "commit", "-q", "-m", "after base")
+    elif problem == "wrong_base_malformed_config":
+        env["BASE_SHA"] = "b" * 40
+        (work / ".git" / "config").write_text("[core\n")
     elif problem == "missing_base":
         del env["BASE_SHA"]
     elif problem == "malformed_base":
