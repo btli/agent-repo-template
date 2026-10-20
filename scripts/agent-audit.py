@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
-from agent_repo.apply.actions import canonical_bot_login  # noqa: E402
+from agent_repo.apply.actions import _bot_comments, canonical_bot_login  # noqa: E402
 from agent_repo.markers import find_markers  # noqa: E402
 
 
@@ -47,8 +47,8 @@ def gh_items(endpoint: str) -> list:
 def marker_comments(comments: list, bot_login: str) -> list[str]:
     lines = []
     for comment in comments:
-        user = comment.get("user") or {}
-        if canonical_bot_login(user.get("login", "")) != bot_login:
+        # Apply's own check: the author must be a Bot account with the bot's login.
+        if (bot_login, comment.get("body")) not in _bot_comments([comment]):
             continue
         for found in find_markers(comment.get("body") or ""):
             number = comment.get("issue_url", "").rsplit("/", 1)[-1]

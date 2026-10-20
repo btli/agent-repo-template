@@ -100,10 +100,16 @@ def _since(item: dict, field: str, since: datetime) -> bool:
 
 def triage_runs(
     repo: str, since: datetime
-) -> tuple[dict[int, dict], list[tuple[int, int]], dict[int, list[tuple[str, dict | None]]]]:
+) -> tuple[
+    dict[int, dict],
+    list[tuple[int, int]],
+    dict[int, list[tuple[str, dict | None]]],
+    list[tuple[int, int]],
+]:
     """Return the newest applied decision per issue, the (issue, run) pairs whose triage
-    run left a marker but no readable `agent-decision-<run_id>` record, and each marker
-    issue's runs as (marker time, decision or None), newest first."""
+    run left a marker but no readable `agent-decision-<run_id>` record, each marker issue's
+    runs as (run start, decision or None) newest first, and the (issue, run) pairs whose
+    start time could not be read."""
     repository_id = gh_json(f"repos/{repo}")["id"]
     runs: dict[int, dict] = {}
     for artifact in gh_items(f"repos/{repo}/actions/artifacts?per_page=100", "artifacts"):
@@ -118,11 +124,23 @@ def triage_runs(
             continue
         entry = runs.setdefault(run["id"], {"issue": None, "started": "", "record": None})
         if match := MARKER_ARTIFACT.fullmatch(artifact["name"]):
-            # The marker is uploaded by propose, before apply acts.
             entry["issue"] = int(match.group(1))
-            entry["started"] = artifact["created_at"]
         elif artifact["name"] == DECISION_RECORD.format(run_id=run["id"]):
             entry["record"] = artifact
+    unstarted: list[tuple[int, int]] = []
+    for run_id, entry in runs.items():
+        if entry["issue"] is None:
+            continue
+        # A run starts before it uploads anything, so order runs by the run's own start.
+        try:
+            started = gh_json(f"repos/{repo}/actions/runs/{run_id}")["run_started_at"]
+        except (GhError, KeyError, TypeError):
+            started = None
+        if isinstance(started, str):
+            entry["started"] = started
+        else:
+            unstarted.append((entry["issue"], run_id))
+            entry["issue"] = None
     schema = load_schema("decision")
     decisions: dict[int, dict] = {}
     missing: list[tuple[int, int]] = []
@@ -145,7 +163,7 @@ def triage_runs(
             missing.append((entry["issue"], run_id))
         elif entry["issue"] not in decisions:
             decisions[entry["issue"]] = decision
-    return decisions, missing, by_issue
+    return decisions, missing, by_issue, sorted(unstarted)
 
 
 def load_policy(repo: str, ref: str | None = None):
@@ -262,16 +280,25 @@ def issue_events(repo: str, numbers: set[int]) -> tuple[dict[int, list], list[in
 
 
 def _by_bot(event: dict, bot_login: str) -> bool:
-    return canonical_bot_login((event.get("actor") or {}).get("login", "")) == bot_login
+    # As apply does for comments, the actor must be a Bot account, not a look-alike user.
+    actor = event.get("actor") or {}
+    return actor.get("type") == "Bot" and canonical_bot_login(actor.get("login", "")) == bot_login
 
 
 def reopen_counts(events: dict[int, list], bot_login: str, since: datetime) -> tuple[int, int]:
-    """Count in-window bot close events, each correlated with the bot's agent:closed label
-    added at or after it (apply closes, then labels) and before any later reopen, and how
-    many of those closes were later reopened."""
+    """Count in-window bot close events correlated with the bot's agent:closed label, and
+    how many of those closes were later reopened. A close correlates when the bot added the
+    label at or after it (apply closes, then labels) and before any later reopen, or when a
+    bot-added label was still present at it (a re-close of a reopened issue)."""
     closed = reopened = 0
     for timeline in events.values():
         reopens = [event["created_at"] for event in timeline if event.get("event") == "reopened"]
+        removals = [
+            event["created_at"]
+            for event in timeline
+            if event.get("event") == "unlabeled"
+            and (event.get("label") or {}).get("name") == "agent:closed"
+        ]
         labelled = [
             event["created_at"]
             for event in timeline
@@ -286,8 +313,14 @@ def reopen_counts(events: dict[int, list], bot_login: str, since: datetime) -> t
                 or not _by_bot(event, bot_login)
                 or not _since(event, "created_at", since)
                 or not any(
-                    close_time <= label_time
-                    and not any(close_time < reopen < label_time for reopen in reopens)
+                    (
+                        close_time <= label_time
+                        and not any(close_time < reopen < label_time for reopen in reopens)
+                    )
+                    or (
+                        label_time < close_time
+                        and not any(label_time < removal <= close_time for removal in removals)
+                    )
                     for label_time in labelled
                 )
             ):
@@ -393,7 +426,7 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
     since = now - timedelta(days=args.days)
     bot_login = canonical_bot_login(args.bot_login or "")
     lines: list[str] = []
-    decisions, missing, runs = triage_runs(args.repo, since)
+    decisions, missing, runs, unstarted = triage_runs(args.repo, since)
     policy = load_policy(args.repo)
     issues, skipped = {}, []
     for number in sorted(decisions):
@@ -442,21 +475,32 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
         for number, run_id in sorted(missing)
     ] or ["- None."]
 
-    labelled = {
-        item["number"]
-        for item in gh_items(
-            f"repos/{args.repo}/issues?labels={quote('agent:closed')}&state=all&per_page=100"
-        )
-        if "pull_request" not in item
-    }
+    gaps = []
+    try:
+        labelled = {
+            item["number"]
+            for item in gh_items(
+                f"repos/{args.repo}/issues?labels={quote('agent:closed')}&state=all&per_page=100"
+            )
+            if "pull_request" not in item
+        }
+    except GhError:
+        labelled = set()
+        skipped.append("- agent:closed issue listing failed")
+        gaps.append("the agent:closed issue listing failed")
+    skipped += [f"- #{number}: run {run_id} start lookup failed" for number, run_id in unstarted]
+    if unstarted:
+        gaps.append(f"{len(unstarted)} triage run start lookups failed")
     numbers = set(runs) | labelled
     events, events_skipped = issue_events(args.repo, numbers)
     skipped += [f"- #{number}: issue events lookup failed" for number in events_skipped]
+    if events_skipped:
+        gaps.insert(0, f"{len(events_skipped)} issue event lookups failed")
     lines += ["", "## Skipped issues", "", *(skipped or ["- None."])]
 
     lines += ["", "## Reopen rate for agent:closed", ""]
-    # Criteria read from issue events cannot be judged for issues whose events failed to load.
-    events_gap = f"{len(events_skipped)} issue event lookups failed" if events_skipped else ""
+    # Criteria read from issue events cannot be judged when lookups they depend on failed.
+    events_gap = "; ".join(gaps)
     if bot_login:
         closed, reopened = reopen_counts(events, bot_login, since)
         repo_stats.update({"agent_closed": closed, "reopened": reopened})

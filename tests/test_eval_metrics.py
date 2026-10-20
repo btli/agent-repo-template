@@ -163,6 +163,17 @@ def test_close_routed_to_a_maintainer_first_is_not_eligible(change):
         ({"answers": {"security_sensitive": {"value": True, "p": 0.9}}}, "needs-maintainer"),
         # Request text without a true needs_info answer is not posted by apply.
         ({"needs_info": {"text": "Please share the versions."}}, "label"),
+        # Apply plans both labels here; the maintainer hand-off takes precedence.
+        (
+            {
+                "answers": {
+                    "needs_info": {"value": True, "p": 0.9},
+                    "type": {"value": "bug", "p": 0.5},
+                },
+                "needs_info": {"text": "Please share the versions."},
+            },
+            "needs-maintainer",
+        ),
     ],
 )
 def test_outcome_follows_apply_plan_for_answers_apply_routes(change, expected):

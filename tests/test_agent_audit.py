@@ -41,8 +41,8 @@ def test_audit_lists_exactly_the_marked_items(fake_gh, capsys):
     assert audit.main(["--repo", "your-org/example", "--bot-login", "example-agent"]) == 0
     lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("- ")]
     url = "https://github.com/your-org/example"
-    # The bot's unmarked comment, a forged marker from a person and the unlabelled issue
-    # are not listed.
+    # The bot's unmarked comment, a forged marker from a person, a marker from a User account
+    # whose login matches the bot's, and the unlabelled issue are not listed.
     assert lines == [
         f"- #7 triage run 1001: {url}/issues/7#issuecomment-1",
         f"- #8 off run 1002: {url}/issues/8#issuecomment-2",
