@@ -1,0 +1,9 @@
+issue:
+  title: "Provide a desktop app to edit configuration files"
+  body: |
+    Non-developers on our team would like a graphical editor that shows each key with a form field and validates as they type.
+expected:
+  labels: [type:feature, area:unknown, P3]
+  area: unknown
+  priority: P3
+  outcome: close

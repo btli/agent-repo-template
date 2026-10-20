@@ -1,0 +1,9 @@
+issue:
+  title: "Add an option to append lists instead of replacing them when merging"
+  body: |
+    When a local override file defines `plugins = ["extra"]`, the merged list replaces the base list. We would like a per-key merge strategy such as `merge = "append"` so overrides can add plugins without repeating the base list.
+expected:
+  labels: [type:feature, area:merge, P3]
+  area: merge
+  priority: P3
+  outcome: label

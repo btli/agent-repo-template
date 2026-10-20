@@ -1,0 +1,41 @@
+{
+  "schema_version": "1",
+  "run_id": "eval",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tier": 2,
+  "answers": {
+    "type": {
+      "value": "bug",
+      "p": 0.9
+    },
+    "area": {
+      "value": "merge",
+      "p": 0.9
+    },
+    "priority": {
+      "value": "P0",
+      "p": 0.9
+    },
+    "needs_info": {
+      "value": false,
+      "p": 0.9
+    }
+  },
+  "labels": [
+    "type:bug",
+    "area:merge"
+  ],
+  "suggestions": {
+    "priority": "P0",
+    "labels": [
+      "P0"
+    ]
+  },
+  "needs_info": null,
+  "rca": null,
+  "close": null,
+  "escalate": null,
+  "security": false,
+  "notes": [],
+  "mode": "llm-only"
+}

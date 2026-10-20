@@ -1,0 +1,9 @@
+issue:
+  title: "Add `--format json` to `larkspur check`"
+  body: |
+    Editor integrations would be easier with machine-readable output. A `--format json` option that prints each error with file, line, key and message would be enough.
+expected:
+  labels: [type:feature, area:cli, P3]
+  area: cli
+  priority: P3
+  outcome: label

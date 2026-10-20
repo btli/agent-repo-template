@@ -1,0 +1,20 @@
+issue:
+  title: "Environment override replaces a whole section instead of one key"
+  body: |
+    Larkspur 2.4.1, Python 3.12.
+
+    With `LARKSPUR_DB__HOST=db.internal` set, `config["db"]` becomes `{"host": "db.internal"}` and `port` and `user` disappear. Every service in our deployment then connects with default credentials to the wrong port. Minimal file:
+
+    ```toml
+    [db]
+    host = "localhost"
+    port = 5433
+    user = "app"
+    ```
+
+    Expected only `host` to change.
+expected:
+  labels: [type:bug, area:merge, P0]
+  area: merge
+  priority: P0
+  outcome: needs-maintainer

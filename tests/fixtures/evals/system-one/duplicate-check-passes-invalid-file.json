@@ -1,0 +1,50 @@
+{
+  "schema_version": "1",
+  "run_id": "eval",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tier": 2,
+  "answers": {
+    "type": {
+      "value": "bug",
+      "p": 0.95
+    },
+    "area": {
+      "value": "cli",
+      "p": 0.9
+    },
+    "priority": {
+      "value": "P2",
+      "p": 0.9
+    },
+    "needs_info": {
+      "value": false,
+      "p": 0.9
+    },
+    "duplicate_of": {
+      "value": "#42",
+      "p": 0.95
+    }
+  },
+  "labels": [
+    "type:bug",
+    "area:cli",
+    "P2"
+  ],
+  "suggestions": {
+    "priority": null,
+    "labels": []
+  },
+  "needs_info": null,
+  "rca": null,
+  "close": {
+    "kind": "duplicate",
+    "target": 42,
+    "docs_ref": null,
+    "p": 0.95,
+    "lexical": 0.7,
+    "tier2_agrees": true
+  },
+  "escalate": null,
+  "security": false,
+  "notes": []
+}

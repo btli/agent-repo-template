@@ -1,0 +1,17 @@
+issue:
+  title: "Validation stops at the first error, so CI needs many runs"
+  body: |
+    Larkspur 2.4.1, Python 3.12.
+
+    Since 2.4.0, `larkspur.validate()` raises on the first invalid key instead of collecting every error. Our CI configuration has dozens of keys and nobody can see all problems at once; the documented `collect_errors=True` flag has no effect.
+
+    ```python
+    larkspur.validate(cfg, schema, collect_errors=True)
+    ```
+
+    Expected a list of all errors. Actual: the first `ValidationError` only. There is no workaround.
+expected:
+  labels: [type:bug, area:validation, P1]
+  area: validation
+  priority: P1
+  outcome: needs-maintainer

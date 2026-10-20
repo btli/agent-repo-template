@@ -1,0 +1,16 @@
+issue:
+  title: "CI passes even though larkspur check prints errors"
+  body: |
+    Larkspur 2.4.1, Python 3.12.
+
+    Our CI job runs `larkspur check config.toml --schema schema.toml`. It prints
+    `config.toml:7: retries: expected int` but the job still succeeds because the
+    command exits 0. Expected a failing exit code. We grep the output as a workaround.
+duplicate_target:
+  number: 42
+  state: open
+expected:
+  labels: [type:bug, area:cli, P2]
+  area: cli
+  priority: P2
+  outcome: close

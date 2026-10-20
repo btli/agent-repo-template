@@ -1,0 +1,17 @@
+issue:
+  title: "`larkspur check` exits 0 when validation fails"
+  body: |
+    Larkspur 2.4.1, Python 3.12.
+
+    ```
+    $ larkspur check config.toml --schema schema.toml; echo $?
+    config.toml:3: port: expected int
+    0
+    ```
+
+    Expected a non-zero exit code so CI fails. Parsing the output with grep is our workaround.
+expected:
+  labels: [type:bug, area:cli, P2]
+  area: cli
+  priority: P2
+  outcome: label

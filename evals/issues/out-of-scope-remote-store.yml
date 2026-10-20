@@ -1,0 +1,9 @@
+issue:
+  title: "Load configuration from a remote key-value store"
+  body: |
+    We keep settings in a remote key-value service. Could Larkspur fetch and watch keys from it directly, with caching and automatic reloads?
+expected:
+  labels: [type:feature, area:unknown, P3]
+  area: unknown
+  priority: P3
+  outcome: close

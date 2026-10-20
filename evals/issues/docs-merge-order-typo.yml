@@ -1,0 +1,9 @@
+issue:
+  title: "Merge-order guide lists the layers in the wrong order"
+  body: |
+    The merge-order page says environment variables are applied before the local file, but the code (and the changelog) apply them last. The example output on that page matches the code, not the text.
+expected:
+  labels: [type:docs, area:docs, P3]
+  area: docs
+  priority: P3
+  outcome: label

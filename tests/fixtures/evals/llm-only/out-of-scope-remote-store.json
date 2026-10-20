@@ -1,0 +1,47 @@
+{
+  "schema_version": "1",
+  "run_id": "eval",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tier": 2,
+  "answers": {
+    "type": {
+      "value": "feature",
+      "p": 0.9
+    },
+    "area": {
+      "value": "unknown",
+      "p": 0.85
+    },
+    "priority": {
+      "value": "P3",
+      "p": 0.9
+    },
+    "needs_info": {
+      "value": false,
+      "p": 0.9
+    }
+  },
+  "labels": [
+    "type:feature",
+    "area:unknown",
+    "P3"
+  ],
+  "suggestions": {
+    "priority": null,
+    "labels": []
+  },
+  "needs_info": null,
+  "rca": null,
+  "close": {
+    "kind": "out_of_scope",
+    "target": null,
+    "docs_ref": "https://example.org/larkspur/faq",
+    "p": 0.95,
+    "lexical": null,
+    "tier2_agrees": true
+  },
+  "escalate": null,
+  "security": false,
+  "notes": [],
+  "mode": "llm-only"
+}

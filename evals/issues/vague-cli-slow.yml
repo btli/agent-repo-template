@@ -1,0 +1,9 @@
+issue:
+  title: "larkspur check is slow"
+  body: |
+    The check command takes a long time on our repository.
+expected:
+  labels: [type:bug, area:cli, P3, needs-info]
+  area: cli
+  priority: P3
+  outcome: needs-info

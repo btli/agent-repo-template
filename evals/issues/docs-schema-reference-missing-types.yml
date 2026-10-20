@@ -1,0 +1,9 @@
+issue:
+  title: "Schema reference does not document the `duration` type"
+  body: |
+    The schema reference lists str, int, float, bool and list, but `duration` is accepted by the validator and used in the examples. Please document its accepted formats.
+expected:
+  labels: [type:docs, area:docs, P3]
+  area: docs
+  priority: P3
+  outcome: label

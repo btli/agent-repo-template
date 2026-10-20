@@ -1,0 +1,41 @@
+{
+  "schema_version": "1",
+  "run_id": "eval",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tier": 2,
+  "answers": {
+    "type": {
+      "value": "bug",
+      "p": 0.9
+    },
+    "area": {
+      "value": "unknown",
+      "p": 0.85
+    },
+    "priority": {
+      "value": "P2",
+      "p": 0.82
+    },
+    "needs_info": {
+      "value": true,
+      "p": 0.93
+    }
+  },
+  "labels": [
+    "type:bug",
+    "P2",
+    "needs-info"
+  ],
+  "suggestions": {
+    "priority": null,
+    "labels": []
+  },
+  "needs_info": {
+    "text": "Please provide the Larkspur and Python versions."
+  },
+  "rca": null,
+  "close": null,
+  "escalate": null,
+  "security": false,
+  "notes": []
+}

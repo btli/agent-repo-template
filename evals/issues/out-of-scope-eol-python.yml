@@ -1,0 +1,9 @@
+issue:
+  title: "Please support Python 3.7 again"
+  body: |
+    Our production servers are pinned to Python 3.7. Could the next release restore support for it?
+expected:
+  labels: [type:feature, area:unknown, P3]
+  area: unknown
+  priority: P3
+  outcome: close

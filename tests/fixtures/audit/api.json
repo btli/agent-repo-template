@@ -1,0 +1,114 @@
+{
+ "repos/your-org/example/issues/comments": {
+  "json": [
+   {
+    "user": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "issue_url": "https://api.github.com/repos/your-org/example/issues/7",
+    "html_url": "https://github.com/your-org/example/issues/7#issuecomment-1",
+    "body": "Agent triage\n\nLabels applied.\n\n<!-- agent:triage run=1001 -->"
+   },
+   {
+    "user": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "issue_url": "https://api.github.com/repos/your-org/example/issues/8",
+    "html_url": "https://github.com/your-org/example/issues/8#issuecomment-2",
+    "body": "Agent automation is off for this item.\n\n<!-- agent:off run=1002 -->"
+   },
+   {
+    "user": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "issue_url": "https://api.github.com/repos/your-org/example/issues/8",
+    "html_url": "https://github.com/your-org/example/issues/8#issuecomment-3",
+    "body": "A bot comment without a marker."
+   },
+   {
+    "user": {
+     "login": "maintainer",
+     "type": "User"
+    },
+    "issue_url": "https://api.github.com/repos/your-org/example/issues/9",
+    "html_url": "https://github.com/your-org/example/issues/9#issuecomment-4",
+    "body": "Forged <!-- agent:triage run=666 -->"
+   },
+   {
+    "user": {
+     "login": "example-agent",
+     "type": "User"
+    },
+    "issue_url": "https://api.github.com/repos/your-org/example/issues/9",
+    "html_url": "https://github.com/your-org/example/issues/9#issuecomment-5",
+    "body": "Look-alike <!-- agent:triage run=667 -->"
+   }
+  ]
+ },
+ "repos/your-org/example/issues": {
+  "json": [
+   {
+    "number": 7,
+    "state": "closed",
+    "html_url": "https://github.com/your-org/example/issues/7",
+    "labels": [
+     {
+      "name": "type:bug"
+     },
+     {
+      "name": "agent:closed"
+     }
+    ]
+   },
+   {
+    "number": 8,
+    "state": "open",
+    "html_url": "https://github.com/your-org/example/issues/8",
+    "labels": [
+     {
+      "name": "agent:triage-capped"
+     },
+     {
+      "name": "needs-maintainer"
+     }
+    ]
+   },
+   {
+    "number": 11,
+    "state": "open",
+    "html_url": "https://github.com/your-org/example/issues/11",
+    "labels": [
+     {
+      "name": "agent:closed"
+     }
+    ]
+   },
+   {
+    "number": 9,
+    "state": "open",
+    "html_url": "https://github.com/your-org/example/issues/9",
+    "labels": [
+     {
+      "name": "type:bug"
+     }
+    ]
+   },
+   {
+    "number": 10,
+    "state": "open",
+    "html_url": "https://github.com/your-org/example/pull/10",
+    "labels": [
+     {
+      "name": "agent:fix"
+     }
+    ],
+    "pull_request": {
+     "url": "https://api.github.com/repos/your-org/example/pulls/10"
+    }
+   }
+  ]
+ }
+}
