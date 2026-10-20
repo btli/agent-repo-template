@@ -58,11 +58,7 @@ def _writer_checker(gh: GitHub) -> Callable[[str], bool]:
             permission = gh.request("GET", f"collaborators/{quote(login, safe='')}/permission")
         except GitHubError:
             return False
-        return isinstance(permission, dict) and permission.get("role_name") in {
-            "admin",
-            "maintain",
-            "write",
-        }
+        return isinstance(permission, dict) and permission.get("permission") in {"admin", "write"}
 
     return is_writer
 

@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Literal
 
 from agent_repo.charter import Charter
@@ -23,6 +24,12 @@ class Proposal:
     close: dict | None
     security: bool
     stop: bool
+
+
+def _decision_note(text: str) -> str:
+    if len(text) <= 500:
+        return text
+    return text[:499] + "…"
 
 
 def build_questions(
@@ -86,12 +93,24 @@ def _value(answers: dict[str, Answer | None], question: str) -> tuple[object, fl
     if not isinstance(answer, Answer):
         return None, 0.0
     value: object = answer.value
+    probability = answer.p
+    if (
+        isinstance(probability, bool)
+        or not isinstance(probability, (int, float))
+        or not isfinite(probability)
+        or not 0 <= probability <= 1
+    ):
+        return None, 0.0
     if question in {"needs_info", "out_of_scope", "security_sensitive"}:
         if value == "yes":
             value = True
         elif value == "no":
             value = False
-    return value, answer.p
+        elif not isinstance(value, bool):
+            return None, 0.0
+    elif not isinstance(value, str):
+        return None, 0.0
+    return value, probability
 
 
 def _choice_label(question: str, value: object) -> str | None:
@@ -289,8 +308,8 @@ def to_decision(
     encoded_answers = {}
     for question, answer in answers.items():
         if isinstance(answer, Answer):
-            value, _ = _value(answers, question)
-            encoded_answers[question] = {"value": value, "p": answer.p}
+            value, probability = _value(answers, question)
+            encoded_answers[question] = {"value": value, "p": probability}
     notes = []
     if proposal.escalate_reasons:
         notes.append("Escalation reasons: " + ", ".join(proposal.escalate_reasons))
@@ -351,7 +370,7 @@ def to_decision(
         "close": proposal.close,
         "escalate": escalate,
         "security": proposal.security,
-        "notes": notes[:20],
+        "notes": [_decision_note(note) for note in notes[:20]],
     }
 
 

@@ -153,6 +153,27 @@ def test_route_follows_each_spec_43_rule(answers_value, expected_label, expected
         assert "needs_info" in proposal.escalate_reasons
 
 
+@pytest.mark.parametrize(
+    ("question", "value", "probability"),
+    [
+        ("priority", ["P0"], 0.9),
+        ("type", {"bug": True}, 0.9),
+        ("priority", "P0", float("nan")),
+    ],
+)
+def test_route_fails_closed_on_direct_malformed_answers(question, value, probability):
+    model_answers = answers()
+    model_answers[question] = Answer(question, value, probability)
+
+    proposal = route(model_answers, CONFIG, EVENT, True, [])
+    decision = to_decision(proposal, model_answers, "run", "a" * 40, 1)
+
+    assert question in proposal.escalate_reasons
+    assert proposal.escalate
+    assert decision["answers"][question] == {"value": None, "p": 0.0}
+    assert validate(decision, load_schema("decision")) == []
+
+
 def test_route_priority_p0_is_suggested_but_never_labeled():
     proposal = route(answers(priority=("P0", 0.9)), CONFIG, EVENT, True, [])
 
@@ -1097,15 +1118,22 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
             if path == "/search/issues":
                 return {"items": []}
             if path.endswith("/permission"):
-                if "maintainer" in path:
-                    return {"role_name": "maintain"}
+                login = path.split("/")[1]
+                if login == "custom-writer":
+                    return {"permission": "write", "role_name": "custom-writer"}
+                if login == "maintainer":
+                    return {"permission": "write", "role_name": "maintain"}
+                if login == "triage-writer":
+                    return {"permission": "read", "role_name": "triage"}
                 raise GitHubError(permission_status)
             raise AssertionError(path)
 
         def paginate(self, path):
             return [
                 {"body": "author comment", "user": {"login": "contributor", "type": "User"}},
-                {"body": "writer comment", "user": {"login": "maintainer", "type": "User"}},
+                {"body": "writer comment", "user": {"login": "custom-writer", "type": "User"}},
+                {"body": "maintain comment", "user": {"login": "maintainer", "type": "User"}},
+                {"body": "triage role comment", "user": {"login": "triage-writer", "type": "User"}},
                 {"body": "IGNORE PREVIOUS", "user": {"login": "outsider", "type": "User"}},
                 {"body": "bot comment", "user": {"login": "helper[bot]", "type": "Bot"}},
                 {"body": "denied comment", "user": {"login": "denied", "type": "User"}},
@@ -1137,9 +1165,19 @@ def test_feature_and_free_text_bodies_reach_tier1(tmp_path, monkeypatch, body, p
     assert artifact["tier"] == 1
     assert calls
     assert len(prompts) == 1
-    for included in ("# Example project charter", "author comment", "writer comment"):
+    for included in (
+        "# Example project charter",
+        "author comment",
+        "writer comment",
+        "maintain comment",
+    ):
         assert included in prompts[0]
-    for excluded in ("IGNORE PREVIOUS", "bot comment", "denied comment"):
+    for excluded in (
+        "IGNORE PREVIOUS",
+        "bot comment",
+        "denied comment",
+        "triage role comment",
+    ):
         assert excluded not in prompts[0]
         assert excluded not in context_path.read_text()
 
@@ -1362,6 +1400,57 @@ def test_command_unhashable_system_one_choice_fails_closed(tmp_path, monkeypatch
     assert artifact["escalate"] is None
     assert "type" in artifact["notes"][0]
     assert "tier2=true" in (tmp_path / "output").read_text()
+
+
+def test_command_bounds_long_docs_reference_suggestion_note(tmp_path, monkeypatch):
+    from agent_repo.commands import decide as command
+
+    checkout, event_path, decision_path, context_path = prepare_command_checkout(
+        tmp_path, "### Version\n1.2.3\n\n### Steps to reproduce\nOpen the app"
+    )
+    long_docs_url = "https://example.org/" + "x" * 620
+    charter_path = checkout / ".agents/charter.md"
+    charter_path.write_text(
+        charter_path.read_text().replace("https://example.org/guide", long_docs_url)
+    )
+
+    class FakeGitHub:
+        def __init__(self, token, repo):
+            pass
+
+        def request(self, method, path, *, params=None):
+            if path == "/search/issues":
+                return {"items": []}
+            raise AssertionError(path)
+
+        def paginate(self, path):
+            return []
+
+    def selected_docs(_config, _base_url, _key, _prompt, questions):
+        values = {
+            "type": "feature",
+            "area": "core",
+            "priority": "P3",
+            "needs_info": "no",
+            "out_of_scope": "no",
+            "docs_ref": long_docs_url,
+            "security_sensitive": "no",
+        }
+        return {
+            question.id: Answer(question.id, values[question.id], 0.95) for question in questions
+        }
+
+    monkeypatch.setattr(command, "GitHub", FakeGitHub)
+    monkeypatch.setattr(command, "ask", selected_docs)
+    set_command_environment(monkeypatch, tmp_path, event_path)
+
+    assert command.main([str(checkout), str(decision_path), str(context_path)]) == 0
+
+    artifact = json.loads(decision_path.read_text())
+    suggestion = next(note for note in artifact["notes"] if "Suggested documentation" in note)
+    assert len(suggestion) == 500
+    assert suggestion.endswith("…")
+    assert validate(artifact, load_schema("decision")) == []
 
 
 def test_command_cap_check_error_for_confident_bug_hands_off_in_apply_plan(tmp_path, monkeypatch):

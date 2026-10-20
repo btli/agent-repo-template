@@ -148,6 +148,11 @@ def test_duplicate_candidate_search_uses_github_repo_and_limits_results():
             "The app is broken when exporting CSV with unicode",
             "exporting OR unicode OR broken OR csv",
         ),
+        (
+            "Exporting unicode CSV breaks pagination silently",
+            "pagination OR exporting OR silently OR unicode",
+        ),
+        ("orange purple silver yellow black", "orange OR purple OR silver OR yellow"),
     ],
 )
 def test_duplicate_search_prefers_distinctive_late_title_terms(title, expected_terms):
