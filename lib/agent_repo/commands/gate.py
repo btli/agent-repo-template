@@ -30,6 +30,7 @@ def _write_outputs(result: GateResult) -> None:
         "command": result.command.name if result.command else "",
         "command_args": result.command.args if result.command else "",
         "canary": result.canary,
+        "head_sha": result.head_sha,
     }
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         for name, value in values.items():

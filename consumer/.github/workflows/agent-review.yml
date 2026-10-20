@@ -1,0 +1,125 @@
+name: Agent pull request review
+
+on:
+  # zizmor: ignore[dangerous-triggers] Reads PR data via API and checks out event-time policy only.
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  agent-review-gate:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      canary: ${{ steps.gate.outputs.canary }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+    steps:
+      - name: Gate review request
+        id: gate
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
+        uses: btli/agent-repo-template/actions/gate@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          workflow: review
+          enabled: ${{ vars.AGENTS_ENABLED }}
+          bot-login: ${{ vars.AGENT_BOT_LOGIN }}
+
+  agent-propose-review:
+    needs: agent-review-gate
+    if: ${{ needs.agent-review-gate.outputs.run == 'true' }}
+    runs-on: ubuntu-24.04
+    environment: agent-propose-review
+    concurrency:
+      group: agent-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      run: ${{ needs.agent-review-gate.outputs.run }}
+      canary: ${{ needs.agent-review-gate.outputs.canary }}
+      head_sha: ${{ needs.agent-review-gate.outputs.head_sha }}
+    steps:
+      - name: Checkout review policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: agent-review-policy
+          sparse-checkout: .agents
+          persist-credentials: false
+      - name: Set up repository agent
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
+        uses: btli/agent-repo-template/actions/setup@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          gateway-url: ${{ vars.AGENT_GATEWAY_URL }}
+          gateway-kind: ${{ vars.AGENT_GATEWAY_KIND }}
+          model: ${{ vars.AGENT_REVIEW_MODEL }}
+        env:
+          LLM_API_KEY: ${{ secrets.AGENT_REVIEW_KEY }}
+      - name: Propose review
+        id: propose
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
+        uses: btli/agent-repo-template/actions/review-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        env:
+          LLM_API_KEY: ${{ secrets.AGENT_REVIEW_KEY }}
+        with:
+          mode: propose
+          config-dir: ${{ github.workspace }}/agent-review-policy/.agents
+          expected-head-sha: ${{ needs.agent-review-gate.outputs.head_sha }}
+          canary: ${{ needs.agent-review-gate.outputs.canary }}
+          files-file: ${{ runner.temp }}/agent-review/files.json
+          output-file: ${{ runner.temp }}/agent-review/review.json
+          run-id: ${{ github.run_id }}
+      - name: Share review inputs with the apply job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-review-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/agent-review/review.json
+          if-no-files-found: error
+          retention-days: 1
+
+  agent-apply-review:
+    needs: agent-propose-review
+    if: needs.agent-propose-review.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    environment: agent-apply
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download review inputs
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-review-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-review
+      - name: Create review bot token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.AGENT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
+      - name: Apply review
+        # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
+        uses: btli/agent-repo-template/actions/review-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          mode: apply
+          output-file: ${{ runner.temp }}/agent-review/review.json
+          run-id: ${{ github.run_id }}
+          expected-head-sha: ${{ needs.agent-propose-review.outputs.head_sha }}
+          token: ${{ steps.app-token.outputs.token }}
+          scan-keys: ${{ secrets.AGENT_SCAN_KEYS }}
+          bot-login: ${{ vars.AGENT_BOT_LOGIN }}
+          canary: ${{ needs.agent-propose-review.outputs.canary }}

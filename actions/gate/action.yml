@@ -35,6 +35,9 @@ outputs:
   canary:
     description: Fresh random marker for output scanning.
     value: ${{ steps.gate.outputs.canary }}
+  head_sha:
+    description: Pull request head captured when the gate authorized the event.
+    value: ${{ steps.gate.outputs.head_sha }}
 runs:
   using: composite
   steps:
