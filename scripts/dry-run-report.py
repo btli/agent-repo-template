@@ -3,8 +3,9 @@
 Usage: dry-run-report.py --repo OWNER/REPO [--days 30] [--bot-login LOGIN]
                          [--tier2-budget-alerts N]
 
-Reads decision artifacts and current labels through `gh api`, prints Markdown, and
-always exits 0 so a failed lookup never blocks the maintainer reading the report.
+Reads each triage run's `agent-decision-<run_id>` record and current labels through
+`gh api`, prints Markdown, and always exits 0 so a failed lookup never blocks the
+maintainer reading the report.
 """
 
 from __future__ import annotations
@@ -33,7 +34,8 @@ from eval import abort_flags, close_enable_ready  # noqa: E402
 MARKER_ARTIFACT = re.compile(
     re.escape(TRIAGE_MARKER_NAME).replace(re.escape("{issue_number}"), "([1-9][0-9]*)")
 )
-TIER2_COUNTER = re.compile(r"tier2-[0-9]{8}(?:-.+)?")
+# Apply uploads the applied decision under this exact name; hand-off artifacts are ignored.
+DECISION_RECORD = "agent-decision-{run_id}"
 # Labels the triage apply allowlist may add; anything else from the bot is out of policy.
 TRIAGE_FIXED_LABELS = {
     "P2",
@@ -85,8 +87,9 @@ def _since(item: dict, field: str, since: datetime) -> bool:
     return isinstance(value, str) and datetime.fromisoformat(value) >= since
 
 
-def latest_decisions(repo: str, since: datetime) -> dict[int, dict]:
-    """Return the newest schema-valid decision per issue from same-repository triage runs."""
+def latest_decisions(repo: str, since: datetime) -> tuple[dict[int, dict], list[tuple[int, int]]]:
+    """Return the newest applied decision per issue, and the (issue, run) pairs whose
+    triage run left a marker but no readable `agent-decision-<run_id>` record."""
     repository_id = gh_json(f"repos/{repo}")["id"]
     runs: dict[int, dict] = {}
     for artifact in gh_items(f"repos/{repo}/actions/artifacts?per_page=100", "artifacts"):
@@ -97,31 +100,33 @@ def latest_decisions(repo: str, since: datetime) -> dict[int, dict]:
             or not _since(artifact, "created_at", since)
         ):
             continue
-        entry = runs.setdefault(run["id"], {"issue": None, "created": "", "artifacts": []})
+        entry = runs.setdefault(run["id"], {"issue": None, "created": "", "record": None})
         entry["created"] = max(entry["created"], artifact["created_at"])
         if match := MARKER_ARTIFACT.fullmatch(artifact["name"]):
             entry["issue"] = int(match.group(1))
-        elif not artifact.get("expired") and not TIER2_COUNTER.fullmatch(artifact["name"]):
-            entry["artifacts"].append(artifact)
+        elif artifact["name"] == DECISION_RECORD.format(run_id=run["id"]) and not artifact.get(
+            "expired"
+        ):
+            entry["record"] = artifact
     schema = load_schema("decision")
     decisions: dict[int, dict] = {}
-    for entry in sorted(runs.values(), key=lambda item: item["created"], reverse=True):
-        if entry["issue"] is None or entry["issue"] in decisions:
+    missing: list[tuple[int, int]] = []
+    ordered = sorted(runs.items(), key=lambda item: item[1]["created"], reverse=True)
+    for run_id, entry in ordered:
+        if entry["issue"] is None:
             continue
-        for artifact in entry["artifacts"]:
-            archive = zipfile.ZipFile(
-                io.BytesIO(_gh([], f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"))
-            )
-            if "decision.json" not in archive.namelist():
-                continue
+        decision = None
+        if entry["record"] is not None:
+            content = _gh([], f"repos/{repo}/actions/artifacts/{entry['record']['id']}/zip")
             try:
-                decision = json.loads(archive.read("decision.json"))
-            except ValueError:
-                continue
-            if not validate(decision, schema):
-                decisions[entry["issue"]] = decision
-                break
-    return decisions
+                decision = json.loads(zipfile.ZipFile(io.BytesIO(content)).read("decision.json"))
+            except (KeyError, ValueError, zipfile.BadZipFile):
+                decision = None
+        if decision is None or validate(decision, schema):
+            missing.append((entry["issue"], run_id))
+        elif entry["issue"] not in decisions:
+            decisions[entry["issue"]] = decision
+    return decisions, missing
 
 
 def _rate(outcomes: list[bool]) -> float | None:
@@ -179,7 +184,7 @@ def _percent(value: float | None) -> str:
 def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
     since = now - timedelta(days=args.days)
     lines: list[str] = []
-    decisions = latest_decisions(args.repo, since)
+    decisions, missing = latest_decisions(args.repo, since)
     issues = {number: gh_json(f"repos/{args.repo}/issues/{number}") for number in decisions}
     repo_stats: dict = {}
     for mode, stats in sorted(mode_stats(decisions, issues).items()):
@@ -203,6 +208,12 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
         flags = abort_flags({key: stats[key] for key in stats if key != "close"})
         lines.extend(f"- ABORT: {flag}" for flag in flags)
         repo_stats.setdefault("flags", []).extend(flags)
+
+    lines += ["", "## Missing decision records", ""]
+    lines += [
+        f"- #{number}: run {run_id} has no readable {DECISION_RECORD.format(run_id=run_id)}"
+        for number, run_id in sorted(missing)
+    ] or ["- None."]
 
     since_text = since.strftime("%Y-%m-%dT%H:%M:%SZ")
     closed = [

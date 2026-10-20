@@ -43,8 +43,8 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     assert report.main([*argv, "--tier2-budget-alerts", "2"], now=NOW) == 0
     sections = _sections(capsys.readouterr().out)
 
-    # The fork run, the expired artifact and the run older than 30 days are ignored;
-    # issue 1 uses its newest decision.
+    # Only exact agent-decision-<run_id> records count, never hand-off artifacts or copies;
+    # the fork run and the run older than 30 days are ignored; issue 1 uses its newest record.
     system_one = sections["Mode: system-one"]
     assert "- Decided issues: 3" in system_one
     assert "- Type agreement: 67% (3 maintainer-labelled issues)" in system_one
@@ -57,6 +57,10 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     assert "Close readiness: not applicable; LLM-only mode never auto-closes." in llm_only
     assert "close_enable_ready" not in llm_only
 
+    assert sections["Missing decision records"].splitlines()[2:] == [
+        "- #8: run 107 has no readable agent-decision-107",
+        "- #11: run 109 has no readable agent-decision-109",
+    ]
     assert "- 1 of 2 reopened (50%)" in sections["Reopen rate for agent:closed"]
     # Only the bot's in-window P1 label counts; a human agent:fix label does not.
     assert "added by example-agent[bot]: 1" in sections["Out-of-policy actions"]
@@ -69,7 +73,11 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
 
     calls = [json.loads(line) for line in fake_gh.read_text().splitlines()]
     assert all(call[0] == "api" for call in calls)
-    assert ["api", "repos/your-org/example/actions/artifacts/11/zip"] not in calls
+    downloads = {call[-1] for call in calls if call[-1].endswith("/zip")}
+    assert downloads == {
+        f"repos/your-org/example/actions/artifacts/{artifact_id}/zip"
+        for artifact_id in (2, 5, 7, 9, 13)
+    }
 
 
 def test_report_without_optional_inputs_skips_those_criteria(fake_gh, capsys):
