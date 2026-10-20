@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import shutil
@@ -367,26 +368,11 @@ WORKTREE_SETTINGS = {
     "worktree_filter": ("filter.hooked.clean", "cat"),
     "worktree_extraheader": ("http.https://example.test/.extraheader", "basic e30="),
 }
-# Each policy path the action reads could be a symlink into the agent-branch checkout.
-POLICY_LINKS = {
-    "policy_agents_symlink": (".agents", ".agents"),
-    "policy_config_symlink": (".agents/config.yml", ".agents/config.yml"),
-    "policy_charter_symlink": (".agents/charter.md", ".agents/charter.md"),
-    "policy_doc_symlink": ("AGENTS.md", "lib.py"),
-}
 
 
-def plant_checkout_problem(work: Path, policy: Path, problem: str) -> None:
-    if problem in WORKTREE_SETTINGS:
-        git(work, "config", "extensions.worktreeConfig", "true")
-        git(work, "config", "--worktree", *WORKTREE_SETTINGS[problem])
-    else:
-        link, target = policy / POLICY_LINKS[problem][0], work / POLICY_LINKS[problem][1]
-        if link.is_dir():
-            shutil.rmtree(link)
-        else:
-            link.unlink(missing_ok=True)
-        link.symlink_to(target)
+def plant_worktree_config(work: Path, problem: str) -> None:
+    git(work, "config", "extensions.worktreeConfig", "true")
+    git(work, "config", "--worktree", *WORKTREE_SETTINGS[problem])
 
 
 REFUSALS = {
@@ -414,10 +400,7 @@ REFUSALS = {
     "policy_checkout_token": "persisted credentials",
     "worktree_filter": "git config defines filters",
     "worktree_extraheader": "persisted credentials",
-    "policy_agents_symlink": "resolves outside the policy checkout",
-    "policy_config_symlink": "resolves outside the policy checkout",
-    "policy_charter_symlink": "resolves outside the policy checkout",
-    "policy_doc_symlink": "resolves outside the policy checkout",
+    "policy_gitfile": "policy checkout must be a plain git checkout",
     "key_in_issue": "credential in prompt",
     "oversized_issue": "prompt byte cap exceeded",
 }
@@ -463,8 +446,10 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         git(work, "config", "url.https://x:tok3n@example.test/.insteadOf", "https://example.test/")
     elif problem in CREDENTIAL_SETTINGS:
         git(work, "config", *CREDENTIAL_SETTINGS[problem])
-    elif problem in WORKTREE_SETTINGS or problem in POLICY_LINKS:
-        plant_checkout_problem(work, Path(env["POLICY_PATH"]), problem)
+    elif problem in WORKTREE_SETTINGS:
+        plant_worktree_config(work, problem)
+    elif problem == "policy_gitfile":
+        (Path(env["POLICY_PATH"]) / ".git").write_text(f"gitdir: {tmp_path / 'elsewhere'}\n")
     elif problem == "policy_checkout_token":
         policy = Path(env["POLICY_PATH"])
         git(policy, "init", "-q")
@@ -570,13 +555,13 @@ SETUP_REFUSALS = {
     "ignored_script": "work tree is not clean before setup",
     "worktree_filter": "git config defines filters",
     "worktree_extraheader": "checkout persisted credentials; use persist-credentials: false",
-    "policy_agents_symlink": "policy file resolves outside the policy checkout",
-    "policy_config_symlink": "policy file resolves outside the policy checkout",
+    "symlinked_work_git": "work tree must be a plain git checkout",
+    "policy_gitfile": "policy checkout must be a plain git checkout",
 }
 
 
 @pytest.mark.parametrize("problem", sorted(SETUP_REFUSALS))
-def test_setup_never_runs_code_outside_base_sha(action, problem):
+def test_setup_never_runs_code_outside_base_sha(action, problem, tmp_path):
     work, env = action["work"], action["env"]
     policy = Path(env["POLICY_PATH"]) / ".agents"
     marker = Path(env["RUNNER_TEMP"]) / "untrusted-ran"
@@ -585,13 +570,7 @@ def test_setup_never_runs_code_outside_base_sha(action, problem):
         (work / "bootstrap.sh").write_text("true\n")
     elif problem == "ignored_script":
         (work / ".gitignore").write_text("bootstrap.sh\n")
-    elif problem in POLICY_LINKS:
-        # The linked agent-branch config names a committed script, so only the link check stops it.
-        branch = work / ".agents" / "config.yml"
-        command = 'setup: "bash bootstrap.sh"'
-        branch.write_text(branch.read_text().replace('setup: "echo agent > source.txt"', command))
-        (work / "bootstrap.sh").write_text(script)
-    if problem in ("modified_script", "ignored_script") or problem in POLICY_LINKS:
+    if problem in ("modified_script", "ignored_script"):
         git(work, "add", ".")
         git(work, "commit", "-q", "-m", "setup files")
         env["BASE_SHA"] = git(work, "rev-parse", "HEAD").strip()
@@ -608,12 +587,60 @@ def test_setup_never_runs_code_outside_base_sha(action, problem):
         env["BASE_SHA"] = env["BASE_SHA"][:39] + "G"
     elif problem == "filter_configured":
         git(work, "config", "filter.hooked.clean", "cat")
-    elif problem in WORKTREE_SETTINGS or problem in POLICY_LINKS:
-        plant_checkout_problem(work, policy.parent, problem)
+    elif problem in WORKTREE_SETTINGS:
+        plant_worktree_config(work, problem)
+    elif problem == "symlinked_work_git":
+        shutil.move(work / ".git", tmp_path / "real-git")
+        (work / ".git").symlink_to(tmp_path / "real-git")
+    elif problem == "policy_gitfile":
+        (policy.parent / ".git").write_text(f"gitdir: {tmp_path / 'elsewhere'}\n")
     result = run_action(action, "setup")
     assert not marker.exists()
     assert result.returncode == 1
     assert f"Project setup refused: {SETUP_REFUSALS[problem]}." in result.stderr
+
+
+# Every policy path the action reads, listed here so dropping one from run.py fails a case.
+POLICY_PATHS = [
+    ".git",
+    ".agents",
+    ".agents/config.yml",
+    ".agents/areas.yml",
+    ".agents/labels.yml",
+    ".agents/charter.md",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+]
+
+
+def test_action_confines_every_policy_path():
+    # A dropped .agents entry is masked by its files, so the list itself is pinned too.
+    path = ROOT / "actions" / "fix-agent" / "run.py"
+    spec = importlib.util.spec_from_file_location("fix_agent_run", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert list(module.POLICY_FILES) == POLICY_PATHS
+
+
+@pytest.mark.parametrize("mode", ["setup", "agent"])
+@pytest.mark.parametrize("name", POLICY_PATHS)
+def test_policy_path_outside_the_checkout_is_refused(action, name, mode):
+    work, policy = action["work"], Path(action["env"]["POLICY_PATH"])
+    # Each policy path the action reads is linked into the agent-branch checkout in turn.
+    link, target = policy / name, work / name
+    if not target.exists():
+        target = work / "lib.py"
+    if link.is_dir():
+        shutil.rmtree(link)
+    else:
+        link.unlink(missing_ok=True)
+    link.symlink_to(target)
+    result = run_action(action, mode)
+    assert not (work / "source.txt").exists(), "setup command ran"
+    assert result.returncode == 1
+    prefix = "Project setup refused" if mode == "setup" else "Fix agent refused"
+    assert f"{prefix}: policy file resolves outside the policy checkout." in result.stderr
+    assert calls(action) == []
 
 
 def test_setup_home_is_discarded_before_the_agent(action):

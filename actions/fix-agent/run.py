@@ -26,6 +26,7 @@ from agent_repo.yamljson import YamlError
 ACTION = Path(__file__).resolve().parent
 TEMPLATE = ACTION.parents[1] / "agents" / "fix"
 POLICY_FILES = (
+    ".git",
     ".agents",
     ".agents/config.yml",
     ".agents/areas.yml",
@@ -93,13 +94,28 @@ def refuse_escaping_policy_paths(policy: Path) -> None:
             raise Refused("policy file resolves outside the policy checkout")
 
 
+def refuse_unplain_git_dir(tree: Path, label: str) -> None:
+    # A symlink or gitfile would point git at metadata outside the checkout.
+    dot_git = tree / ".git"
+    if dot_git.is_symlink() or not dot_git.is_dir():
+        raise Refused(f"{label} must be a plain git checkout")
+
+
+def refuse_untrusted_checkouts(work: Path, policy: Path) -> None:
+    # Policy paths and both .git dirs are confirmed before any git command or policy read.
+    refuse_escaping_policy_paths(policy)
+    refuse_unplain_git_dir(work, "work tree")
+    if os.path.lexists(policy / ".git"):
+        refuse_unplain_git_dir(policy, "policy checkout")
+        refuse_persisted_credentials(policy, policy / ".git")
+    refuse_persisted_credentials(work, work / ".git")
+
+
 def setup() -> int:
     try:
         work, policy = checkouts()
         # Setup runs unsandboxed, so a persisted token must be refused before it starts.
-        refuse_persisted_credentials(work, work / ".git")
-        if (policy / ".git").exists():
-            refuse_persisted_credentials(policy, policy / ".git")
+        refuse_untrusted_checkouts(work, policy)
         # Setup trusts only base_sha code, so a checkout at any other commit never runs it.
         base_sha = os.environ.get("BASE_SHA", "")
         if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
@@ -108,7 +124,6 @@ def setup() -> int:
         # An untracked, ignored or edited script would otherwise run as if it were base_sha code.
         reason = "work tree is not clean before setup"
         refuse_unclean_work_tree(work, work / ".git", reason, ignored=True)
-        refuse_escaping_policy_paths(policy)
         command = load_config(policy / ".agents").raw["commands"]["setup"]
     except Refused as exc:
         print(f"Project setup refused: {exc}.", file=sys.stderr)
@@ -159,15 +174,10 @@ def run_agent(output: Path, canary: str) -> str:
     )
     if preflight.returncode != 0:
         raise Refused("bwrap sandbox unavailable")
-    if (policy / ".git").exists():
-        refuse_persisted_credentials(policy, policy / ".git")
-    refuse_escaping_policy_paths(policy)
+    refuse_untrusted_checkouts(work, policy)
     config = load_config(policy / ".agents")
     scratch = Path(tempfile.mkdtemp(prefix="agent-fix-", dir=temp))
     dot_git = work / ".git"
-    if dot_git.is_symlink() or not dot_git.is_dir():
-        raise Refused("work tree must be a plain git checkout")
-    refuse_persisted_credentials(work, dot_git)
     refuse_unexpected_head(dot_git, base_sha)
     # Setup output that is not gitignored would otherwise land in the patch as agent work.
     reason = "work tree is not clean after setup; gitignore setup outputs"
