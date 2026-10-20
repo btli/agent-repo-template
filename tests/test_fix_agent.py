@@ -48,6 +48,12 @@ if mode == "outside_symlink":
     (home / "outside.txt").write_text(canary)
     (work / "b.bin").unlink()
     os.symlink(home / "outside.txt", work / "b.bin")
+if mode == "outside_parent":
+    (home / "outside").mkdir()
+    (home / "outside" / "logo.bin").write_text(canary)
+    (work / "assets" / "logo.bin").unlink()
+    (work / "assets").rmdir()
+    os.symlink(home / "outside", work / "assets")
 if mode == "delete_binary":
     (work / "secret.bin").unlink()
 if mode == "modify_binary":
@@ -56,6 +62,10 @@ if mode == "max_fields":
     (work / "notes.txt").write_text(("y" * 99 + "\\n") * 590)
 if mode == "large_binary":
     (work / "notes.dat").write_bytes(b"\\0" * 70000)
+if mode == "wide_text":
+    (work / "notes.txt").write_bytes(b"\\xc3\\xa9" * 40000)
+if mode == "wide_binary":
+    (work / "notes.dat").write_bytes(b"\\0" + b"\\xc3\\xa9" * 40000)
 if mode == "large_text_edit":
     big = work / "big.py"
     big.write_text(big.read_text().replace("# filler\\n", "# changed\\n", 1))
@@ -368,20 +378,25 @@ def test_one_line_change_to_a_large_text_file_produces_a_patch(action):
 
 def commit_base_file(action: dict, name: str, data: bytes) -> None:
     work = action["work"]
+    (work / name).parent.mkdir(exist_ok=True)
     (work / name).write_bytes(data)
     git(work, "add", name)
     git(work, "commit", "-q", "-m", f"add {name}")
     action["env"]["BASE_SHA"] = git(work, "rev-parse", "HEAD").strip()
 
 
-def test_changed_file_scan_never_follows_a_symlink_out_of_the_tree(action):
-    # A base binary replaced by a link stays a binary change; the link's target holds the canary.
-    commit_base_file(action, "b.bin", b"\0x")
-    (action["home"] / "mode").write_text("outside_symlink")
+@pytest.mark.parametrize(
+    ("name", "mode"), [("b.bin", "outside_symlink"), ("assets/logo.bin", "outside_parent")]
+)
+def test_changed_file_scan_never_follows_a_symlink_out_of_the_tree(action, name, mode):
+    # A base binary replaced by a link, or under a linked directory, stays a binary change;
+    # the link's target holds the canary.
+    commit_base_file(action, name, b"\0x")
+    (action["home"] / "mode").write_text(mode)
     result = run_action(action, "agent")
     assert result.returncode == 0, result.stderr
-    patch = (action["out"] / "fix.patch").read_text()
-    assert "b/b.bin" in patch and "new file mode 120000" in patch
+    link = name.split("/")[0]
+    assert f"b/{link}\nnew file mode 120000" in (action["out"] / "fix.patch").read_text()
 
 
 def test_patch_under_the_limit_passes_beside_maximal_fields(action):
@@ -417,6 +432,9 @@ LEAKS = {
     "nul_canary": "credential or canary",
     "binary_attribute": "credential or canary",
     "large_binary": "outbound scan budget",
+    # The limit is in bytes, and these are under it in decoded characters.
+    "wide_text": "outbound scan budget",
+    "wide_binary": "outbound scan budget",
     # JSON escaping turns these separators into letters, so only the field-value scan sees them.
     "newline_key_summary": "credential or canary",
     "newline_canary_rca": "credential or canary",
@@ -471,9 +489,25 @@ def plant_worktree_config(work: Path, problem: str) -> None:
     git(work, "config", "--worktree", *WORKTREE_SETTINGS[problem])
 
 
+POLICY_GIT_PROBLEMS = (
+    "policy_gitfile",
+    "missing_policy_git",
+    "linked_policy_config",
+    "linked_policy_worktree_config",
+)
+
+
 def replace_policy_git(policy: Path, problem: str, tmp_path: Path) -> None:
+    git_dir = policy / ".git"
+    if problem.startswith("linked"):
+        # Git would read a linked config file even when the link stays inside the checkout.
+        name = "config.worktree" if "worktree" in problem else "config"
+        shutil.copy(git_dir / "config", git_dir / "copied.config")
+        (git_dir / name).unlink(missing_ok=True)
+        (git_dir / name).symlink_to(git_dir / "copied.config")
+        return
     # A policy directory without its own plain .git is not a checkout at all.
-    shutil.rmtree(policy / ".git")
+    shutil.rmtree(git_dir)
     if problem == "policy_gitfile":
         (policy / ".git").write_text(f"gitdir: {tmp_path / 'elsewhere'}\n")
 
@@ -505,6 +539,8 @@ REFUSALS = {
     "worktree_extraheader": "persisted credentials",
     "policy_gitfile": "policy checkout must be a plain git checkout",
     "missing_policy_git": "policy checkout must be a plain git checkout",
+    "linked_policy_config": "policy checkout must be a plain git checkout",
+    "linked_policy_worktree_config": "policy checkout must be a plain git checkout",
     "key_in_issue": "credential in prompt",
     "oversized_issue": "prompt byte cap exceeded",
 }
@@ -552,7 +588,7 @@ def test_untrusted_checkout_layout_is_refused(action, problem, tmp_path):
         git(work, "config", *CREDENTIAL_SETTINGS[problem])
     elif problem in WORKTREE_SETTINGS:
         plant_worktree_config(work, problem)
-    elif problem in ("policy_gitfile", "missing_policy_git"):
+    elif problem in POLICY_GIT_PROBLEMS:
         replace_policy_git(Path(env["POLICY_PATH"]), problem, tmp_path)
     elif problem == "policy_checkout_token":
         git(Path(env["POLICY_PATH"]), "config", "http.extraheader", "basic eHg=")
@@ -660,6 +696,8 @@ SETUP_REFUSALS = {
     "symlinked_work_git": "work tree must be a plain git checkout",
     "policy_gitfile": "policy checkout must be a plain git checkout",
     "missing_policy_git": "policy checkout must be a plain git checkout",
+    "linked_policy_config": "policy checkout must be a plain git checkout",
+    "linked_policy_worktree_config": "policy checkout must be a plain git checkout",
 }
 
 
@@ -695,7 +733,7 @@ def test_setup_never_runs_code_outside_base_sha(action, problem, tmp_path):
     elif problem == "symlinked_work_git":
         shutil.move(work / ".git", tmp_path / "real-git")
         (work / ".git").symlink_to(tmp_path / "real-git")
-    elif problem in ("policy_gitfile", "missing_policy_git"):
+    elif problem in POLICY_GIT_PROBLEMS:
         replace_policy_git(policy.parent, problem, tmp_path)
     result = run_action(action, "setup")
     assert not marker.exists()
@@ -706,6 +744,8 @@ def test_setup_never_runs_code_outside_base_sha(action, problem, tmp_path):
 # Every policy path the action reads, listed here so dropping one from run.py fails a case.
 POLICY_PATHS = [
     ".git",
+    ".git/config",
+    ".git/config.worktree",
     ".agents",
     ".agents/config.yml",
     ".agents/areas.yml",

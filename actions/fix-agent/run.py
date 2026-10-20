@@ -28,6 +28,8 @@ ACTION = Path(__file__).resolve().parent
 TEMPLATE = ACTION.parents[1] / "agents" / "fix"
 POLICY_FILES = (
     ".git",
+    ".git/config",
+    ".git/config.worktree",
     ".agents",
     ".agents/config.yml",
     ".agents/areas.yml",
@@ -108,6 +110,9 @@ def refuse_untrusted_checkouts(work: Path, policy: Path) -> None:
     refuse_escaping_policy_paths(policy)
     refuse_unplain_git_dir(work, "work tree")
     refuse_unplain_git_dir(policy, "policy checkout")
+    # Git follows a linked config file anywhere, so even an in-checkout link is refused.
+    if any((policy / ".git" / name).is_symlink() for name in ("config", "config.worktree")):
+        raise Refused("policy checkout must be a plain git checkout")
     refuse_persisted_credentials(policy, policy / ".git")
     refuse_persisted_credentials(work, work / ".git")
 
@@ -159,7 +164,7 @@ def string_values(value: object) -> list[str]:
     return []
 
 
-def binary_file_texts(work: Path, git_dir: Path, base_sha: str) -> list[str]:
+def binary_file_bytes(work: Path, git_dir: Path, base_sha: str) -> list[bytes]:
     # Binary hunks are base85 in the patch, so those files' own bytes are scanned; text is in it.
     stats = run_git(work, git_dir, "diff", "--numstat", "-z", "--no-renames", base_sha)
     names = [stat.split(b"\t", 2)[2] for stat in stats.split(b"\0") if stat.startswith(b"-\t-\t")]
@@ -168,9 +173,10 @@ def binary_file_texts(work: Path, git_dir: Path, base_sha: str) -> list[str]:
     show = [f"{base_sha}:{os.fsdecode(name)}" for name in names if name in base]
     blobs = [run_git(work, git_dir, "cat-file", "blob", spec) for spec in show]
     paths = [work / os.fsdecode(name) for name in names]
-    # A symlink's target is already text in the patch; following it could leave the tree.
-    files = [path.read_bytes() for path in paths if path.is_file() and not path.is_symlink()]
-    return [data.decode("utf-8", "surrogateescape") for data in blobs + files]
+    # A link's target is text in the patch; a linked file or parent dir could leave the tree.
+    regular = [path for path in paths if path.is_file() and not path.is_symlink()]
+    files = [path.read_bytes() for path in regular if path.resolve().is_relative_to(work)]
+    return blobs + files
 
 
 def read_optional(path: Path) -> str:
@@ -257,9 +263,14 @@ def run_agent(output: Path, canary: str) -> str:
     except ValueError:
         raise Refused("agent output rejected") from None
     # The patch is scanned on its own, so its documented limit is not shared with the fields.
-    texts = [json.dumps(artifact, ensure_ascii=False), patch or "", *string_values(artifact)]
+    outputs = [(patch or "").encode("utf-8", "surrogateescape")]
     if patch is not None:
-        texts += binary_file_texts(work, git_dir, base_sha)
+        outputs += binary_file_bytes(work, git_dir, base_sha)
+    # The documented limit is in bytes, while the scan budget counts decoded characters.
+    if any(len(data) > 64 * 1024 for data in outputs):
+        raise Refused("agent output exceeds the outbound scan budget")
+    texts = [json.dumps(artifact, ensure_ascii=False), *string_values(artifact)]
+    texts += [data.decode("utf-8", "surrogateescape") for data in outputs]
     # Separator-aware scan; output too large to scan fails closed as well.
     leaks = sorted({leak for text in texts for leak in find_leaks(text, [key], canary)})
     if leaks == ["scan_budget"]:
