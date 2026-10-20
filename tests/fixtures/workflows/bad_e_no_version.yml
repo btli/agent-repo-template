@@ -1,0 +1,9 @@
+name: Invalid missing version comment
+on:
+  issues:
+    types: [opened]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

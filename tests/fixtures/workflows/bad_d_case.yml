@@ -1,0 +1,10 @@
+name: Invalid mixed-case apply environment
+on:
+  push:
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    environment:
+      name: Agent-Apply
+    steps:
+      - run: echo apply

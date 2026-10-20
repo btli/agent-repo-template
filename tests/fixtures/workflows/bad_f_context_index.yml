@@ -1,0 +1,9 @@
+name: Invalid indexed GitHub event context
+on:
+  issues:
+    types: [opened]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "${{ github['event']['issue']['title'] }}"

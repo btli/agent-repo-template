@@ -1,0 +1,7 @@
+name: Invalid reusable workflow missing version comment
+on:
+  issues:
+    types: [opened]
+jobs:
+  reusable:
+    uses: btli/agent-repo-template/.github/workflows/reusable.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

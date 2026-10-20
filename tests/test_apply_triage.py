@@ -906,7 +906,14 @@ def test_cli_reads_default_branch_policy_and_scan_keys(scenario, monkeypatch, tm
         assert main([str(artifact)]) == 1
         assert not api.calls, "unsupported event reached the GitHub API"
         return
-    assert main([str(artifact)]) == (1 if scenario in {"planner-error", "labels-error"} else 0)
+    fails_apply = scenario in {
+        "planner-error",
+        "labels-error",
+        "scan-key",
+        "token-literal",
+        "token-base64",
+    }
+    assert main([str(artifact)]) == int(fails_apply)
     if scenario == "oversized-json":
         assert not artifact_parse_calls, "oversized artifact reached JSON parsing"
     if scenario == "planner-error":
@@ -960,6 +967,46 @@ def test_cli_missing_canary_fails_without_writes(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
     assert main([str(tmp_path / "missing.json")]) == 1
     assert "Traceback" not in capsys.readouterr().err
+
+
+def test_cli_outbound_scan_alert_escalates_and_fails(tmp_path, monkeypatch):
+    from agent_repo.commands.apply import main
+
+    api = API()
+    ctx = context(api)
+    data = decision()
+    data["answers"]["needs_info"] = {"value": True, "p": 0.9}
+    data["needs_info"] = {"text": ctx.canary}
+    artifact = tmp_path / "decision.json"
+    artifact.write_text(json.dumps(data))
+    summary = tmp_path / "summary.md"
+
+    monkeypatch.setattr("agent_repo.commands.apply.GitHub", lambda token, repo: api.gh)
+    monkeypatch.setattr(
+        "agent_repo.commands.apply._policy",
+        lambda gh, sha, directory: (ctx.base_sha, ctx.config, ctx.charter),
+    )
+    for name, value in {
+        "GITHUB_EVENT_NAME": "issues",
+        "GITHUB_EVENT_PATH": str(Path("tests/fixtures/events/issues.opened.json").resolve()),
+        "GITHUB_RUN_ID": ctx.run_id,
+        "GITHUB_SHA": ctx.base_sha,
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "GH_TOKEN": "test-token",
+        "AGENT_BOT_LOGIN": "agent-apply[bot]",
+        "AGENT_SCAN_KEYS": "\n".join(ctx.secrets),
+        "AGENT_CANARY": ctx.canary,
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    exit_code = main([str(artifact)])
+
+    assert any(
+        path.endswith("/labels") and body == {"labels": ["needs-maintainer"]}
+        for _, path, body in api.writes
+    )
+    assert "Outbound scan alert" in summary.read_text()
+    assert exit_code == 1
 
 
 @pytest.mark.parametrize(

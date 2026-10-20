@@ -1,0 +1,9 @@
+areas:
+  - name: core
+    description: Core project behavior and public interfaces
+    paths:
+      - src/**
+      - lib/**
+    owners:
+      - "@your-org/maintainers"
+    sensitive: true

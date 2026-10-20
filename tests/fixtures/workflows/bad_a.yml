@@ -1,0 +1,8 @@
+name: Invalid model trigger
+on:
+  push:
+jobs:
+  model:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: btli/agent-repo-template/actions/decide@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v1.0.0

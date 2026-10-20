@@ -1,0 +1,12 @@
+name: Invalid model setup-go blank cache input
+on:
+  issues:
+    types: [opened]
+jobs:
+  model:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          cache: ""
+      - uses: btli/agent-repo-template/actions/triage-agent@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v1.0.0

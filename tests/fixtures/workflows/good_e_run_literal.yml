@@ -1,0 +1,9 @@
+name: Valid literal uses text in run
+on:
+  issues:
+    types: [opened]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: 'echo "uses: nothing here"'

@@ -1,0 +1,9 @@
+name: Invalid mixed-case GitHub context
+on:
+  issues:
+    types: [opened]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "${{ GitHub.event.issue.title }}"

@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest a project improvement.
+title: "[Feature]: "
+labels: [type:feature]
+body:
+  - type: markdown
+    attributes:
+      value: Describe the problem and the outcome that would help.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: How would the improvement work?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

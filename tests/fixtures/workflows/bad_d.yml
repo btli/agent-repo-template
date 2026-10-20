@@ -1,0 +1,9 @@
+name: Invalid apply environment
+on:
+  push:
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    environment: agent-apply
+    steps:
+      - run: echo apply
