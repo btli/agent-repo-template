@@ -246,9 +246,9 @@ def _by_bot(event: dict, bot_login: str) -> bool:
 
 
 def reopen_counts(events: dict[int, list], bot_login: str, since: datetime) -> tuple[int, int]:
-    """Count issues with an in-window bot close, correlated with the bot's agent:closed label
-    added at or after it (apply closes, then labels) and before any later reopen, and those
-    reopened after that close."""
+    """Count in-window bot close events, each correlated with the bot's agent:closed label
+    added at or after it (apply closes, then labels) and before any later reopen, and how
+    many of those closes were later reopened."""
     closed = reopened = 0
     for timeline in events.values():
         reopens = [event["created_at"] for event in timeline if event.get("event") == "reopened"]
@@ -259,25 +259,21 @@ def reopen_counts(events: dict[int, list], bot_login: str, since: datetime) -> t
             and (event.get("label") or {}).get("name") == "agent:closed"
             and _by_bot(event, bot_login)
         ]
-        closes = [
-            event["created_at"]
-            for event in timeline
-            if event.get("event") == "closed"
-            and _by_bot(event, bot_login)
-            and _since(event, "created_at", since)
-            and any(
-                event["created_at"] <= label_time
-                and not any(event["created_at"] < reopen < label_time for reopen in reopens)
-                for label_time in labelled
-            )
-        ]
-        if not closes:
-            continue
-        closed += 1
-        reopened += any(
-            event.get("event") == "reopened" and event["created_at"] > min(closes)
-            for event in timeline
-        )
+        for event in timeline:
+            close_time = event["created_at"] if event.get("event") == "closed" else None
+            if (
+                close_time is None
+                or not _by_bot(event, bot_login)
+                or not _since(event, "created_at", since)
+                or not any(
+                    close_time <= label_time
+                    and not any(close_time < reopen < label_time for reopen in reopens)
+                    for label_time in labelled
+                )
+            ):
+                continue
+            closed += 1
+            reopened += any(close_time < reopen for reopen in reopens)
     return closed, reopened
 
 
@@ -419,6 +415,8 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
     lines += ["", "## Skipped issues", "", *(skipped or ["- None."])]
 
     lines += ["", "## Reopen rate for agent:closed", ""]
+    # Criteria read from issue events cannot be judged for issues whose events failed to load.
+    events_gap = f"{len(events_skipped)} issue event lookups failed" if events_skipped else ""
     if bot_login:
         closed, reopened = reopen_counts(events, bot_login, since)
         repo_stats.update({"agent_closed": closed, "reopened": reopened})
@@ -426,6 +424,9 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
             f"- {reopened} of {closed} bot closes with agent:closed in the window were reopened "
             f"({_percent(reopened / closed if closed else None)})"
         )
+        if events_gap:
+            lines.append(f"- Not evaluated: {events_gap} (listed under Skipped issues).")
+            repo_stats["not_evaluated"].append(f"{ABORT_REOPEN} ({events_gap})")
     else:
         lines.append("- Not evaluated; pass --bot-login.")
         repo_stats["not_evaluated"].append(f"{ABORT_REOPEN} (pass --bot-login)")
@@ -452,6 +453,9 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
                 "branch's `.agents/` could not be loaded."
             )
             skipped_parts.append("taxonomy labels: `.agents/` could not be loaded")
+        if events_gap:
+            lines.append(f"- Not evaluated: {events_gap} (listed under Skipped issues).")
+            skipped_parts.append(events_gap)
         if unverifiable:
             # A close that cannot be judged must not let the criterion read as clean.
             lines.append(

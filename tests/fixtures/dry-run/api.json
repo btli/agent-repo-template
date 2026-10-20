@@ -6,7 +6,7 @@
  },
  "repos/your-org/example/actions/artifacts": {
   "json": {
-   "total_count": 46,
+   "total_count": 52,
    "artifacts": [
     {
      "id": 1,
@@ -493,6 +493,72 @@
      }
     },
     {
+     "id": 47,
+     "name": "agent-triage-29",
+     "expired": false,
+     "created_at": "2026-10-17T10:00:00Z",
+     "workflow_run": {
+      "id": 123,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 48,
+     "name": "agent-decision-123",
+     "expired": false,
+     "created_at": "2026-10-17T10:00:00Z",
+     "workflow_run": {
+      "id": 123,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 49,
+     "name": "agent-triage-30",
+     "expired": false,
+     "created_at": "2026-10-17T10:00:00Z",
+     "workflow_run": {
+      "id": 124,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 50,
+     "name": "agent-decision-124",
+     "expired": false,
+     "created_at": "2026-10-17T10:00:00Z",
+     "workflow_run": {
+      "id": 124,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 51,
+     "name": "agent-triage-31",
+     "expired": false,
+     "created_at": "2026-10-17T10:00:00Z",
+     "workflow_run": {
+      "id": 125,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 52,
+     "name": "agent-decision-125",
+     "expired": false,
+     "created_at": "2026-10-17T10:00:00Z",
+     "workflow_run": {
+      "id": 125,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
      "id": 16,
      "name": "agent-triage-10",
      "expired": false,
@@ -530,13 +596,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:bug",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -598,13 +664,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:feature",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -632,13 +698,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:bug",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -700,13 +766,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:bug",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -742,13 +808,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:feature",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -783,13 +849,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:bug",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -817,13 +883,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:feature",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -858,13 +924,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:feature",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -906,13 +972,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:bug",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -940,7 +1006,7 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      },
      "duplicate_of": {
@@ -950,7 +1016,7 @@
     },
     "labels": [
      "type:bug",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -985,7 +1051,7 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      },
      "duplicate_of": {
@@ -995,7 +1061,7 @@
     },
     "labels": [
      "type:bug",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -1030,13 +1096,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:feature",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -1064,13 +1130,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:feature",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -1105,13 +1171,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:feature",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -1146,13 +1212,13 @@
       "p": 0.9
      },
      "area": {
-      "value": "core",
+      "value": "cli",
       "p": 0.85
      }
     },
     "labels": [
      "type:feature",
-     "area:core"
+     "area:cli"
     ],
     "suggestions": {
      "priority": null,
@@ -1165,6 +1231,155 @@
     "security": false,
     "notes": []
    }
+  }
+ },
+ "repos/your-org/example/actions/artifacts/48/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "123",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "cli",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:cli"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": {
+     "kind": "out_of_scope",
+     "target": null,
+     "docs_ref": "https://example.org/larkspur/faq",
+     "p": 0.95,
+     "lexical": null,
+     "tier2_agrees": true
+    },
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/issues/29": {
+  "json": {
+   "number": 29,
+   "state": "open",
+   "html_url": "https://github.com/your-org/example/issues/29",
+   "labels": []
+  }
+ },
+ "repos/your-org/example/actions/artifacts/50/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "124",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "bug",
+      "p": 0.9
+     },
+     "area": {
+      "value": "cli",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:bug",
+     "area:cli"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": {
+     "kind": "out_of_scope",
+     "target": null,
+     "docs_ref": "https://example.org/larkspur/faq",
+     "p": 0.95,
+     "lexical": null,
+     "tier2_agrees": true
+    },
+    "escalate": null,
+    "security": true,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/actions/artifacts/52/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "125",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "bug",
+      "p": 0.9
+     },
+     "area": {
+      "value": "cli",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:bug",
+     "area:cli"
+    ],
+    "suggestions": {
+     "priority": "P1",
+     "labels": [
+      "P1"
+     ]
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": {
+     "kind": "out_of_scope",
+     "target": null,
+     "docs_ref": "https://example.org/larkspur/faq",
+     "p": 0.95,
+     "lexical": null,
+     "tier2_agrees": true
+    },
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/issues/30": {
+  "json": {
+   "number": 30,
+   "state": "closed",
+   "html_url": "https://github.com/your-org/example/issues/30",
+   "labels": []
+  }
+ },
+ "repos/your-org/example/issues/31": {
+  "json": {
+   "number": 31,
+   "state": "closed",
+   "html_url": "https://github.com/your-org/example/issues/31",
+   "labels": []
   }
  },
  "repos/your-org/example/issues/18": {
@@ -1205,7 +1420,7 @@
      "name": "type:bug"
     },
     {
-     "name": "area:core"
+     "name": "area:cli"
     }
    ]
   }
@@ -1232,7 +1447,7 @@
      "name": "type:bug"
     },
     {
-     "name": "area:core"
+     "name": "area:cli"
     }
    ]
   }
@@ -1247,7 +1462,7 @@
      "name": "type:feature"
     },
     {
-     "name": "area:core"
+     "name": "area:cli"
     },
     {
      "name": "agent:closed"
@@ -1268,7 +1483,7 @@
      "name": "type:feature"
     },
     {
-     "name": "area:core"
+     "name": "area:cli"
     }
    ]
   }
@@ -1388,6 +1603,16 @@
     "number": 25,
     "state": "open",
     "html_url": "https://github.com/your-org/example/issues/25",
+    "labels": [
+     {
+      "name": "agent:closed"
+     }
+    ]
+   },
+   {
+    "number": 28,
+    "state": "closed",
+    "html_url": "https://github.com/your-org/example/issues/28",
     "labels": [
      {
       "name": "agent:closed"
@@ -1932,5 +2157,84 @@
     }
    }
   ]
+ },
+ "repos/your-org/example/issues/28/events": {
+  "json": [
+   {
+    "event": "closed",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-10T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-10T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
+   },
+   {
+    "event": "reopened",
+    "actor": {
+     "login": "maintainer",
+     "type": "User"
+    },
+    "created_at": "2026-10-11T12:00:00Z"
+   },
+   {
+    "event": "closed",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-12T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-12T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
+   }
+  ]
+ },
+ "repos/your-org/example/issues/29/events": {
+  "json": []
+ },
+ "repos/your-org/example/issues/30/events": {
+  "json": [
+   {
+    "event": "closed",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-17T12:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-17T12:00:01Z",
+    "label": {
+     "name": "agent:closed"
+    }
+   }
+  ]
+ },
+ "repos/your-org/example/issues/31/events": {
+  "json": []
  }
 }

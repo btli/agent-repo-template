@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
 from agent_repo.apply.actions import ApplyContext  # noqa: E402
-from agent_repo.apply.triage import _answer_label, _can_close  # noqa: E402
+from agent_repo.apply.triage import _answer_label, plan_triage  # noqa: E402
 from agent_repo.charter import Charter, lint_charter, parse_charter  # noqa: E402
 from agent_repo.config import ConfigError, RepoConfig, load_config  # noqa: E402
 from agent_repo.event import Event  # noqa: E402
@@ -27,6 +27,8 @@ from agent_repo.schema import load_schema, validate  # noqa: E402
 from agent_repo.yamljson import YamlError, load_yaml  # noqa: E402
 
 QUESTIONS = ("type", "area", "priority", "needs_info")
+# Planning needs a canary for apply's outbound scan; recorded decisions never contain this one.
+PLAN_CANARY = "agent-eval-plan-canary-0f3c9a"
 OUTCOMES = {"label", "needs-info", "needs-maintainer", "close"}
 ABORT_OUT_OF_POLICY = "any out-of-policy action"
 ABORT_AGREEMENT = "dry-run agreement on type or area under 80% after 50 issues"
@@ -103,7 +105,7 @@ def close_eligible(
     repo: str = "your-org/example",
     github: object | None = None,
 ) -> bool:
-    """Whether apply would execute the decision's close, using apply's own predicate."""
+    """Whether apply's full triage plan for the decision includes the close."""
     close = decision["close"]
     if close is None or decision.get("mode") == "llm-only":
         return False
@@ -130,11 +132,38 @@ def close_eligible(
         labels=(),
         draft=False,
     )
+    lookup = _LookupRecorder(github) if github is not None else None
     context = ApplyContext(
-        event, config, charter, decision["run_id"], decision["base_sha"], [], "", False, github
+        event,
+        config,
+        charter,
+        decision["run_id"],
+        decision["base_sha"],
+        [],
+        PLAN_CANARY,
+        False,
+        lookup,
     )
-    duplicate_of = decision["answers"].get("duplicate_of", {}).get("value")
-    return _can_close(close, context, duplicate_of)
+    actions = plan_triage(decision, context)
+    # Apply turns a failed target lookup into a maintainer hand-off; surface it instead.
+    if lookup is not None and lookup.error is not None:
+        raise lookup.error
+    return any(action.kind == "close" for action in actions)
+
+
+class _LookupRecorder:
+    """Passes apply's duplicate-target lookups through and keeps any failure apply absorbs."""
+
+    def __init__(self, github: object):
+        self.github = github
+        self.error: Exception | None = None
+
+    def request(self, method: str, path: str, *, params: dict | None = None) -> object:
+        try:
+            return self.github.request(method, path, params=params)
+        except Exception as exc:
+            self.error = exc
+            raise
 
 
 class TargetNotRecorded(Exception):

@@ -138,6 +138,23 @@ def test_outcome_mirrors_what_apply_would_do(issue_id, expected):
     assert evals.outcome(decision, *evals.load_policy(ROOT / "evals"), targets) == expected
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"security": True},
+        {"suggestions": {"priority": "P1", "labels": ["P1"]}},
+    ],
+)
+def test_close_routed_to_a_maintainer_first_is_not_eligible(change):
+    # Apply hands security reports and P0/P1 suggestions to a maintainer before any close.
+    decision = json.loads((FIXTURES / "system-one/out-of-scope-remote-store.json").read_text())
+    policy = evals.load_policy(ROOT / "evals")
+    assert evals.close_eligible(decision, *policy)
+    decision.update(change)
+    assert not evals.close_eligible(decision, *policy)
+    assert evals.outcome(decision, *policy) == "needs-maintainer"
+
+
 def test_golden_set_has_twenty_issues_and_a_lintable_charter():
     charter_text = (ROOT / "evals" / "charter.md").read_text()
     assert lint_charter(charter_text) == []
