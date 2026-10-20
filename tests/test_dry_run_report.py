@@ -13,7 +13,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 NOW = datetime(2026, 10, 20, tzinfo=UTC)
 REPO = "repos/your-org/example"
 DECISION_RECORD_IDS = (2, 5, 7, 9, 13, 22, 24, 26, 28, 30, 32, 34, 36, 40, 42, 44, 46, 48, 50, 52)
-DECISION_RECORD_IDS += (55, 57, 59, 61, 63, 65, 67, 71, 73)
+DECISION_RECORD_IDS += (55, 57, 59, 61, 63, 65, 67, 71, 73, 75, 77)
 
 
 def _load_report():
@@ -69,10 +69,10 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     # the fork run and the run older than 30 days are ignored; issue 1 uses its newest record.
     system_one = sections["Mode: system-one"]
     # A run started in the window counts even though its marker upload predates it (#45).
-    assert "- Decided issues: 19" in system_one
-    # An issue carrying two type: labels is not compared.
-    assert "- Type agreement: 67% (3 maintainer-labelled issues)" in system_one
-    assert "- Area agreement: 100% (3 maintainer-labelled issues)" in system_one
+    assert "- Decided issues: 20" in system_one
+    # Two type: labels are not compared; #47 uses run 138, which started last but uploaded first.
+    assert "- Type agreement: 75% (4 maintainer-labelled issues)" in system_one
+    assert "- Area agreement: 100% (4 maintainer-labelled issues)" in system_one
     # Only closes apply would execute count; a candidate the maintainer left open (#29)
     # lowers agreement.
     assert "- Close candidates: 6, maintainer agreement 83%; close_enable_ready: no" in system_one
@@ -101,12 +101,12 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
     # Each bot close correlated with the bot's agent:closed label counts, including re-closes
     # that kept the label; labels from people, after a reopen, or removed do not.
     assert _lines(sections["Reopen rate for agent:closed"]) == [
-        "- 5 of 21 bot closes with agent:closed in the window were reopened (24%)"
+        "- 5 of 22 bot closes with agent:closed in the window were reopened (23%)"
     ]
     # Bot labels outside the taxonomy and closes its run's decision, dated target state or
     # dry-run policy did not allow are counted; each close is listed below.
     assert (
-        "- 10 actions by example-agent[bot] across 38 issues" in sections["Out-of-policy actions"]
+        "- 11 actions by example-agent[bot] across 39 issues" in sections["Out-of-policy actions"]
     )
     assert _lines(sections["Out-of-policy actions"])[1:] == [
         "- #3: closed 2026-10-12T12:00:00Z; its run 104's decision does not allow a close",
@@ -116,6 +116,7 @@ def test_report_shows_agreement_close_readiness_and_abort_flags_per_mode(fake_gh
         "- #33: closed 2026-10-17T12:00:00Z; its run 127's decision does not allow a close",
         "- #35: closed 2026-10-17T12:00:00Z; triage was dry-run in the policy at " + "c" * 40,
         "- #37: closed 2026-10-18T12:00:00Z; its run 131's decision does not allow a close",
+        "- #47: closed 2026-10-16T11:00:00Z; its run 138's decision does not allow a close",
         "- Not evaluated: 15 bot closes are unverifiable (listed below).",
     ]
     assert _lines(sections["Unverifiable bot closes"]) == [
@@ -171,7 +172,7 @@ def test_closes_are_judged_by_their_own_run_after_close_is_disabled(fake_gh, cap
         in (sections["Mode: system-one"])
     )
     # Issue 4's close was eligible under the policy at its run's base_sha, so it stays in policy.
-    assert "- 10 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- 11 actions by example-agent[bot]" in sections["Out-of-policy actions"]
     assert "- #5: closed 2026-10-01T12:00:00Z" in sections["Unverifiable bot closes"]
 
 
@@ -188,7 +189,7 @@ def test_closes_are_judged_by_the_policy_at_their_base_sha(fake_gh, capsys):
     _edit(fake_gh, lambda responses: _set_policy_file(responses, "config.yml", raised))
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     # A later, stricter close_min does not turn issue 4's p=0.95 close into a violation.
-    assert "- 10 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- 11 actions by example-agent[bot]" in sections["Out-of-policy actions"]
 
     def unloadable_history(responses):
         responses[f"{REPO}/contents/.agents/config.yml?ref={'a' * 40}"] = {"json": {}}
@@ -233,13 +234,13 @@ def test_failed_event_lookups_make_event_criteria_not_evaluated(fake_gh, capsys)
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     assert "- #4: issue events lookup failed" in sections["Skipped issues"]
     assert (
-        "- Not evaluated: 38 issue event lookups failed (listed under Skipped issues)."
+        "- Not evaluated: 39 issue event lookups failed (listed under Skipped issues)."
         in (sections["Reopen rate for agent:closed"])
     )
     assert _lines(sections["Abort criteria"]) == [
         "- NOT EVALUATED: a reopen rate above 5% for `agent:closed` "
-        "(38 issue event lookups failed)",
-        "- NOT EVALUATED: any out-of-policy action (38 issue event lookups failed)",
+        "(39 issue event lookups failed)",
+        "- NOT EVALUATED: any out-of-policy action (39 issue event lookups failed)",
         "- No evaluated criterion triggered.",
     ]
     assert "None triggered" not in sections["Abort criteria"]
@@ -248,7 +249,7 @@ def test_failed_event_lookups_make_event_criteria_not_evaluated(fake_gh, capsys)
 def test_failed_agent_closed_listing_keeps_other_sections(fake_gh, capsys):
     _edit(fake_gh, lambda responses: responses.pop(f"{REPO}/issues"))
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
-    assert "- Decided issues: 19" in sections["Mode: system-one"]
+    assert "- Decided issues: 20" in sections["Mode: system-one"]
     assert (
         "- #8: run 107 has no readable agent-decision-107" in sections["Missing decision records"]
     )
@@ -268,11 +269,32 @@ def test_failed_run_start_lookup_is_listed_and_not_evaluated(fake_gh, capsys):
     _edit(fake_gh, lambda responses: responses.pop(f"{REPO}/actions/runs/101"))
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     # A run whose start cannot be read is dropped and listed, never ordered by marker time.
-    assert "- #1: run 101 start lookup failed" in sections["Skipped issues"]
+    assert "- #1: run 101 start is unreadable" in sections["Skipped issues"]
     assert any(
-        line.startswith("- NOT EVALUATED: any out-of-policy action (1 triage run start lookups")
+        line.startswith("- NOT EVALUATED: any out-of-policy action (1 triage run starts are")
         for line in _lines(sections["Abort criteria"])
     )
+
+
+@pytest.mark.parametrize("started", ["not-a-timestamp", "2026-10-10T09:59:00", None])
+def test_unparseable_run_start_is_listed_and_the_report_continues(fake_gh, capsys, started):
+    _edit(
+        fake_gh,
+        lambda responses: responses[f"{REPO}/actions/runs/101"]["json"].update(
+            run_started_at=started
+        ),
+    )
+    sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
+    assert "- #1: run 101 start is unreadable" in sections["Skipped issues"]
+    assert "- Decided issues: 20" in sections["Mode: system-one"]
+    assert "Missing decision records" in sections and "Unverifiable bot closes" in sections
+    criteria = _lines(sections["Abort criteria"])
+    for criterion in ("a reopen rate above 5% for `agent:closed`", "any out-of-policy action"):
+        assert any(
+            line.startswith(f"- NOT EVALUATED: {criterion} (")
+            and "run starts are unreadable" in line
+            for line in criteria
+        )
 
 
 def test_malformed_payload_still_exits_zero(fake_gh, capsys):
@@ -314,7 +336,7 @@ def test_agreement_below_80_percent_over_50_issues_reaches_the_abort_criteria(fa
     _edit(fake_gh, fifty_disagreeing_issues)
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     flag = "- ABORT: dry-run agreement on type or area under 80% after 50 issues"
-    assert "- Type agreement: 4% (53 maintainer-labelled issues)" in sections["Mode: system-one"]
+    assert "- Type agreement: 6% (54 maintainer-labelled issues)" in sections["Mode: system-one"]
     assert flag in sections["Mode: system-one"]
     assert flag in _lines(sections["Abort criteria"])
 
@@ -324,7 +346,7 @@ def test_area_label_needs_labels_yml_as_well_as_areas_yml(fake_gh, capsys):
     _edit(fake_gh, lambda responses: _set_policy_file(responses, "labels.yml", labels))
     sections = _run(["--bot-login", "example-agent", "--tier2-budget-alerts", "0"], capsys)
     # cli stays in areas.yml, but apply cannot add area:cli without it in labels.yml.
-    assert "- 11 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- 12 actions by example-agent[bot]" in sections["Out-of-policy actions"]
 
 
 def test_unloadable_policy_marks_taxonomy_and_close_checks_not_evaluated(fake_gh, capsys):
@@ -336,7 +358,7 @@ def test_unloadable_policy_marks_taxonomy_and_close_checks_not_evaluated(fake_gh
         "- Not evaluated: 3 type:/area: labels, because the default branch's `.agents/` could "
         "not be loaded."
     )
-    assert "- 9 actions by example-agent[bot]" in sections["Out-of-policy actions"]
+    assert "- 10 actions by example-agent[bot]" in sections["Out-of-policy actions"]
     assert (
         "- NOT EVALUATED: any out-of-policy action (taxonomy labels: "
         in (sections["Abort criteria"])

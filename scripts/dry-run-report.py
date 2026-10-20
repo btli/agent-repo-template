@@ -133,7 +133,10 @@ def triage_runs(
         # A run starts before it uploads anything, so order runs by the run's own start.
         try:
             started = gh_json(f"repos/{repo}/actions/runs/{run_id}")["run_started_at"]
-        except (GhError, KeyError, TypeError):
+            # A start that is not an aware timestamp cannot be ordered or windowed.
+            if datetime.fromisoformat(started).tzinfo is None:
+                started = None
+        except (GhError, KeyError, TypeError, ValueError):
             started = None
         if isinstance(started, str):
             entry["started"] = started
@@ -492,9 +495,9 @@ def collect(args: argparse.Namespace, now: datetime) -> tuple[list[str], dict]:
         labelled = set()
         skipped.append("- agent:closed issue listing failed")
         gaps.append("the agent:closed issue listing failed")
-    skipped += [f"- #{number}: run {run_id} start lookup failed" for number, run_id in unstarted]
+    skipped += [f"- #{number}: run {run_id} start is unreadable" for number, run_id in unstarted]
     if unstarted:
-        gaps.append(f"{len(unstarted)} triage run start lookups failed")
+        gaps.append(f"{len(unstarted)} triage run starts are unreadable")
     numbers = set(runs) | labelled
     events, events_skipped = issue_events(args.repo, numbers)
     skipped += [f"- #{number}: issue events lookup failed" for number in events_skipped]

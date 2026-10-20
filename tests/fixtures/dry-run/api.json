@@ -6,7 +6,7 @@
  },
  "repos/your-org/example/actions/artifacts": {
   "json": {
-   "total_count": 73,
+   "total_count": 77,
    "artifacts": [
     {
      "id": 1,
@@ -785,6 +785,50 @@
      "created_at": "2026-10-15T10:00:00Z",
      "workflow_run": {
       "id": 136,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 74,
+     "name": "agent-triage-47",
+     "expired": false,
+     "created_at": "2026-10-16T10:30:00Z",
+     "workflow_run": {
+      "id": 137,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 75,
+     "name": "agent-decision-137",
+     "expired": false,
+     "created_at": "2026-10-16T10:30:00Z",
+     "workflow_run": {
+      "id": 137,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 76,
+     "name": "agent-triage-47",
+     "expired": false,
+     "created_at": "2026-10-16T10:20:00Z",
+     "workflow_run": {
+      "id": 138,
+      "repository_id": 1,
+      "head_repository_id": 1
+     }
+    },
+    {
+     "id": 77,
+     "name": "agent-decision-138",
+     "expired": false,
+     "created_at": "2026-10-16T10:20:00Z",
+     "workflow_run": {
+      "id": 138,
       "repository_id": 1,
       "head_repository_id": 1
      }
@@ -2091,6 +2135,96 @@
    "labels": []
   }
  },
+ "repos/your-org/example/actions/artifacts/75/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "137",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "feature",
+      "p": 0.9
+     },
+     "area": {
+      "value": "cli",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:feature",
+     "area:cli"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": {
+     "kind": "out_of_scope",
+     "target": null,
+     "docs_ref": "https://example.org/larkspur/faq",
+     "p": 0.95,
+     "lexical": null,
+     "tier2_agrees": true
+    },
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/actions/artifacts/77/zip": {
+  "zip": {
+   "decision.json": {
+    "schema_version": "1",
+    "run_id": "138",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tier": 1,
+    "answers": {
+     "type": {
+      "value": "bug",
+      "p": 0.9
+     },
+     "area": {
+      "value": "cli",
+      "p": 0.85
+     }
+    },
+    "labels": [
+     "type:bug",
+     "area:cli"
+    ],
+    "suggestions": {
+     "priority": null,
+     "labels": []
+    },
+    "needs_info": null,
+    "rca": null,
+    "close": null,
+    "escalate": null,
+    "security": false,
+    "notes": []
+   }
+  }
+ },
+ "repos/your-org/example/issues/47": {
+  "json": {
+   "number": 47,
+   "state": "closed",
+   "html_url": "https://github.com/your-org/example/issues/47",
+   "labels": [
+    {
+     "name": "type:bug"
+    },
+    {
+     "name": "area:cli"
+    }
+   ]
+  }
+ },
  "repos/your-org/example/issues/45": {
   "json": {
    "number": 45,
@@ -3298,6 +3432,29 @@
  "repos/your-org/example/issues/46/events": {
   "json": []
  },
+ "repos/your-org/example/issues/47/events": {
+  "json": [
+   {
+    "event": "closed",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "created_at": "2026-10-16T11:00:00Z"
+   },
+   {
+    "event": "labeled",
+    "actor": {
+     "login": "example-agent[bot]",
+     "type": "Bot"
+    },
+    "label": {
+     "name": "agent:closed"
+    },
+    "created_at": "2026-10-16T11:00:01Z"
+   }
+  ]
+ },
  "repos/your-org/example/actions/runs/101": {
   "json": {
    "id": 101,
@@ -3500,6 +3657,18 @@
   "json": {
    "id": 136,
    "run_started_at": "2026-10-15T09:59:00Z"
+  }
+ },
+ "repos/your-org/example/actions/runs/137": {
+  "json": {
+   "id": 137,
+   "run_started_at": "2026-10-16T10:00:00Z"
+  }
+ },
+ "repos/your-org/example/actions/runs/138": {
+  "json": {
+   "id": 138,
+   "run_started_at": "2026-10-16T10:10:00Z"
   }
  },
  "repos/your-org/example/actions/runs/108": {
