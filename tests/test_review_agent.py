@@ -82,6 +82,20 @@ def test_consumer_review_workflow_has_separate_read_and_write_jobs():
     assert "issues: write" not in Path("consumer/.github/workflows/agent-review.yml").read_text()
 
 
+def test_propose_policy_checkout_is_pinned_to_event_sha():
+    workflow = load_yaml(Path("consumer/.github/workflows/agent-review.yml"))
+    steps = workflow["jobs"]["agent-propose-review"]["steps"]
+    checkout = next(step for step in steps if step.get("name") == "Checkout review policy")
+    propose = next(step for step in steps if step.get("name") == "Propose review")
+
+    assert checkout["uses"] == ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+    assert checkout["with"]["ref"] == "${{ github.sha }}"
+    assert checkout["with"]["path"] == "agent-review-policy"
+    assert checkout["with"]["sparse-checkout"] == ".agents"
+    assert checkout["with"]["persist-credentials"] is False
+    assert propose["with"]["config-dir"] == ("${{ github.workspace }}/agent-review-policy/.agents")
+
+
 def _review_run_module():
     module_spec = importlib.util.spec_from_file_location(
         "review_agent_run", "actions/review-agent/run.py"
@@ -207,6 +221,42 @@ def test_review_agent_supplies_rendered_file_list_as_model_input(tmp_path, monke
     assert '"filename": "file.py"' in prompt
     assert '"patch": "@@ -0,0 +1 @@\\n+added"' in prompt
     assert output.exists()
+
+
+def test_review_agent_routes_scan_budget_review_to_summary_only(tmp_path, monkeypatch):
+    artifact = {
+        "schema_version": "1",
+        "run_id": "run-1",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "summary": "x" * 4000,
+        "findings": [
+            {
+                "severity": "low",
+                "path": "src/" + "p" * 34 + ".py",
+                "line": 1,
+                "body": "x" * 1950,
+            }
+            for _ in range(30)
+        ],
+        "scope_ok": True,
+        "tests_missing": False,
+        "docs_needed": False,
+        "escalate": None,
+    }
+    response = "```json\n" + json.dumps(artifact) + "\n```"
+    assert len(response) > 65536
+    module, output = _prepare_review_run(
+        tmp_path, monkeypatch, "printf '%s\\n' " + shlex.quote(response)
+    )
+
+    assert module.main() == 0
+
+    written = json.loads(output.read_text())
+    assert written["findings"] == []
+    assert written["escalate"]["to"] == "maintainer"
+    assert "needs-maintainer" in written["escalate"]["reason"]
+    assert "x" * 100 not in written["summary"]
 
 
 def test_summary_only_review_writes_schema_artifact_without_model(tmp_path, monkeypatch):

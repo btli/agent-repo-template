@@ -79,7 +79,11 @@ def _event_file(
     payload["repository"]["default_branch"] = "main"
     payload["action"] = action
     if name == "pull_request_target":
-        payload["pull_request"]["base"].update({"ref": base_ref, "sha": base})
+        if base_ref is None:
+            payload["pull_request"]["base"].pop("ref", None)
+        else:
+            payload["pull_request"]["base"]["ref"] = base_ref
+        payload["pull_request"]["base"]["sha"] = base
         payload["pull_request"]["head"]["sha"] = head
     event_path = tmp_path / f"{name}-event.json"
     event_path.write_text(json.dumps(payload))
@@ -309,6 +313,17 @@ def test_fetch_rejects_event_base_ref_retarget_race(tmp_path, monkeypatch):
     assert not api.calls
 
 
+def test_fetch_rejects_missing_event_base_ref(tmp_path, monkeypatch):
+    api = API()
+    config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
+    event_path = _event_file(tmp_path, base_ref=None)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+
+    with pytest.raises(ValueError, match="not based on the default branch"):
+        fetch(tmp_path / "files.json", config_dir)
+    assert not api.calls
+
+
 def test_fetch_rejects_api_base_ref_that_is_not_default_branch(tmp_path, monkeypatch):
     api = API(base_ref="release")
     config_dir, _ = _fetch_setup(tmp_path, monkeypatch, api)
@@ -391,6 +406,7 @@ def _review_apply_setup(
     event_base_sha=None,
     review_base_sha="a" * 40,
     event_action="opened",
+    event_base_ref="main",
 ):
     from agent_repo.commands import review_apply
 
@@ -398,6 +414,7 @@ def _review_apply_setup(
         tmp_path,
         event_name,
         base=base_sha if event_base_sha is None else event_base_sha,
+        base_ref=event_base_ref,
         action=event_action,
     )
     review_path = tmp_path / "review.json"
@@ -624,6 +641,17 @@ def test_review_apply_main_rejects_base_mismatch_before_policy_or_write(tmp_path
     assert not any(method == "POST" for method, _ in api.calls)
     assert "policy base identity mismatch" in summary.read_text()
     assert not policy_calls
+
+
+def test_review_apply_rejects_event_base_ref_mismatch_with_default_api_base(tmp_path, monkeypatch):
+    api = ReviewApplyAPI(base_ref="main")
+    command, review_path, _ = _review_apply_setup(
+        tmp_path, monkeypatch, api=api, event_base_ref="release"
+    )
+
+    assert command.main([str(review_path)]) == 1
+    assert not api.review_posts
+    assert not any(method == "POST" for method, _ in api.calls)
 
 
 def test_review_apply_main_requires_scan_keys(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 
+import pytest
 from agent_repo.apply.actions import ApplyContext
 from agent_repo.apply.review import apply_review, plan_review
 from agent_repo.charter import parse_charter
@@ -13,12 +14,22 @@ from agent_repo.github import GitHub
 
 
 class ReviewAPI:
-    def __init__(self, *, labels=(), comments=(), head_sha="b" * 40, head_reads=None):
+    def __init__(
+        self,
+        *,
+        labels=(),
+        comments=(),
+        head_sha="b" * 40,
+        head_reads=None,
+        disable_after_label=None,
+    ):
         self.calls = []
         self.labels = list(labels)
         self.comments = list(comments)
         self.head_sha = head_sha
         self.head_reads = iter(head_reads or ())
+        self.disable_after_label = disable_after_label
+        self.label_written = False
         self.gh = GitHub("test-token", "your-org/project", transport=self.transport)
 
     def transport(self, request, timeout):
@@ -31,19 +42,31 @@ class ReviewAPI:
             self.head_sha = next(self.head_reads, self.head_sha)
             return 200, {}, json.dumps({"head": {"sha": self.head_sha}}).encode()
         if request.method == "GET" and path == "issues/7":
+            labels = list(self.labels)
+            if self.label_written and self.disable_after_label == "skip":
+                labels.append("agent:skip")
             return (
                 200,
                 {},
                 json.dumps(
-                    {"labels": [{"name": label} for label in self.labels], "assignees": []}
+                    {"labels": [{"name": label} for label in labels], "assignees": []}
                 ).encode(),
             )
         if request.method == "GET" and path == "issues/7/comments":
-            return 200, {}, json.dumps(self.comments).encode()
-        if request.method == "GET" and path == "issues/7/comments":
-            return 200, {}, json.dumps(self.comments).encode()
+            comments = list(self.comments)
+            if self.label_written and self.disable_after_label == "off-marker":
+                from agent_repo.markers import marker
+
+                comments.append(
+                    {
+                        "body": marker("off", "new-run"),
+                        "user": {"login": "agent-review[bot]", "type": "Bot"},
+                    }
+                )
+            return 200, {}, json.dumps(comments).encode()
         if request.method == "POST" and path == "issues/7/labels":
             self.labels.extend(body["labels"])
+            self.label_written = True
             return 200, {}, b"{}"
         return 200, {}, b"[]" if request.method == "GET" else b"{}"
 
@@ -222,6 +245,24 @@ def test_apply_bot_off_marker_recheck_prevents_posting(tmp_path):
 
     assert alerts == ["Apply skipped: automation disabled for this issue."]
     assert not api.writes
+
+
+@pytest.mark.parametrize("opt_out", ["skip", "off-marker"])
+def test_apply_rechecks_opt_out_after_label_write_before_posting(tmp_path, opt_out):
+    api = ReviewAPI(disable_after_label=opt_out)
+
+    alerts = apply_review(
+        review(escalate={"to": "maintainer", "reason": "Review requested."}),
+        context(api),
+        {},
+        api.gh,
+        "live",
+        tmp_path / "summary.md",
+    )
+
+    assert alerts == ["Apply skipped: automation disabled for this issue."]
+    assert api.label_written
+    assert not [call for call in api.writes if call[1] == "pulls/7/reviews"]
 
 
 def test_moved_head_prevents_escalation_label_write(tmp_path):

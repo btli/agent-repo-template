@@ -9,7 +9,7 @@ from pathlib import Path
 from agent_repo.apply.actions import ApplyContext
 from agent_repo.apply.review import apply_review
 from agent_repo.commands.apply import _policy
-from agent_repo.commands.fetch_diff import _pull
+from agent_repo.commands.fetch_diff import _event_base_ref, _pull
 from agent_repo.config import ConfigError
 from agent_repo.diff import diff_index, fetch_files, summary_only
 from agent_repo.event import load_event
@@ -26,7 +26,14 @@ def main(argv: list[str]) -> int:
         if review_path.stat().st_size > 1_000_000:
             raise ValueError
         review = json.loads(review_path.read_text(encoding="utf-8"))
-        event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
+        event_name = os.environ["GITHUB_EVENT_NAME"]
+        event_path = Path(os.environ["GITHUB_EVENT_PATH"])
+        event = load_event(event_name, event_path)
+        if (
+            event.name == "pull_request_target"
+            and _event_base_ref(event_name, event_path) != event.default_branch
+        ):
+            raise ValueError("event pull request is not based on the default branch")
         gh = GitHub(os.environ["GH_TOKEN"], event.repo)
         expected_head_sha = os.environ["EXPECTED_HEAD_SHA"]
         if re.fullmatch(r"[0-9a-f]{40}", expected_head_sha) is None:

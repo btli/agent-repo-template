@@ -57,7 +57,10 @@ def fetch(files_path: Path, config_dir: Path) -> tuple[str, str, bool, str]:
     base_sha = os.environ["GITHUB_SHA"]
     if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
         raise ValueError("invalid policy SHA")
-    if _event_base_ref(event_name, event_path) not in (None, event.default_branch):
+    if (
+        event.name == "pull_request_target"
+        and _event_base_ref(event_name, event_path) != event.default_branch
+    ):
         raise ValueError("event pull request is not based on the default branch")
     expected_head_sha = os.environ["EXPECTED_HEAD_SHA"]
     if re.fullmatch(r"[0-9a-f]{40}", expected_head_sha) is None:

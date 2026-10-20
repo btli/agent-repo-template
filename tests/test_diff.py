@@ -255,6 +255,21 @@ def test_summary_only_counts_additions_and_deletions():
     assert "1501" in reason
 
 
+def test_summary_only_accepts_exact_review_line_limit():
+    patch = "@@ -0,0 +1,1500 @@\n" + "+new\n" * 1500
+    file = _file(patch, additions=1500, deletions=0, changes=1500)
+
+    assert summary_only([file], _config()) == (False, "")
+
+
+def test_diff_index_fails_closed_if_any_changed_file_has_no_patch():
+    valid = _file("@@ -0,0 +1 @@\n+new", additions=1, deletions=0, changes=1)
+    patchless = _file(None, filename="src/large.bin")
+    patchless.pop("patch")
+
+    assert diff_index([valid, patchless]) == {}
+
+
 def test_summary_only_matches_both_current_and_previous_paths():
     sensitive = Area("workflows", "Workflow", (".github/**",), (), True)
     renamed = _file(
