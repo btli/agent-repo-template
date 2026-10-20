@@ -1,0 +1,10 @@
+name: Invalid model cache write
+on:
+  issues:
+    types: [opened]
+jobs:
+  model:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: btli/agent-repo-template/actions/setup@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v1.0.0
+      - uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3

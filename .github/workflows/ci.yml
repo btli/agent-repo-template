@@ -29,3 +29,13 @@ jobs:
           actionlint
       - run: uv tool install zizmor==1.30.1
       - run: uv tool run zizmor --offline .github/
+      - name: Render and lint consumer workflows
+        run: |
+          set -euo pipefail
+          rendered="$(uv run --frozen python tools/render_consumer.py \
+            --template-sha 0000000000000000000000000000000000000000 \
+            --template-version v0.0.0)"
+          actionlint "$rendered"/consumer/.github/workflows/*.yml
+          uv tool run zizmor --offline "$rendered"/consumer/.github/
+          uv run --frozen python tools/workflow_lint.py \
+            "$rendered"/consumer/.github/workflows/*.yml

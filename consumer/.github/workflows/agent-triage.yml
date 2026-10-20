@@ -1,0 +1,252 @@
+name: Agent issue triage
+run-name: "agent-triage #${{ github.event.issue.number }}"
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      reason: ${{ steps.gate.outputs.reason }}
+      tier2_allowed: ${{ steps.gate.outputs.tier2_allowed }}
+      capped: ${{ steps.gate.outputs.capped }}
+      canary: ${{ steps.gate.outputs.canary }}
+    steps:
+      - name: Evaluate triage request
+        id: gate
+        uses: btli/agent-repo-template/actions/gate@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          workflow: triage
+          enabled: ${{ vars.AGENTS_ENABLED }}
+          bot-login: ${{ vars.AGENT_BOT_LOGIN }}
+      - name: Read default-branch triage policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: agent-triage-policy
+          persist-credentials: false
+      - name: Build triage hand-off files
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          POLICY_DIR: ${{ github.workspace }}/agent-triage-policy
+          OUTPUT_DIR: ${{ runner.temp }}/agent-triage
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          touch "$OUTPUT_DIR/marker"
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          policy = Path(os.environ["POLICY_DIR"])
+          agents = policy / ".agents"
+          charter = (agents / "charter.md").read_text(encoding="utf-8")
+          sections = list(re.finditer(r"^##\s+(.+?)\s*$", charter, re.MULTILINE))
+          docs_index = ""
+          for index, section in enumerate(sections):
+              if section.group(1) == "Docs index":
+                  end = sections[index + 1].start() if index + 1 < len(sections) else len(charter)
+                  docs_index = charter[section.end():end].strip()
+                  break
+
+          context = {
+              "config": (agents / "config.yml").read_text(encoding="utf-8"),
+              "labels": (agents / "labels.yml").read_text(encoding="utf-8"),
+              "areas": (agents / "areas.yml").read_text(encoding="utf-8"),
+              "charter": charter,
+              "contributing": (policy / "CONTRIBUTING.md").read_text(encoding="utf-8")
+              if (policy / "CONTRIBUTING.md").is_file()
+              else "",
+              "docs_index": docs_index,
+          }
+          output = Path(os.environ["OUTPUT_DIR"])
+          (output / "triage-context.json").write_text(
+              json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+      - name: Share marker source
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-handoff-marker-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/marker
+          if-no-files-found: error
+          retention-days: 1
+      - name: Share triage context
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-handoff-context-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/triage-context.json
+          if-no-files-found: error
+          retention-days: 1
+
+  propose:
+    needs: gate
+    if: ${{ needs.gate.outputs.reason != 'agent-off' && (needs.gate.outputs.run == 'true' || needs.gate.outputs.capped == 'true') }}
+    runs-on: ubuntu-24.04
+    environment: agent-propose-triage
+    concurrency:
+      group: agent-triage-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+    outputs:
+      tier2: ${{ steps.decide.outputs.tier2 }}
+    steps:
+      - name: Download marker source
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-handoff-marker-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/marker-source
+      - name: Record triage cycle marker
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-triage-${{ github.event.issue.number }}
+          path: ${{ runner.temp }}/agent-triage/marker-source/marker
+          if-no-files-found: error
+          retention-days: 90
+      - name: Checkout triage policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: agent-triage-policy
+          persist-credentials: false
+      - name: Download triage context
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-handoff-context-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/context
+      - name: Build Tier-1 decision
+        id: decide
+        uses: btli/agent-repo-template/actions/decide@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        env:
+          AGENT_SYSTEM_ONE_KEY: ${{ secrets.AGENT_SYSTEM_ONE_KEY }}
+        with:
+          token: ${{ github.token }}
+          canary: ${{ needs.gate.outputs.canary }}
+          tier2-allowed: ${{ needs.gate.outputs.tier2_allowed }}
+          default-branch: ${{ github.event.repository.default_branch }}
+          decision-file: ${{ runner.temp }}/agent-triage/decision/decision.json
+          context-file: ${{ runner.temp }}/agent-triage/decision/issue-context.txt
+          system-one-base-url: ${{ vars.AGENT_SYSTEM_ONE_URL }}
+          system-one-api-key-env: AGENT_SYSTEM_ONE_KEY
+      - name: Share Tier-1 decision and issue context
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-handoff-tier1-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/agent-triage/decision/decision.json
+            ${{ runner.temp }}/agent-triage/decision/issue-context.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  tier2:
+    needs: [gate, propose]
+    if: ${{ needs.gate.outputs.reason != 'agent-off' && needs.propose.outputs.tier2 == 'true' }}
+    runs-on: ubuntu-24.04
+    environment: agent-propose-triage
+    concurrency:
+      group: agent-triage-tier2
+      cancel-in-progress: false
+    permissions: {}
+    outputs:
+      merged: ${{ steps.triage.outcome == 'success' }}
+    steps:
+      - name: Download Tier-1 hand-off
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-handoff-tier1-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/tier2
+      - name: Download triage context
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-handoff-context-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/tier2-context
+      - name: Set up repository agent
+        uses: btli/agent-repo-template/actions/setup@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          gateway-url: ${{ vars.AGENT_GATEWAY_URL }}
+          gateway-kind: ${{ vars.AGENT_GATEWAY_KIND }}
+          model: ${{ vars.AGENT_TRIAGE_MODEL }}
+          api-key-env: AGENT_TRIAGE_KEY
+      - name: Run Tier-2 triage
+        id: triage
+        continue-on-error: true
+        uses: btli/agent-repo-template/actions/triage-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        env:
+          AGENT_TRIAGE_KEY: ${{ secrets.AGENT_TRIAGE_KEY }}
+        with:
+          api-key-env: AGENT_TRIAGE_KEY
+          issue-file: ${{ runner.temp }}/agent-triage/tier2/issue-context.txt
+          decision-file: ${{ runner.temp }}/agent-triage/tier2/decision.json
+          context-file: ${{ runner.temp }}/agent-triage/tier2-context/triage-context.json
+          output-file: ${{ runner.temp }}/agent-triage/merged/decision.json
+      - name: Share merged decision
+        if: steps.triage.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-handoff-tier2-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/merged/decision.json
+          if-no-files-found: error
+          retention-days: 1
+
+  apply:
+    needs: [gate, propose, tier2]
+    if: ${{ always() && needs.gate.result == 'success' && (needs.gate.outputs.run == 'true' || needs.gate.outputs.capped == 'true') }}
+    runs-on: ubuntu-24.04
+    environment: agent-apply
+    permissions: {}
+    steps:
+      - name: Download merged decision
+        if: needs.tier2.outputs.merged == 'true'
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-handoff-tier2-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/apply
+      - name: Download Tier-1 decision
+        if: ${{ needs.propose.result == 'success' && needs.tier2.outputs.merged != 'true' }}
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-handoff-tier1-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/apply
+      - name: Create issue token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.AGENT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          permission-issues: write
+      - name: Apply triage decision
+        uses: btli/agent-repo-template/actions/apply@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        with:
+          artifact: ${{ runner.temp }}/agent-triage/apply/decision.json
+          token: ${{ steps.app-token.outputs.token }}
+          scan-keys: ${{ secrets.AGENT_SCAN_KEYS }}
+          bot-login: ${{ vars.AGENT_BOT_LOGIN }}
+          canary: ${{ needs.gate.outputs.canary }}
+          capped: ${{ needs.gate.outputs.capped }}
+          off-authorized: ${{ needs.gate.outputs.reason == 'agent-off' }}
+      - name: Share applied decision record
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-decision-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-triage/apply/decision.json
+          if-no-files-found: ignore
+          retention-days: 30
