@@ -44,6 +44,9 @@ if mode == "nul_canary":
 if mode == "binary_attribute":
     (work / ".gitattributes").write_text("* binary\\n")
     (work / "notes.txt").write_text(canary)
+if mode == "outside_symlink":
+    (home / "outside.txt").write_text(canary)
+    os.symlink(home / "outside.txt", work / "outside-link")
 if mode == "nested_repo":
     vendor = work / "vendor"
     vendor.mkdir()
@@ -62,6 +65,12 @@ if mode == "no_patch":
                   escalate={"to": "maintainer", "reason": "No repro."})
 if mode == "raw_key_summary":
     answer["summary"] += " " + key
+splits = {"newline_key_summary": ("summary", key, "\\n"),
+          "newline_canary_rca": ("rca", canary, "\\n"),
+          "tab_key_rca": ("rca", key, "\\t"), "tab_canary_summary": ("summary", canary, "\\t")}
+if mode in splits:
+    field, secret, separator = splits[mode]
+    answer[field] = separator.join(secret[start:start + 4] for start in range(0, len(secret), 4))
 print("Done.\\n```json\\n" + json.dumps(answer) + "\\n```")
 """
 BWRAP = """#!/bin/bash
@@ -330,6 +339,25 @@ def test_no_patch_answer_writes_only_fix_json(action):
     assert not (action["out"] / "fix.patch").exists()
 
 
+def test_changed_file_scan_never_follows_a_symlink_out_of_the_tree(action):
+    # The link's target holds the canary, so reading through it would refuse the run.
+    (action["home"] / "mode").write_text("outside_symlink")
+    result = run_action(action, "agent")
+    assert result.returncode == 0, result.stderr
+    patch = (action["out"] / "fix.patch").read_text()
+    assert "diff --git a/outside-link b/outside-link\nnew file mode 120000" in patch
+
+
+@pytest.mark.parametrize("mode", ["setup", "agent"])
+def test_runner_git_config_never_reaches_the_base_check(action, mode, tmp_path):
+    # A malformed runner-wide config would make an ambient git fail on a valid checkout.
+    malformed = tmp_path / "malformed.gitconfig"
+    malformed.write_text("[core\n")
+    action["env"].update({"GIT_CONFIG_GLOBAL": str(malformed), "GIT_CONFIG_SYSTEM": str(malformed)})
+    result = run_action(action, mode)
+    assert result.returncode == 0, result.stderr
+
+
 LEAKS = {
     "canary": "credential or canary",
     "split_canary": "credential or canary",
@@ -339,6 +367,11 @@ LEAKS = {
     # Binary hunks are base85 in the patch, so only the file scan sees these.
     "nul_canary": "credential or canary",
     "binary_attribute": "credential or canary",
+    # JSON escaping turns these separators into letters, so only the field-value scan sees them.
+    "newline_key_summary": "credential or canary",
+    "newline_canary_rca": "credential or canary",
+    "tab_key_rca": "credential or canary",
+    "tab_canary_summary": "credential or canary",
 }
 
 
@@ -543,9 +576,14 @@ def test_setup_runs_default_branch_command_without_key(action, key_env):
 
 
 @pytest.mark.parametrize("checkout", ["work", "policy"])
+# The surrogate-escaped value writes raw non-UTF-8 bytes, which the check must still decode.
 @pytest.mark.parametrize(
     "setting",
-    [("http.https://example.test/.extraheader", "basic e30="), *CREDENTIAL_SETTINGS.values()],
+    [
+        ("http.https://example.test/.extraheader", "basic e30="),
+        ("http.https://example.test/.extraheader", "basic \udcff\udcfe"),
+        *CREDENTIAL_SETTINGS.values(),
+    ],
 )
 def test_setup_refuses_persisted_credentials_before_running(action, checkout, setting):
     policy = Path(action["env"]["POLICY_PATH"])
@@ -659,6 +697,15 @@ def test_policy_path_outside_the_checkout_is_refused(action, name, mode):
     prefix = "Project setup refused" if mode == "setup" else "Fix agent refused"
     assert f"{prefix}: policy file resolves outside the policy checkout." in result.stderr
     assert calls(action) == []
+
+
+def test_setup_reads_a_non_utf8_git_config(action):
+    # A non-UTF-8 byte in an unrelated config value must neither crash nor block setup.
+    with (action["work"] / ".git" / "config").open("ab") as config:
+        config.write(b"[core]\n\tcomment = \xff\xfe\n")
+    result = run_action(action, "setup")
+    assert result.returncode == 0, result.stderr
+    assert (action["work"] / "source.txt").read_text() == "default\n"
 
 
 def test_setup_home_is_discarded_before_the_agent(action):

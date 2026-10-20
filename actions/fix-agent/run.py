@@ -10,6 +10,7 @@ from pathlib import Path
 
 from agent_repo.commands.fix_artifact import (
     build_artifact,
+    git_environment,
     local_config,
     refuse_repository_commands,
     run_git,
@@ -68,6 +69,7 @@ def refuse_unexpected_head(git_dir: Path, base_sha: str) -> None:
     # rev-parse reads only the git dir, not the work tree, so it may run before the filter guard.
     head = subprocess.run(
         ["git", f"--git-dir={git_dir}", "rev-parse", "--verify", "HEAD^{commit}"],
+        env=git_environment(),
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
@@ -127,7 +129,7 @@ def setup() -> int:
     except Refused as exc:
         print(f"Project setup refused: {exc}.", file=sys.stderr)
         return 1
-    except (KeyError, OSError, ConfigError, subprocess.SubprocessError):
+    except (KeyError, OSError, ValueError, ConfigError, subprocess.SubprocessError):
         print("Project setup failed: trusted configuration unavailable.", file=sys.stderr)
         return 1
     if not command.strip():
@@ -144,6 +146,17 @@ def setup() -> int:
         return subprocess.run(
             ["bash", "-c", command], cwd=work, env=env, stdin=subprocess.DEVNULL
         ).returncode
+
+
+def string_values(value: object) -> list[str]:
+    # Decoded field values, since JSON escaping turns a newline separator into the letters \n.
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, list):
+        return [text for item in value for text in string_values(item)]
+    return []
 
 
 def changed_file_texts(work: Path, git_dir: Path, base_sha: str) -> list[str]:
@@ -238,7 +251,7 @@ def run_agent(output: Path, canary: str) -> str:
         artifact, patch = build_artifact(work, base_sha, run_id, answer, git_dir=git_dir)
     except ValueError:
         raise Refused("agent output rejected") from None
-    texts = [json.dumps(artifact, ensure_ascii=False) + (patch or "")]
+    texts = [json.dumps(artifact, ensure_ascii=False) + (patch or ""), *string_values(artifact)]
     if patch is not None:
         texts += changed_file_texts(work, git_dir, base_sha)
     # Separator-aware scan; output too large to scan fails closed as well.

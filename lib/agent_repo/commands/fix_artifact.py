@@ -11,19 +11,22 @@ MAX_PATCH_BYTES = 1_000_000
 DIFF_OPTIONS = ("--binary", "--full-index", "--no-ext-diff", "--no-textconv")
 
 
-def run_git(repo: Path, git_dir: Path, *args: str) -> bytes:
-    # Global and system config are ignored so runner-wide filters cannot change the patch.
-    env = {
+def git_environment() -> dict[str, str]:
+    # Global and system config are ignored so runner-wide settings cannot change any git result.
+    return {
         "PATH": os.environ.get("PATH", ""),
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
         "LC_ALL": "C",
     }
+
+
+def run_git(repo: Path, git_dir: Path, *args: str) -> bytes:
     command = ["git", f"--git-dir={git_dir}", f"--work-tree={repo}", "-c", "core.fsmonitor=false"]
     return subprocess.run(
         [*command, "-c", "core.quotepath=off", *args],
         cwd=repo,
-        env=env,
+        env=git_environment(),
         capture_output=True,
         check=True,
         stdin=subprocess.DEVNULL,
@@ -34,7 +37,8 @@ def run_git(repo: Path, git_dir: Path, *args: str) -> bytes:
 def local_config(repo: Path, git_dir: Path) -> list[str]:
     # Every repository scope, including config.worktree; run_git blanks global and system.
     entries = run_git(repo, git_dir, "config", "--includes", "--list", "-z")
-    return entries.decode().split("\0")
+    # A non-UTF-8 byte in a config value must not stop the checks that read it.
+    return entries.decode("utf-8", "surrogateescape").split("\0")
 
 
 def refuse_repository_commands(repo: Path, git_dir: Path) -> None:
