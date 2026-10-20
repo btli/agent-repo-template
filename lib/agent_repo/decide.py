@@ -339,6 +339,8 @@ def to_decision(
         escalate = {"to": "maintainer", "reason": "security-uncertain"}
     elif "credential-in-issue" in proposal.escalate_reasons:
         escalate = {"to": "maintainer", "reason": "credential-in-issue"}
+    elif "context-unscannable" in proposal.escalate_reasons:
+        escalate = {"to": "maintainer", "reason": "context-unscannable"}
     elif proposal.escalate:
         escalate = None
     elif {"tier2-cap", "tier2-check-failed"} & set(

@@ -5,6 +5,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -54,6 +55,7 @@ def _issue_form_fields(checkout: Path) -> tuple[tuple[str, ...], tuple[str, ...]
 
 
 def _writer_checker(gh: GitHub) -> Callable[[str], bool]:
+    @cache
     def is_writer(login: str) -> bool:
         try:
             permission = gh.request("GET", f"collaborators/{quote(login, safe='')}/permission")
@@ -197,26 +199,29 @@ def main(argv: list[str]) -> int:
             issue_context = model_context(gh, event, _writer_checker(gh))
         except GitHubError:
             issue_context = f"Title: {event.title}\n\nIssue body:\n{event.body}"
-        credential_in_issue = bool(
-            find_leaks(
-                issue_context,
-                [secret for secret in (gh_token, system_one_key) if secret],
-                canary,
-            )
+        scan_findings = find_leaks(
+            issue_context,
+            [secret for secret in (gh_token, system_one_key) if secret],
+            canary,
         )
+        scan_budget_exceeded = scan_findings == ["scan_budget"]
+        context_scan_failed = bool(scan_findings)
         missing = (
             missing_fields(event.body, required)
-            if not credential_in_issue and has_field_heading(event.body, form_headings)
+            if not context_scan_failed and has_field_heading(event.body, form_headings)
             else []
         )
-        security = not credential_in_issue and security_hit(issue_context)
-        if credential_in_issue:
+        security = not context_scan_failed and security_hit(issue_context)
+        if context_scan_failed:
+            escalate_reason = (
+                "context-unscannable" if scan_budget_exceeded else "credential-in-issue"
+            )
             proposal = Proposal(
                 ("needs-maintainer",),
                 None,
                 False,
                 False,
-                ("credential-in-issue",),
+                (escalate_reason,),
                 False,
                 None,
                 False,
@@ -225,8 +230,6 @@ def main(argv: list[str]) -> int:
             answers = {}
             tier = 0
             issue_context = ""
-            context_path.parent.mkdir(parents=True, exist_ok=True)
-            context_path.write_text(issue_context, encoding="utf-8")
         elif security:
             proposal = Proposal(
                 ("needs-maintainer",), None, False, False, ("security",), False, None, True, True
@@ -264,8 +267,7 @@ def main(argv: list[str]) -> int:
                     )
             tier = 1
         context_path.parent.mkdir(parents=True, exist_ok=True)
-        if not context_path.exists():
-            context_path.write_text(issue_context, encoding="utf-8")
+        context_path.write_text(issue_context, encoding="utf-8")
         artifact = to_decision(proposal, answers, run_id, base_sha, tier)
         if is_llm_only(config):
             artifact["mode"] = "llm-only"
