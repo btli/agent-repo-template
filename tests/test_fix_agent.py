@@ -1106,7 +1106,8 @@ COLLISIONS = {
     "unlistable_directory": ("pkg", "pkg/sub"),
 }
 SETUP_COMMANDS = {
-    "link_over_ignored_directory": "rm -r pkg && ln -s ../target pkg",
+    # The link resolves to a real directory outside the work tree, so only lstat tells them apart.
+    "link_over_ignored_directory": "mkdir -p ../target && rm -r pkg && ln -s ../target pkg",
     "unlistable_directory": "chmod 0311 pkg/sub",
 }
 
@@ -1140,7 +1141,7 @@ def test_feedback_overlay_never_overwrites_setup_output(action, collision):
     assert result.returncode == 1
     assert "Project setup refused: setup output conflicts with the feedback head." in result.stderr
     if collision == "link_over_ignored_directory":
-        assert os.readlink(work / "pkg") == "../target"
+        assert os.readlink(work / "pkg") == "../target" and (work / "pkg").is_dir()
     elif collision != "unlistable_directory":
         assert (work / written).read_text() == "setup\n"
     assert git(work, "rev-parse", "HEAD").strip() == base
