@@ -175,15 +175,19 @@ def refuse_unverified_feedback(work: Path, base_sha: str, head: str, ref: str, e
         raise Refused("feedback head does not descend from the base SHA")
 
 
+def repository_config(work: Path, git_dir: Path) -> list[tuple[str, str]]:
+    # Each repository-scope key with its scope; the action's own -c options are command scope.
+    listing = git(work, git_dir, "config", "--includes", "--list", "-z", "--show-scope")
+    fields = listing.decode().split("\0")
+    pairs = zip(fields[0::2], fields[1::2], strict=False)
+    return [(scope, entry.partition("\n")[0]) for scope, entry in pairs if scope != "command"]
+
+
 def refuse_overlay_commands(work: Path) -> None:
     # Setup may have changed repository config or the tree, and H's content is agent-written.
     git_dir = work / ".git"
-    listing = git(work, git_dir, "config", "--includes", "--list", "-z", "--show-scope")
-    fields = listing.decode().split("\0")
-    # The action's own -c options are command scope; every repository scope is checked.
-    for scope, entry in zip(fields[0::2], fields[1::2], strict=False):
-        if scope != "command" and re.fullmatch(COMMAND_CONFIG, entry.partition("\n")[0]):
-            raise Refused("git config can run commands")
+    if any(re.fullmatch(COMMAND_CONFIG, name) for _, name in repository_config(work, git_dir)):
+        raise Refused("git config can run commands")
     try:
         refuse_repository_commands(work, git_dir)
     except ValueError as exc:
@@ -217,6 +221,20 @@ def refuse_setup_collisions(work: Path, base_sha: str, head: str) -> None:
                 )
                 if any(path not in tracked for path in below):
                     raise Refused("setup output conflicts with the feedback head")
+
+
+def disable_artifact_hooks(work: Path, git_dir: Path) -> None:
+    # The artifact's git commands take no -c options, so setup's config must not run anything.
+    for scope, name in repository_config(work, git_dir):
+        hooks = name == "core.hookspath"
+        if (hooks and scope != "local") or (not hooks and re.fullmatch(COMMAND_CONFIG, name)):
+            raise Refused("git config can run commands")
+    # A husky-style local hooks path is kept off in the moved git dir, which the agent cannot reach.
+    git(work, git_dir, "config", "--local", "core.hooksPath", os.devnull)
+    # Read without the wrapper's -c option, the way the artifact's git commands see it.
+    effective = run_git(work, git_dir, "config", "--get", "core.hooksPath").strip()
+    if effective != os.fsencode(os.devnull):
+        raise Refused("git config can run commands")
 
 
 def move_head(work: Path, old: str, new: str) -> None:
@@ -382,6 +400,7 @@ def run_agent(output: Path, canary: str) -> str:
     # Git metadata leaves the sandbox root so the agent cannot plant config the diff would run.
     git_dir = scratch / "git"
     shutil.move(dot_git, git_dir)
+    disable_artifact_hooks(work, git_dir)
     spec = render_spec(TEMPLATE, config, scratch / "agent")
     settings = {
         "commands": {name: config.raw["commands"][name] for name in ("test", "lint")},

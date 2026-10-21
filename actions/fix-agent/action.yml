@@ -5,6 +5,7 @@ description: >-
   harden-runner blocks egress for the whole job, from job start, outside allowed-endpoints.
   The outbound scan refuses a patch, or any changed binary file, over 64 KiB.
   Any agent change to a .gitattributes file is refused; ones setup installs are kept.
+  Git hooks stay off for every git command the action runs, even if setup configures them.
   With feedback-head-sha set, setup runs at base-sha before the prior agent commit is overlaid.
 inputs:
   work-path:

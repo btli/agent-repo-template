@@ -60,6 +60,11 @@ if mode == "ebcdic_base_attribute":
     (work / "secret.dat").write_bytes(("token=" + canary).encode("cp037"))
 if mode in ("modify_base_attributes", "no_patch_attributes"):
     (work / ".gitattributes").write_text("*.py text eol=crlf\\n")
+if mode == "index_hook":
+    hook = work / "hooks" / "post-index-change"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\\ntouch " + str(home / "hook.ran") + "\\n")
+    hook.chmod(0o755)
 if mode == "unreadable_attributes":
     (work / "sub").mkdir()
     (work / "sub" / ".gitattributes").write_text("f.txt binary\\n")
@@ -1190,3 +1195,39 @@ def test_feedback_overlay_runs_no_repository_hook(action, tmp_path):
     assert result.returncode == 0, result.stderr
     assert hook.is_file() and not marker.exists()
     assert git(work, "rev-parse", "HEAD").strip() == head
+
+
+def test_artifact_git_runs_no_hook_the_agent_writes(action):
+    # A husky-style setup points hooks into the tree, where the sandboxed agent can write one.
+    use_setup(action, "git config core.hooksPath hooks")
+    assert run_action(action, "setup").returncode == 0
+    (action["home"] / "mode").write_text("index_hook")
+    result = run_action(action, "agent")
+    assert result.returncode == 0, result.stderr
+    assert "b/hooks/post-index-change\nnew file mode" in (action["out"] / "fix.patch").read_text()
+    assert not (action["home"] / "hook.ran").exists()
+
+
+# Repository config setup may leave that the artifact's own git commands would run.
+AGENT_COMMAND_CONFIG = {
+    "diff_external": "git config diff.external {marker_script}",
+    "worktree_hooks_path": "git config extensions.worktreeConfig true"
+    " && git config --worktree core.hooksPath hooks",
+    # Any hooks path outside local config is refused, even one that already disables hooks.
+    "worktree_null_hooks_path": "git config extensions.worktreeConfig true"
+    " && git config --worktree core.hooksPath /dev/null",
+}
+
+
+@pytest.mark.parametrize("problem", sorted(AGENT_COMMAND_CONFIG))
+def test_agent_step_refuses_command_config_setup_left(action, problem):
+    marker, script = action["home"] / "command.ran", action["home"] / "command.sh"
+    write_script(script, f"#!/bin/sh\ntouch {marker}\n")
+    use_setup(action, AGENT_COMMAND_CONFIG[problem].format(marker_script=script))
+    assert run_action(action, "setup").returncode == 0
+    result = run_action(action, "agent")
+    assert result.returncode == 1
+    assert "Fix agent refused: git config can run commands." in result.stderr
+    assert calls(action) == []
+    assert not marker.exists()
+    assert not (action["out"] / "fix.json").exists()
