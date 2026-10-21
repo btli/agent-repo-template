@@ -52,7 +52,7 @@ class API:
         elif path == "contents/MAINTAINERS":
             return 404, {}, b"{}"
         elif path.endswith("/permission"):
-            value = {"role_name": "write"}
+            value = {"role_name": "write", "permission": "write"}
         else:
             value = {
                 "number": int(path.split("/")[-1]) if path.startswith("issues/") else 7,
@@ -1469,21 +1469,44 @@ def test_close_uses_existing_trusted_explanation(closed_by, trusted, kind, close
     assert not [call for call in api.calls[boundary:] if call[0] != "GET"]
 
 
-@pytest.mark.parametrize("role", ["read", "triage", "none", None])
-def test_off_rejects_nonwrite_roles(role, tmp_path):
+@pytest.mark.parametrize(
+    "permission,accepted",
+    [
+        ({"role_name": "release-writer", "permission": "write"}, True),
+        ({"role_name": "maintain", "permission": "write"}, True),
+        ({"role_name": "admin", "permission": "admin"}, True),
+        ({"role_name": "triage", "permission": "read"}, False),
+        ({"role_name": "read", "permission": "read"}, False),
+        ({"role_name": "write"}, False),
+        ({"role_name": "none", "permission": "none"}, False),
+        ({}, False),
+    ],
+)
+def test_off_uses_effective_write_permission(permission, accepted, tmp_path):
     api = API()
     original = api.transport
 
     def transport(request, timeout):
         if request.full_url.endswith("/permission"):
-            return 200, {}, json.dumps({"role_name": role} if role is not None else {}).encode()
+            return 200, {}, json.dumps(permission).encode()
         return original(request, timeout)
 
     api.gh = GitHub("test-token", "your-org/project", transport=transport)
     ctx = context(api, off=True)
     ctx = replace(ctx, event=replace(ctx.event, name="issue_comment", comment_body="/agent off"))
     run(decision(), ctx, api, tmp_path)
-    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    if accepted:
+        assert [path for _, path, _ in api.writes] == ["issues/7/comments"]
+        assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
+    else:
+        assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+
+
+def test_gate_and_apply_share_one_writer_check():
+    from agent_repo import gate
+    from agent_repo.apply import triage
+
+    assert triage.is_writer is gate.is_writer
 
 
 @pytest.mark.parametrize("source", ["charter", "security_template"])

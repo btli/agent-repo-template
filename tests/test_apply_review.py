@@ -11,6 +11,7 @@ from agent_repo.charter import parse_charter
 from agent_repo.config import Area, RepoConfig
 from agent_repo.event import load_event
 from agent_repo.github import GitHub
+from agent_repo.yamljson import load_yaml
 
 
 class ReviewAPI:
@@ -310,3 +311,116 @@ def test_second_head_check_catches_move_after_enabled_check(tmp_path):
     apply_review(review(), context(api), {}, api.gh, "live", tmp_path / "summary.md")
 
     assert not [call for call in api.writes if call[1] == "pulls/7/reviews"]
+
+
+def run_off_apply(
+    tmp_path, monkeypatch, *, event="comment", body="/agent off", mode="live", comments=()
+):
+    from agent_repo.commands import review_apply
+
+    payload = json.loads(Path("tests/fixtures/events/pull_request_target.opened.json").read_text())
+    pull = payload.pop("pull_request")
+    if event == "comment":
+        payload.update(
+            action="created",
+            sender={"login": "maintainer", "type": "User"},
+            issue=dict(pull, pull_request={"url": "https://example.invalid/pulls/7"}, number=7),
+            comment={"body": body, "user": {"login": "maintainer"}},
+        )
+    else:
+        payload["pull_request"] = dict(pull, number=7)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload))
+    api = ReviewAPI(comments=comments)
+    original = api.transport
+
+    def transport(request, timeout):
+        path = urlparse(request.full_url).path
+        if path.endswith("/contents/MAINTAINERS"):
+            return 404, {}, b"{}"
+        if path.endswith("/permission"):
+            return (
+                200,
+                {},
+                json.dumps({"role_name": "release-writer", "permission": "write"}).encode(),
+            )
+        return original(request, timeout)
+
+    config = RepoConfig({"mode": {"review": mode}}, (), ("needs-maintainer",))
+    charter = parse_charter(Path("tests/fixtures/charter/example.md").read_text())
+    monkeypatch.setattr(review_apply, "_policy", lambda gh, sha, directory: (sha, config, charter))
+    monkeypatch.setattr(
+        review_apply, "GitHub", lambda token, repo: GitHub(token, repo, transport=transport)
+    )
+    summary = tmp_path / "summary.md"
+    for key, value in {
+        "AGENT_OFF_AUTHORIZED": "true",
+        "GITHUB_EVENT_NAME": "issue_comment" if event == "comment" else "pull_request_target",
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_RUN_ID": "run-1",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "GH_TOKEN": "ghs_" + "synthetic",
+        "EXPECTED_HEAD_SHA": "b" * 40,
+        "AGENT_SCAN_KEYS": "scan-key",
+        "AGENT_CANARY": "canary-1",
+        "AGENT_BOT_LOGIN": "agent-review",
+    }.items():
+        monkeypatch.setenv(key, value)
+    status = review_apply.main([str(tmp_path / "absent-review.json")])
+    return status, api, summary.read_text()
+
+
+def test_review_apply_posts_off_marker_for_authorized_pr_comment(tmp_path, monkeypatch):
+    status, api, summary = run_off_apply(tmp_path, monkeypatch)
+    assert status == 0
+    assert [(method, path) for method, path, _, _ in api.writes] == [("POST", "issues/7/comments")]
+    assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
+    assert "ghs_synthetic" not in summary
+
+
+def test_review_apply_off_skips_when_already_off(tmp_path, monkeypatch):
+    from agent_repo.markers import marker
+
+    off = {"body": marker("off", "old"), "user": {"login": "agent-review[bot]", "type": "Bot"}}
+    status, api, summary = run_off_apply(tmp_path, monkeypatch, comments=[off])
+    assert status == 0 and api.writes == []
+    assert "automation disabled" in summary
+
+
+@pytest.mark.parametrize(
+    "event,body,mode",
+    [
+        ("comment", "/agent off", "dry-run"),
+        ("comment", "thanks\n/agent off", "live"),
+        ("comment", "/review", "live"),
+        ("pull", "/agent off", "live"),
+    ],
+    ids=["dry-run", "not-first-line", "other-command", "not-a-comment"],
+)
+def test_review_apply_off_never_posts_without_a_live_off_command(
+    event, body, mode, tmp_path, monkeypatch
+):
+    status, api, summary = run_off_apply(tmp_path, monkeypatch, event=event, body=body, mode=mode)
+    assert not [path for _, path, _, _ in api.writes if path.endswith("/comments")]
+    assert "agent:off" not in json.dumps(api.writes)
+    if event == "pull":
+        assert status == 1 and "trusted review inputs unavailable" in summary
+
+
+def test_review_workflow_routes_agent_off_to_apply_without_a_model_run():
+    workflow = load_yaml(Path("consumer/.github/workflows/agent-review.yml"))
+    gate, propose, apply = (
+        workflow["jobs"][name]
+        for name in ("agent-review-gate", "agent-propose-review", "agent-apply-review")
+    )
+    assert gate["outputs"]["reason"] == "${{ steps.gate.outputs.reason }}"
+    assert propose["outputs"]["reason"] == "${{ needs.agent-review-gate.outputs.reason }}"
+    for step in propose["steps"]:
+        assert step["if"] == "needs.agent-review-gate.outputs.reason != 'agent-off'", step["name"]
+    download = next(step for step in apply["steps"] if step["name"] == "Download review inputs")
+    assert download["if"] == "needs.agent-propose-review.outputs.reason != 'agent-off'"
+    apply_step = next(step for step in apply["steps"] if step["name"] == "Apply review")
+    assert apply_step["env"]["AGENT_OFF_AUTHORIZED"] == (
+        "${{ needs.agent-propose-review.outputs.reason == 'agent-off' }}"
+    )

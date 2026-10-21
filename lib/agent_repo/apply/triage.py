@@ -1,9 +1,9 @@
 import base64
 import re
-from urllib.parse import quote
 
 from agent_repo.apply.actions import Action, ApplyContext, check_identity
 from agent_repo.config import is_llm_only
+from agent_repo.gate import is_writer
 from agent_repo.github import GitHubError
 from agent_repo.markers import marker
 from agent_repo.render import fenced
@@ -72,16 +72,10 @@ def _off(ctx: ApplyContext) -> list[Action] | None:
                 for line in content.splitlines()
                 if (login := line.split("#", 1)[0].strip())
             }
-        if ctx.event.sender.casefold() not in maintainers:
-            permission = ctx.github.request(
-                "GET", f"collaborators/{quote(ctx.event.sender, safe='')}/permission"
-            )
-            if not isinstance(permission, dict) or permission.get("role_name") not in {
-                "admin",
-                "maintain",
-                "write",
-            }:
-                return _maintainer(ctx, None, ["Off command rejected: authorization required."])
+        if ctx.event.sender.casefold() not in maintainers and not is_writer(
+            ctx.github, ctx.event.sender
+        ):
+            return _maintainer(ctx, None, ["Off command rejected: authorization required."])
     except Exception:
         return _maintainer(ctx, None, ["Off command rejected: authorization check failed."])
     return [

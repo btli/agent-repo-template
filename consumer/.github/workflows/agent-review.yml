@@ -20,6 +20,7 @@ jobs:
       pull-requests: read
     outputs:
       run: ${{ steps.gate.outputs.run }}
+      reason: ${{ steps.gate.outputs.reason }}
       canary: ${{ steps.gate.outputs.canary }}
       head_sha: ${{ steps.gate.outputs.head_sha }}
     steps:
@@ -47,10 +48,13 @@ jobs:
       pull-requests: read
     outputs:
       run: ${{ needs.agent-review-gate.outputs.run }}
+      reason: ${{ needs.agent-review-gate.outputs.reason }}
       canary: ${{ needs.agent-review-gate.outputs.canary }}
       head_sha: ${{ needs.agent-review-gate.outputs.head_sha }}
+    # An /agent off command skips every model step and only hands off to apply.
     steps:
       - name: Checkout review policy
+        if: needs.agent-review-gate.outputs.reason != 'agent-off'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -58,6 +62,7 @@ jobs:
           sparse-checkout: .agents
           persist-credentials: false
       - name: Set up repository agent
+        if: needs.agent-review-gate.outputs.reason != 'agent-off'
         # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/setup@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
         with:
@@ -67,6 +72,7 @@ jobs:
         env:
           LLM_API_KEY: ${{ secrets.AGENT_REVIEW_KEY }}
       - name: Propose review
+        if: needs.agent-review-gate.outputs.reason != 'agent-off'
         id: propose
         # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/review-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
@@ -81,6 +87,7 @@ jobs:
           output-file: ${{ runner.temp }}/agent-review/review.json
           run-id: ${{ github.run_id }}
       - name: Share review inputs with the apply job
+        if: needs.agent-review-gate.outputs.reason != 'agent-off'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agent-review-${{ github.run_id }}
@@ -99,6 +106,7 @@ jobs:
       contents: read
     steps:
       - name: Download review inputs
+        if: needs.agent-propose-review.outputs.reason != 'agent-off'
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: agent-review-${{ github.run_id }}
@@ -114,6 +122,8 @@ jobs:
       - name: Apply review
         # zizmor: ignore[unpinned-uses] Bootstrap resolves these template tokens to a commit SHA.
         uses: btli/agent-repo-template/actions/review-agent@__TEMPLATE_SHA__ # __TEMPLATE_VERSION__
+        env:
+          AGENT_OFF_AUTHORIZED: ${{ needs.agent-propose-review.outputs.reason == 'agent-off' }}
         with:
           mode: apply
           output-file: ${{ runner.temp }}/agent-review/review.json

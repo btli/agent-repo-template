@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.parse import quote
 
+from agent_repo.apply.actions import canonical_bot_login
 from agent_repo.config import RepoConfig
 from agent_repo.event import Event
 from agent_repo.github import GitHub, GitHubError
@@ -14,6 +15,8 @@ from agent_repo.markers import find_markers
 
 # The triage propose job uploads a zero-byte artifact with this exact name when it executes.
 TRIAGE_MARKER_NAME = "agent-triage-{issue_number}"
+# Credential and rate-limit failures get their own reasons so operators can tell them apart.
+_DISTINCT_API_ERRORS = {401, 403, 429}
 
 
 class _RequestBudgetExceeded(Exception):
@@ -52,6 +55,17 @@ def parse_command(body: str) -> Command | None:
     return None
 
 
+def is_writer(gh: GitHub | _Budget, login: str) -> bool:
+    # The effective permission folds maintain and custom roles into their base role.
+    try:
+        data = gh.request("GET", f"collaborators/{quote(login, safe='')}/permission")
+    except GitHubError as exc:
+        if exc.status == 404:
+            return False
+        raise
+    return isinstance(data, dict) and data.get("permission") in ("admin", "write")
+
+
 def authorize(gh: GitHub | _Budget, login: str, maintainers: frozenset[str]) -> bool:
     if login.casefold().endswith("[bot]") or not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}", login
@@ -59,13 +73,7 @@ def authorize(gh: GitHub | _Budget, login: str, maintainers: frozenset[str]) -> 
         return False
     if login.casefold() in {name.casefold() for name in maintainers}:
         return True
-    try:
-        data = gh.request("GET", f"collaborators/{quote(login, safe='')}/permission")
-    except GitHubError as exc:
-        if exc.status == 404:
-            return False
-        raise
-    return isinstance(data, dict) and data.get("role_name") in ("admin", "maintain", "write")
+    return is_writer(gh, login)
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,7 @@ class GateContext:
     now: datetime
     maintainers: frozenset[str]
     run_id: str
+    event_sha: str = ""
 
 
 @dataclass(frozen=True)
@@ -89,12 +98,23 @@ class GateResult:
     command: Command | None
     canary: str
     head_sha: str = ""
+    issue: str = ""
+    base_sha: str = ""
+    head_ref: str = ""
 
 
 def _mapping(value: object) -> dict:
     if not isinstance(value, dict):
         raise ValueError("invalid metadata")
     return value
+
+
+def _is_bot(user: object, bot_login: str) -> bool:
+    return (
+        isinstance(user, dict)
+        and user.get("type") == "Bot"
+        and canonical_bot_login(str(user.get("login", ""))) == canonical_bot_login(bot_login)
+    )
 
 
 def _agent_pr(event: Event, bot_login: str) -> bool:
@@ -117,20 +137,25 @@ def evaluate(event: Event, ctx: GateContext) -> GateResult:
         return GateResult(False, "request-budget", False, False, command, canary)
     except _CounterOverflow:
         return GateResult(False, "counter-overflow", False, False, command, canary)
-    except GitHubError:
-        return GateResult(False, "api-error", False, False, command, canary)
+    except GitHubError as exc:
+        reason = f"api-error-{exc.status}" if exc.status in _DISTINCT_API_ERRORS else "api-error"
+        return GateResult(False, reason, False, False, command, canary)
     except (ValueError, TypeError, KeyError, AttributeError):
         return GateResult(False, "invalid-metadata", False, False, command, canary)
 
 
 def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: str) -> GateResult:
     gh = _Budget(ctx.gh)
+    off_command = command is not None and command.name == "agent-off"
+    pull = None
+    fix_target: dict[str, str] = {}
 
     def result(run: bool, reason: str, tier2: bool = False, capped: bool = False) -> GateResult:
         head_sha = event.head_sha or ""
         if re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
             head_sha = ""
-        return GateResult(run, reason, tier2, capped, command, canary, head_sha)
+        target = fix_target if run else {}
+        return GateResult(run, reason, tier2, capped, command, canary, head_sha, **target)
 
     if not ctx.enabled:
         return result(False, "disabled")
@@ -155,7 +180,12 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         return result(False, "skip-label")
     if ctx.workflow == "triage" and event.is_pr:
         return result(False, "unsupported-event")
-    if ctx.workflow == "review" and event.draft and not _agent_pr(event, ctx.bot_login):
+    if (
+        ctx.workflow == "review"
+        and event.draft
+        and not off_command
+        and not _agent_pr(event, ctx.bot_login)
+    ):
         return result(False, "draft")
     if (
         ctx.workflow == "triage"
@@ -168,7 +198,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     if (
         command is not None
         and command.name != ctx.workflow
-        and not (command.name == "agent-off" and ctx.workflow == "triage")
+        and not (off_command and ctx.workflow in {"triage", "review"})
     ):
         return result(False, "wrong-command")
     if ctx.workflow == "review" and not event.is_pr:
@@ -223,14 +253,29 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
             draft=pull["draft"],
             author=_mapping(pull["user"])["login"],
         )
-    if ctx.workflow == "review" and event.draft and not _agent_pr(event, ctx.bot_login):
-        return result(False, "draft")
     if (
-        ctx.workflow == "fix"
-        and event.is_pr
-        and not (_agent_pr(event, ctx.bot_login) and event.draft)
+        ctx.workflow == "review"
+        and event.draft
+        and not off_command
+        and not _agent_pr(event, ctx.bot_login)
     ):
-        return result(False, "not-agent-draft")
+        return result(False, "draft")
+    feedback_issue = ""
+    if ctx.workflow == "fix" and event.is_pr:
+        # Feedback only continues a draft fix PR that the bot opened from agent/fix-<n>.
+        branch = re.fullmatch(r"agent/fix-([1-9][0-9]*)", event.head_ref or "")
+        if not (
+            pull is not None
+            and branch
+            and event.draft is True
+            and _agent_pr(event, ctx.bot_login)
+            and _is_bot(pull["user"], ctx.bot_login)
+        ):
+            return result(False, "not-agent-draft")
+        feedback_issue = branch[1]
+        link = rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+#{feedback_issue}(?![0-9])"
+        if not re.search(link, pull.get("body") or "", re.IGNORECASE):
+            return result(False, "unlinked-issue")
 
     workflow_path = ""
     if ctx.workflow == "triage":
@@ -244,14 +289,32 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     comments = _items(gh, f"issues/{event.number}/comments", None)
     for comment in comments:
         item = _mapping(comment)
-        login = _mapping(item.get("user") or {}).get("login", "")
-        if login.casefold() == ctx.bot_login.casefold() and any(
+        if _is_bot(item.get("user"), ctx.bot_login) and any(
             marker.role == "off" for marker in find_markers(item.get("body") or "")
         ):
             return result(False, "off")
 
-    if command is not None and command.name == "agent-off":
+    if off_command:
         return result(True, "agent-off")
+    if ctx.workflow == "fix" and feedback_issue:
+        head_sha = event.head_sha or ""
+        if re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
+            return result(False, "invalid-metadata")
+        commit = _mapping(gh.request("GET", f"git/commits/{head_sha}"))
+        bases = re.findall(r"^agent-base:[ \t]*(.*?)[ \t]*$", commit["message"], re.I | re.M)
+        if (
+            commit.get("sha") != head_sha
+            or len(bases) != 1
+            or re.fullmatch(r"[0-9a-f]{40}", bases[0]) is None
+        ):
+            return result(False, "invalid-agent-base")
+        fix_target.update(issue=feedback_issue, base_sha=bases[0], head_ref=event.head_ref)
+    elif ctx.workflow == "fix":
+        if re.fullmatch(r"[0-9a-f]{40}", ctx.event_sha) is None:
+            return result(False, "invalid-metadata")
+        fix_target.update(
+            issue=str(event.number), base_sha=ctx.event_sha, head_ref=f"agent/fix-{event.number}"
+        )
 
     repository_id = _mapping(gh.request("GET", f"/repos/{event.repo}"))["id"]
     limits = ctx.config.raw["limits"]
