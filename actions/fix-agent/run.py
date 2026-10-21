@@ -39,6 +39,11 @@ POLICY_FILES = (
     "AGENTS.md",
     "CONTRIBUTING.md",
 )
+# Apply writes exactly this message, so no model text can add, drop or move a trailer.
+AGENT_COMMIT = re.compile(
+    r"Fix #[1-9][0-9]*\n\nAgent-Base: (?P<base>[0-9a-f]{40})\nAgent-Run: [A-Za-z0-9_.-]{1,64}\n"
+    r"Agent-Tests:(?: [A-Za-z0-9_./:\[\]-]+){0,20}\n?"
+)
 
 
 class Refused(Exception):
@@ -106,7 +111,7 @@ def refuse_unplain_git_dir(tree: Path, label: str) -> None:
         raise Refused(f"{label} must be a plain git checkout")
 
 
-def refuse_untrusted_checkouts(work: Path, policy: Path, base_sha: str) -> None:
+def refuse_untrusted_checkouts(work: Path, policy: Path, expected_head: str) -> None:
     # Policy paths and both .git dirs are confirmed before any git command or policy read.
     refuse_escaping_policy_paths(policy)
     refuse_unplain_git_dir(work, "work tree")
@@ -115,33 +120,57 @@ def refuse_untrusted_checkouts(work: Path, policy: Path, base_sha: str) -> None:
     if any((policy / ".git" / name).is_symlink() for name in ("config", "config.worktree")):
         raise Refused("policy checkout must be a plain git checkout")
     # A checkout at any other commit is refused before its repository config is inspected.
-    refuse_unexpected_head(work / ".git", base_sha)
+    refuse_unexpected_head(work / ".git", expected_head)
     refuse_persisted_credentials(policy, policy / ".git")
     refuse_persisted_credentials(work, work / ".git")
 
 
-def setup() -> int:
+def feedback_inputs() -> tuple[str, str, str] | None:
+    # Feedback names the prior agent commit H, its branch and the event commit checked out.
+    head, ref = os.environ.get("FEEDBACK_HEAD_SHA", ""), os.environ.get("FEEDBACK_HEAD_REF", "")
+    if not head and not ref:
+        return None
+    event = os.environ.get("GITHUB_SHA", "")
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", head) is None
+        or re.fullmatch(r"agent/fix-[1-9][0-9]*", ref) is None
+        or re.fullmatch(r"[0-9a-f]{40}", event) is None
+    ):
+        raise Refused("invalid inputs")
+    return head, ref, event
+
+
+def is_ancestor(work: Path, git_dir: Path, ancestor: str, descendant: str) -> bool:
     try:
-        work, policy = checkouts()
-        # Setup trusts only base_sha code, so a checkout at any other commit never runs it.
-        base_sha = os.environ.get("BASE_SHA", "")
-        if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
-            raise Refused("invalid inputs")
-        # Setup runs unsandboxed, so a persisted token must be refused before it starts.
-        refuse_untrusted_checkouts(work, policy, base_sha)
-        # An untracked, ignored or edited script would otherwise run as if it were base_sha code.
-        reason = "work tree is not clean before setup"
-        refuse_unclean_work_tree(work, work / ".git", reason, ignored=True)
-        command = load_config(policy / ".agents").raw["commands"]["setup"]
-    except Refused as exc:
-        print(f"Project setup refused: {exc}.", file=sys.stderr)
-        return 1
-    except (KeyError, OSError, ValueError, ConfigError, subprocess.SubprocessError):
-        print("Project setup failed: trusted configuration unavailable.", file=sys.stderr)
-        return 1
-    if not command.strip():
-        print("No project setup command configured.")
-        return 0
+        run_git(work, git_dir, "merge-base", "--is-ancestor", ancestor, descendant)
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
+def refuse_unverified_feedback(work: Path, base_sha: str, head: str, ref: str, event: str) -> None:
+    git_dir = work / ".git"
+    # A fetch-depth 0 checkout already holds every branch, so no token is needed to check H.
+    if not is_ancestor(work, git_dir, head, f"refs/remotes/origin/{ref}"):
+        raise Refused("feedback head is not on the agent branch")
+    message = run_git(work, git_dir, "cat-file", "commit", head).partition(b"\n\n")[2]
+    match = AGENT_COMMIT.fullmatch(message.decode("utf-8", "replace"))
+    if match is None or match["base"] != base_sha:
+        raise Refused("feedback head is not an agent commit on the base SHA")
+    # Plain ancestry would accept an agent commit that reached the default branch by a merge.
+    if base_sha.encode() not in run_git(work, git_dir, "rev-list", "--first-parent", event).split():
+        raise Refused("feedback base is not on the default branch's first-parent chain")
+    if not is_ancestor(work, git_dir, base_sha, head):
+        raise Refused("feedback head does not descend from the base SHA")
+
+
+def move_head(work: Path, old: str, new: str) -> None:
+    # A two-tree read-tree runs no hooks and refuses to overwrite any untracked file.
+    run_git(work, work / ".git", "read-tree", "-m", "-u", old, new)
+    run_git(work, work / ".git", "update-ref", "--no-deref", "HEAD", new)
+
+
+def run_setup_command(work: Path, command: str) -> int:
     # The allowlist drops the key and runner file-command paths; a fresh HOME hides user state.
     env = agent_environment(dict(os.environ), tool=True)
     env.pop("PYTHONPATH", None)
@@ -153,6 +182,50 @@ def setup() -> int:
         return subprocess.run(
             ["bash", "-c", command], cwd=work, env=env, stdin=subprocess.DEVNULL
         ).returncode
+
+
+def setup() -> int:
+    try:
+        work, policy = checkouts()
+        # Setup trusts only base_sha code, so a checkout at any other commit never runs it.
+        base_sha = os.environ.get("BASE_SHA", "")
+        if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
+            raise Refused("invalid inputs")
+        feedback = feedback_inputs()
+        # A feedback checkout starts at the event commit and moves to the base once H is verified.
+        start = base_sha if feedback is None else feedback[2]
+        # Setup runs unsandboxed, so a persisted token must be refused before it starts.
+        refuse_untrusted_checkouts(work, policy, start)
+        # An untracked, ignored or edited script would otherwise run as if it were base_sha code.
+        reason = "work tree is not clean before setup"
+        refuse_unclean_work_tree(work, work / ".git", reason, ignored=True)
+        if feedback is not None:
+            refuse_unverified_feedback(work, base_sha, *feedback)
+            move_head(work, start, base_sha)
+            refuse_unexpected_head(work / ".git", base_sha)
+            refuse_unclean_work_tree(work, work / ".git", reason, ignored=True)
+        command = load_config(policy / ".agents").raw["commands"]["setup"]
+    except Refused as exc:
+        print(f"Project setup refused: {exc}.", file=sys.stderr)
+        return 1
+    except (KeyError, OSError, ValueError, ConfigError, subprocess.SubprocessError):
+        print("Project setup failed: trusted configuration unavailable.", file=sys.stderr)
+        return 1
+    if not command.strip():
+        print("No project setup command configured.")
+    elif code := run_setup_command(work, command):
+        return code
+    if feedback is None:
+        return 0
+    # The prior agent commit enters the tree only after setup has run the base's own code.
+    try:
+        move_head(work, base_sha, feedback[0])
+    except subprocess.SubprocessError:
+        print(
+            "Project setup refused: setup output conflicts with the feedback head.", file=sys.stderr
+        )
+        return 1
+    return 0
 
 
 def string_values(value: object) -> list[str]:
@@ -187,10 +260,15 @@ def binary_file_bytes(work: Path, git_dir: Path, base_sha: str) -> list[bytes]:
     return blobs + [path.read_bytes() for path in inside] + encoded
 
 
+def raise_walk_error(error: OSError) -> None:
+    raise error
+
+
 def attribute_files(work: Path) -> dict[str, tuple[str, str | bytes | None]]:
     # Every attributes file in the tree, ignored ones included, with its link target or bytes.
     found = {}
-    for root, dirs, files in os.walk(work):
+    # A directory the walk cannot list could hide an attributes file, so it fails closed.
+    for root, dirs, files in os.walk(work, onerror=raise_walk_error):
         for name in dirs + files:
             if name.casefold() == ".gitattributes":
                 path = Path(root) / name
@@ -219,11 +297,12 @@ def run_agent(output: Path, canary: str) -> str:
         or not 60 <= limit <= 21600
     ):
         raise Refused("invalid inputs")
+    feedback = feedback_inputs()
     key = os.environ.get(key_env, "")
     if not key:
         raise Refused("missing gateway key")
     temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
-    if temp.is_relative_to(work) or output.is_relative_to(work):
+    if temp.is_relative_to(work):
         raise Refused("runner temp and output must be outside the work tree")
     preflight = subprocess.run(
         ["bash", str(ACTION / "preflight.sh")],
@@ -232,7 +311,8 @@ def run_agent(output: Path, canary: str) -> str:
     )
     if preflight.returncode != 0:
         raise Refused("bwrap sandbox unavailable")
-    refuse_untrusted_checkouts(work, policy, base_sha)
+    # Setup overlays a feedback tree with the prior agent commit, so HEAD is H rather than base.
+    refuse_untrusted_checkouts(work, policy, base_sha if feedback is None else feedback[0])
     config = load_config(policy / ".agents")
     scratch = Path(tempfile.mkdtemp(prefix="agent-fix-", dir=temp))
     dot_git = work / ".git"
@@ -305,7 +385,11 @@ def run_agent(output: Path, canary: str) -> str:
     if leaks:
         raise Refused("credential or canary in agent output")
     # Checked for every answer, since a no-patch answer still leaves the edited tree behind.
-    if attribute_files(work) != attributes:
+    try:
+        changed = attribute_files(work) != attributes
+    except OSError:
+        raise Refused("agent output rejected") from None
+    if changed:
         raise Refused("agent output changes .gitattributes")
     write_artifact(output, artifact, patch)
     return artifact["status"]
@@ -314,6 +398,9 @@ def run_agent(output: Path, canary: str) -> str:
 def agent() -> int:
     try:
         output = Path(os.environ["OUTPUT_DIR"]).resolve()
+        # Stale outputs are removed only once the directory is known to lie outside the work tree.
+        if output.is_relative_to(Path(os.environ["WORK_PATH"]).resolve(strict=True)):
+            raise Refused("runner temp and output must be outside the work tree")
         for name in ("fix.json", "fix.patch"):
             (output / name).unlink(missing_ok=True)
         status = run_agent(output, secrets.token_hex(24))

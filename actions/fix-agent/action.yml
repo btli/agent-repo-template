@@ -5,13 +5,14 @@ description: >-
   harden-runner blocks egress for the whole job, from job start, outside allowed-endpoints.
   The outbound scan refuses a patch, or any changed binary file, over 64 KiB.
   Any agent change to a .gitattributes file is refused; ones setup installs are kept.
+  With feedback-head-sha set, setup runs at base-sha before the prior agent commit is overlaid.
 inputs:
   work-path:
     description: >-
-      Agent-branch checkout the agent edits, checked out at base-sha with
-      persist-credentials false. commands.setup must install everything the offline agent
-      needs inside it (gitignored, such as a project .venv); setup's HOME is discarded, so
-      test and lint commands must not depend on HOME.
+      Agent-branch checkout the agent edits, checked out at base-sha (for feedback, at the
+      event commit with fetch-depth 0) with persist-credentials false. commands.setup must
+      install everything the offline agent needs inside it (gitignored, such as a project
+      .venv); setup's HOME is discarded, so test and lint commands must not depend on HOME.
     required: true
   policy-path:
     description: >-
@@ -19,8 +20,21 @@ inputs:
       out with persist-credentials false.
     required: true
   base-sha:
-    description: Commit checked out at work-path; fix.json echoes it.
+    description: >-
+      Commit the patch is relative to; fix.json echoes it. For feedback it is the Agent-Base of
+      feedback-head-sha, on the first-parent chain of the event commit.
     required: true
+  feedback-head-sha:
+    description: >-
+      Prior agent commit H to build on; empty for a new fix. Its message must be exactly the apply
+      template "Fix #<n>", a blank line, then one Agent-Base, Agent-Run and Agent-Tests trailer.
+    required: false
+    default: ""
+  feedback-head-ref:
+    description: >-
+      Agent branch (agent/fix-<n>) that must contain feedback-head-sha; empty for a new fix.
+    required: false
+    default: ""
   issue-file:
     description: File containing the issue text and maintainer notes.
     required: true
@@ -65,6 +79,8 @@ runs:
         WORK_PATH: ${{ inputs.work-path }}
         POLICY_PATH: ${{ inputs.policy-path }}
         BASE_SHA: ${{ inputs.base-sha }}
+        FEEDBACK_HEAD_SHA: ${{ inputs.feedback-head-sha }}
+        FEEDBACK_HEAD_REF: ${{ inputs.feedback-head-ref }}
         API_KEY_ENV: ${{ inputs.api-key-env }}
       run: |
         set -euo pipefail
@@ -77,6 +93,8 @@ runs:
         WORK_PATH: ${{ inputs.work-path }}
         POLICY_PATH: ${{ inputs.policy-path }}
         BASE_SHA: ${{ inputs.base-sha }}
+        FEEDBACK_HEAD_SHA: ${{ inputs.feedback-head-sha }}
+        FEEDBACK_HEAD_REF: ${{ inputs.feedback-head-ref }}
         RUN_ID: ${{ github.run_id }}
         ISSUE_FILE: ${{ inputs.issue-file }}
         OUTPUT_DIR: ${{ inputs.output-dir }}
