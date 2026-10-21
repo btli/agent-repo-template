@@ -194,14 +194,19 @@ def refuse_setup_collisions(work: Path, base_sha: str, head: str) -> None:
     # read-tree overwrites ignored files, so any setup output on a path H changes is refused.
     git_dir = work / ".git"
     changed = git(work, git_dir, "diff", "--name-only", "-z", "--no-renames", base_sha, head)
-    tracked = set(
-        git(work, git_dir, "ls-tree", "-r", "-t", "-z", "--name-only", base_sha).split(b"\0")
-    )
+    listing = git(work, git_dir, "ls-tree", "-r", "-t", "-z", base_sha).split(b"\0")
+    # Each base path with its object type; a gitlink checks out as a directory, like a tree.
+    tracked = {entry.partition(b"\t")[2]: entry.split(b" ")[1] for entry in listing if entry}
     for name in filter(None, changed.split(b"\0")):
         parts = name.split(b"/")
         for depth in range(1, len(parts) + 1):
             path = b"/".join(parts[:depth])
-            if path not in tracked and os.path.lexists(work / os.fsdecode(path)):
+            entry = work / os.fsdecode(path)
+            if not os.path.lexists(entry):
+                continue
+            # A link or file where the base tracks a directory, or the reverse, is setup output.
+            is_directory = entry.is_dir() and not entry.is_symlink()
+            if path not in tracked or (tracked[path] == b"blob") == is_directory:
                 raise Refused("setup output conflicts with the feedback head")
         # H may replace a tracked directory with a file or link, deleting setup output inside it.
         top = work / os.fsdecode(name)

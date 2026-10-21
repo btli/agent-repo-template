@@ -819,13 +819,17 @@ POLICY_PATHS = [
 ]
 
 
-def test_action_confines_every_policy_path():
-    # A dropped .agents entry is masked by its files, so the list itself is pinned too.
+def load_run_module():
     path = ROOT / "actions" / "fix-agent" / "run.py"
     spec = importlib.util.spec_from_file_location("fix_agent_run", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert list(module.POLICY_FILES) == POLICY_PATHS
+    return module
+
+
+def test_action_confines_every_policy_path():
+    # A dropped .agents entry is masked by its files, so the list itself is pinned too.
+    assert list(load_run_module().POLICY_FILES) == POLICY_PATHS
 
 
 @pytest.mark.parametrize("mode", ["setup", "agent"])
@@ -1089,7 +1093,8 @@ def test_feedback_setup_refuses_an_unverified_head(action, problem):
 
 
 # Setup output H would replace: a plain file, an ignored file H force-tracks, a file in an
-# ignored directory H adds to, and ignored files at any depth in a tracked directory H replaces.
+# ignored directory H adds to, ignored files at any depth in a tracked directory H replaces, a link
+# setup put where the base tracks a directory, and a directory setup made unlistable.
 COLLISIONS = {
     "plain": ("notes.txt", "notes.txt"),
     "ignored_file": ("deps/tool", "deps/tool"),
@@ -1097,6 +1102,12 @@ COLLISIONS = {
     "directory_to_file": ("pkg", "pkg/.cache"),
     "directory_to_symlink": ("pkg", "pkg/.cache"),
     "nested_below_symlink": ("pkg", "pkg/sub/.cache"),
+    "link_over_ignored_directory": ("pkg", "pkg"),
+    "unlistable_directory": ("pkg", "pkg/sub"),
+}
+SETUP_COMMANDS = {
+    "link_over_ignored_directory": "rm -r pkg && ln -s ../target pkg",
+    "unlistable_directory": "chmod 0311 pkg/sub",
 }
 
 
@@ -1104,18 +1115,34 @@ COLLISIONS = {
 def test_feedback_overlay_never_overwrites_setup_output(action, collision):
     work = action["work"]
     tracked, written = COLLISIONS[collision]
-    commit_base_file(action, ".gitignore", b"deps/\n.cache\n")
     commit_base_file(action, "pkg/file", b"base\n")
     commit_base_file(action, "pkg/sub/file", b"base\n")
+    # Ignoring the tracked directory's own name makes read-tree replace a link setup put there.
+    ignored = b"pkg\n" if collision == "link_over_ignored_directory" else b""
+    commit_base_file(action, ".gitignore", b"deps/\n.cache\n" + ignored)
     base = action["env"]["BASE_SHA"]
     links = (tracked,) if collision.endswith("symlink") else ()
     prior_agent_commit(action, {tracked: "destination" if links else "prior\n"}, links=links)
     event_commit(action, base)
-    use_setup(action, f"mkdir -p deps pkg/sub && echo setup > {written}")
-    result = run_action(action, "setup")
+    default = f"mkdir -p deps pkg/sub && echo setup > {written}"
+    use_setup(action, SETUP_COMMANDS.get(collision, default))
+    try:
+        result = run_action(action, "setup")
+        if collision == "unlistable_directory":
+            # The repository-command walk refuses first, so the collision walk is checked alone too.
+            with pytest.raises(PermissionError):
+                load_run_module().refuse_setup_collisions(
+                    work, base, action["env"]["FEEDBACK_HEAD_SHA"]
+                )
+    finally:
+        if collision == "unlistable_directory":
+            (work / "pkg" / "sub").chmod(0o755)
     assert result.returncode == 1
     assert "Project setup refused: setup output conflicts with the feedback head." in result.stderr
-    assert (work / written).read_text() == "setup\n"
+    if collision == "link_over_ignored_directory":
+        assert os.readlink(work / "pkg") == "../target"
+    elif collision != "unlistable_directory":
+        assert (work / written).read_text() == "setup\n"
     assert git(work, "rev-parse", "HEAD").strip() == base
 
 
