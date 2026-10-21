@@ -4,6 +4,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from agent_repo.apply.actions import canonical_bot_login
+from agent_repo.commands.fetch_diff import _event_base_ref
 from agent_repo.config import ConfigError, load_config
 from agent_repo.event import load_event
 from agent_repo.gate import GateContext, GateResult, evaluate
@@ -31,6 +33,9 @@ def _write_outputs(result: GateResult) -> None:
         "command_args": result.command.args if result.command else "",
         "canary": result.canary,
         "head_sha": result.head_sha,
+        "issue": result.issue,
+        "base_sha": result.base_sha,
+        "head_ref": result.head_ref,
     }
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         for name, value in values.items():
@@ -47,20 +52,30 @@ def main(argv: list[str]) -> int:
             result = GateResult(False, "disabled", False, False, None, secrets.token_hex(16))
         else:
             checkout = Path(argv[1])
-            event = load_event(
-                os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"])
-            )
+            event_name = os.environ["GITHUB_EVENT_NAME"]
+            event_path = Path(os.environ["GITHUB_EVENT_PATH"])
+            event = load_event(event_name, event_path)
             ctx = GateContext(
                 workflow=argv[0],
                 enabled=True,
-                bot_login=os.environ["AGENT_BOT_LOGIN"],
+                bot_login=canonical_bot_login(os.environ["AGENT_BOT_LOGIN"]),
                 config=load_config(checkout / ".agents"),
                 gh=GitHub(os.environ["GITHUB_TOKEN"], event.repo),
                 now=datetime.now(UTC),
                 maintainers=_maintainers(checkout),
                 run_id=os.environ["GITHUB_RUN_ID"],
+                event_sha=os.environ.get("GITHUB_SHA", ""),
             )
-            result = evaluate(event, ctx)
+            # GITHUB_SHA is the default-branch policy only when the PR targets that branch.
+            if (
+                event.name == "pull_request_target"
+                and _event_base_ref(event_name, event_path) != event.default_branch
+            ):
+                result = GateResult(
+                    False, "non-default-base", False, False, None, secrets.token_hex(16)
+                )
+            else:
+                result = evaluate(event, ctx)
     except (ConfigError, OSError, ValueError, KeyError, TypeError, AttributeError):
         print("Gate input could not be loaded.", file=sys.stderr)
         result = GateResult(False, "gate-error", False, False, None, secrets.token_hex(16))

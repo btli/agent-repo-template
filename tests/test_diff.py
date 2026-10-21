@@ -226,8 +226,15 @@ def test_noncanonical_previous_path_fails_closed():
     [
         ("@@ -0,0 +1,1501 @@\n" + "+x\n" * 1501, 0, 0),
         ("", 1, 0),
+        ("@@ -1,2 +1,1 @@\n-old\n-old\n+new\n", 1, 1),
+        ("@@ -1,1 +1,1 @@\n-old\n+new\n", 1, 2),
     ],
-    ids=["patch-rows-exceed-metadata", "empty-patch-with-line-changes"],
+    ids=[
+        "patch-rows-exceed-metadata",
+        "empty-patch-with-line-changes",
+        "deletion-rows-exceed-metadata",
+        "deletion-metadata-exceeds-rows",
+    ],
 )
 def test_patch_row_counts_must_match_metadata(patch, additions, deletions):
     entry = _file(
@@ -261,6 +268,17 @@ def test_summary_only_counts_additions_and_deletions():
 
     assert limited is True
     assert "1501" in reason
+
+
+def test_summary_only_counts_pure_deletions_against_the_line_limit():
+    patch = "@@ -1,1501 +0,0 @@\n" + "-old\n" * 1501
+    file = _file(patch, additions=0, deletions=1501, changes=1501)
+
+    limited, reason = summary_only([file], _config())
+
+    assert limited is True
+    assert "1501" in reason
+    assert diff_index([file]) == {"src/file.py": set()}
 
 
 def test_summary_only_accepts_exact_review_line_limit():

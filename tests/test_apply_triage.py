@@ -52,7 +52,7 @@ class API:
         elif path == "contents/MAINTAINERS":
             return 404, {}, b"{}"
         elif path.endswith("/permission"):
-            value = {"role_name": "write"}
+            value = {"role_name": "write", "permission": "write"}
         else:
             value = {
                 "number": int(path.split("/")[-1]) if path.startswith("issues/") else 7,
@@ -639,15 +639,15 @@ def test_off_rechecks_first_line_and_trusted_maintainers(
             ctx.event, name="issue_comment", comment_body=body, sender=sender, sender_is_bot=bot
         ),
     )
-    run(decision(), ctx, api, tmp_path)
+    _, summary = run(decision(), ctx, api, tmp_path)
     if expected:
         assert len(api.writes) == 1 and api.writes[0][1] == "issues/7/comments"
         assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
         if listed:
             assert refs == ["ref=" + ctx.base_sha]
     else:
-        assert not api.comments
-        assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+        assert api.writes == []
+        assert "Off command rejected: authorization required." in summary
     if refs:
         assert all(ref == "ref=" + ctx.base_sha for ref in refs)
 
@@ -1469,21 +1469,146 @@ def test_close_uses_existing_trusted_explanation(closed_by, trusted, kind, close
     assert not [call for call in api.calls[boundary:] if call[0] != "GET"]
 
 
-@pytest.mark.parametrize("role", ["read", "triage", "none", None])
-def test_off_rejects_nonwrite_roles(role, tmp_path):
+@pytest.mark.parametrize(
+    "permission,accepted",
+    [
+        ({"role_name": "release-writer", "permission": "write"}, True),
+        ({"role_name": "maintain", "permission": "write"}, True),
+        ({"role_name": "admin", "permission": "admin"}, True),
+        ({"role_name": "triage", "permission": "read"}, False),
+        ({"role_name": "read", "permission": "read"}, False),
+        ({"role_name": "write"}, False),
+        ({"role_name": "none", "permission": "none"}, False),
+        ({}, False),
+    ],
+)
+def test_off_uses_effective_write_permission(permission, accepted, tmp_path):
     api = API()
     original = api.transport
 
     def transport(request, timeout):
         if request.full_url.endswith("/permission"):
-            return 200, {}, json.dumps({"role_name": role} if role is not None else {}).encode()
+            return 200, {}, json.dumps(permission).encode()
         return original(request, timeout)
 
     api.gh = GitHub("test-token", "your-org/project", transport=transport)
     ctx = context(api, off=True)
     ctx = replace(ctx, event=replace(ctx.event, name="issue_comment", comment_body="/agent off"))
-    run(decision(), ctx, api, tmp_path)
-    assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+    _, summary = run(decision(), ctx, api, tmp_path)
+    if accepted:
+        assert [path for _, path, _ in api.writes] == ["issues/7/comments"]
+        assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
+    else:
+        assert api.writes == []
+        assert "Off command rejected: authorization required." in summary
+
+
+@pytest.mark.parametrize("failing", ["contents/MAINTAINERS", "/permission"])
+def test_off_authorization_read_errors_write_nothing(failing, tmp_path):
+    api = API()
+    original = api.transport
+
+    def transport(request, timeout):
+        if urlparse(request.full_url).path.endswith(failing):
+            return 500, {}, b"{}"
+        return original(request, timeout)
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    ctx = context(api, off=True)
+    ctx = replace(ctx, event=replace(ctx.event, name="issue_comment", comment_body="/agent off"))
+    alerts, summary = run(decision(), ctx, api, tmp_path)
+    assert api.writes == []
+    assert alerts == ["Off command rejected: authorization check failed."]
+    assert "Off command rejected: authorization check failed." in summary
+
+
+@pytest.mark.parametrize(
+    "failures,alert",
+    [
+        ({"/permission": [200]}, "authorization required"),
+        ({"contents/MAINTAINERS": [500]}, "authorization check failed"),
+        ({"/permission": [500]}, "authorization check failed"),
+        ({"/permission": [500], "issues/7": [502]}, "authorization check failed"),
+    ],
+    ids=["revoked-writer", "maintainers-read-error", "permission-read-error", "then-issue-502"],
+)
+def test_cli_rejected_off_never_reaches_live_execution(failures, alert, monkeypatch, tmp_path):
+    from agent_repo.commands.apply import main
+
+    api = API()
+    original = api.transport
+    remaining = {suffix: list(statuses) for suffix, statuses in failures.items()}
+
+    def transport(request, timeout):
+        path = urlparse(request.full_url).path
+        for suffix, statuses in remaining.items():
+            if path.endswith(suffix) and statuses:
+                status = statuses.pop(0)
+                body = {"role_name": "read", "permission": "read"} if status == 200 else {}
+                return status, {}, json.dumps(body).encode()
+        return original(request, timeout)
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    ctx = context(api)
+    monkeypatch.setattr("agent_repo.commands.apply.GitHub", lambda token, repo: api.gh)
+    monkeypatch.setattr(
+        "agent_repo.commands.apply._policy",
+        lambda gh, sha, directory: (ctx.base_sha, ctx.config, ctx.charter),
+    )
+    payload = json.loads(Path("tests/fixtures/events/issues.opened.json").read_text())
+    payload.update(
+        action="created",
+        sender={"login": "maintainer", "type": "User"},
+        issue=dict(payload["issue"], number=7),
+        comment={"body": "/agent off", "user": {"login": "maintainer"}},
+    )
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload))
+    summary = tmp_path / "summary.md"
+    for name, value in {
+        "GITHUB_EVENT_NAME": "issue_comment",
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_RUN_ID": ctx.run_id,
+        "GITHUB_SHA": ctx.base_sha,
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "GH_TOKEN": "test-token",
+        "AGENT_BOT_LOGIN": "agent-apply[bot]",
+        "AGENT_SCAN_KEYS": "\n".join(ctx.secrets),
+        "AGENT_CANARY": ctx.canary,
+        "AGENT_OFF_AUTHORIZED": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert main([str(tmp_path / "absent-decision.json")]) == 0
+    assert api.writes == []
+    assert not [path for _, path, _ in api.calls if path.startswith("issues/")]
+    text = summary.read_text()
+    assert f"Off command rejected: {alert}." in text and "Apply failed" not in text
+
+
+def test_execute_skips_live_calls_only_when_nothing_writes(tmp_path):
+    from agent_repo.apply.actions import Action, execute
+
+    carrier = Action(
+        "add_labels",
+        {"number": 7, "labels": [], "alerts": ["Notice."], "bot_login": "agent-apply[bot]"},
+    )
+    api = API()
+    assert execute([carrier], api.gh, "live", tmp_path / "summary.md") == ["Notice."]
+    assert api.calls == []
+    assert "ALERT: Notice." in (tmp_path / "summary.md").read_text()
+
+    labels = Action(
+        "add_labels", {"number": 7, "labels": ["type:bug"], "bot_login": "agent-apply[bot]"}
+    )
+    execute([carrier, labels], api.gh, "live", tmp_path / "summary.md")
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["type:bug"]})]
+
+
+def test_gate_and_apply_share_one_writer_check():
+    from agent_repo import gate
+    from agent_repo.apply import triage
+
+    assert triage.is_writer is gate.is_writer
 
 
 @pytest.mark.parametrize("source", ["charter", "security_template"])

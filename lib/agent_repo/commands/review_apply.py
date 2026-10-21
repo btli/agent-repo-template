@@ -6,8 +6,9 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from agent_repo.apply.actions import ApplyContext
+from agent_repo.apply.actions import ApplyContext, canonical_bot_login, execute
 from agent_repo.apply.review import apply_review, summary_only_review
+from agent_repo.apply.triage import _off
 from agent_repo.commands.apply import _policy
 from agent_repo.commands.fetch_diff import _changed_files, _event_base_ref, _pull
 from agent_repo.config import ConfigError
@@ -16,12 +17,55 @@ from agent_repo.event import load_event
 from agent_repo.github import GitHub, GitHubError
 
 
+def _scan_keys() -> list[str]:
+    scan_keys = [
+        value.strip()
+        for value in os.environ.get("AGENT_SCAN_KEYS", "").splitlines()
+        if value.strip()
+    ]
+    if not scan_keys:
+        raise ValueError
+    return scan_keys
+
+
+def _apply_off(gh: GitHub, event, bot_login: str, summary: Path) -> int:
+    # An authorized /agent off on a pull request posts the bot off marker; no review artifact.
+    if event.name != "issue_comment" or not event.is_pr:
+        raise ValueError("off requires a pull request comment")
+    base_sha = os.environ["GITHUB_SHA"]
+    with tempfile.TemporaryDirectory(prefix="agent-review-policy-") as directory:
+        _, config, charter = _policy(gh, base_sha, Path(directory))
+    ctx = ApplyContext(
+        event,
+        config,
+        charter,
+        os.environ["GITHUB_RUN_ID"],
+        base_sha,
+        [*_scan_keys(), os.environ["GH_TOKEN"]],
+        os.environ["AGENT_CANARY"],
+        False,
+        github=gh,
+        off_authorized=True,
+        bot_login=bot_login,
+    )
+    alerts = execute(_off(ctx), gh, config.mode_for("review"), summary)
+    return 1 if any(alert.startswith("Apply failed") for alert in alerts) else 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("usage: review_apply <review.json>", file=sys.stderr)
         return 2
     summary = Path(os.environ.get("GITHUB_STEP_SUMMARY", "review-apply-summary.md"))
     try:
+        bot_login = canonical_bot_login(os.environ["AGENT_BOT_LOGIN"])
+        if not bot_login:
+            raise ValueError("trusted bot identity required")
+        if os.environ.get("AGENT_OFF_AUTHORIZED") == "true":
+            event = load_event(
+                os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"])
+            )
+            return _apply_off(GitHub(os.environ["GH_TOKEN"], event.repo), event, bot_login, summary)
         review_path = Path(argv[0])
         if review_path.stat().st_size > 1_000_000:
             raise ValueError
@@ -90,25 +134,17 @@ def main(argv: list[str]) -> int:
             )
         if event.head_sha is None:
             event = replace(event, head_sha=review["head_sha"])
-        token = os.environ["GH_TOKEN"]
-        scan_keys = [
-            value.strip()
-            for value in os.environ.get("AGENT_SCAN_KEYS", "").splitlines()
-            if value.strip()
-        ]
-        if not scan_keys:
-            raise ValueError
         ctx = ApplyContext(
             event,
             config,
             charter,
             os.environ["GITHUB_RUN_ID"],
             base_sha,
-            [*scan_keys, token],
+            [*_scan_keys(), os.environ["GH_TOKEN"]],
             os.environ["AGENT_CANARY"],
             False,
             github=gh,
-            bot_login=os.environ["AGENT_BOT_LOGIN"],
+            bot_login=bot_login,
         )
         mode = config.mode_for("review")
         alerts = apply_review(

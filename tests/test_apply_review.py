@@ -11,6 +11,7 @@ from agent_repo.charter import parse_charter
 from agent_repo.config import Area, RepoConfig
 from agent_repo.event import load_event
 from agent_repo.github import GitHub
+from agent_repo.yamljson import load_yaml
 
 
 class ReviewAPI:
@@ -310,3 +311,194 @@ def test_second_head_check_catches_move_after_enabled_check(tmp_path):
     apply_review(review(), context(api), {}, api.gh, "live", tmp_path / "summary.md")
 
     assert not [call for call in api.writes if call[1] == "pulls/7/reviews"]
+
+
+def run_off_apply(
+    tmp_path,
+    monkeypatch,
+    *,
+    event="comment",
+    body="/agent off",
+    mode="live",
+    comments=(),
+    permission="write",
+    failing=None,
+    failing_method=None,
+    first_issue_read=None,
+):
+    from agent_repo.commands import review_apply
+
+    payload = json.loads(Path("tests/fixtures/events/pull_request_target.opened.json").read_text())
+    pull = payload.pop("pull_request")
+    if event in {"comment", "issue-comment"}:
+        payload.update(
+            action="created",
+            sender={"login": "maintainer", "type": "User"},
+            issue=dict(pull, pull_request={"url": "https://example.invalid/pulls/7"}, number=7),
+            comment={"body": body, "user": {"login": "maintainer"}},
+        )
+        if event == "issue-comment":
+            payload["issue"].pop("pull_request")
+    else:
+        payload["pull_request"] = dict(pull, number=7)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload))
+    api = ReviewAPI(comments=comments)
+    original = api.transport
+    failed_issue_reads = []
+
+    def transport(request, timeout):
+        path = urlparse(request.full_url).path
+        if failing and path.endswith(failing) and failing_method in {None, request.method}:
+            return 500, {}, b"{}"
+        if first_issue_read and path.endswith("/issues/7") and not failed_issue_reads:
+            failed_issue_reads.append(path)
+            api.calls.append(("GET", "issues/7", None, None))
+            return first_issue_read, {}, b"{}"
+        if path.endswith("/contents/MAINTAINERS"):
+            return 404, {}, b"{}"
+        if path.endswith("/permission"):
+            value = {"role_name": "release-writer", "permission": permission}
+            return 200, {}, json.dumps(value).encode()
+        return original(request, timeout)
+
+    config = RepoConfig({"mode": {"review": mode}}, (), ("needs-maintainer",))
+    charter = parse_charter(Path("tests/fixtures/charter/example.md").read_text())
+    monkeypatch.setattr(review_apply, "_policy", lambda gh, sha, directory: (sha, config, charter))
+    monkeypatch.setattr(
+        review_apply, "GitHub", lambda token, repo: GitHub(token, repo, transport=transport)
+    )
+    summary = tmp_path / "summary.md"
+    for key, value in {
+        "AGENT_OFF_AUTHORIZED": "true",
+        "GITHUB_EVENT_NAME": "pull_request_target" if event == "pull" else "issue_comment",
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_RUN_ID": "run-1",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "GH_TOKEN": "ghs_" + "synthetic",
+        "EXPECTED_HEAD_SHA": "b" * 40,
+        "AGENT_SCAN_KEYS": "scan-key",
+        "AGENT_CANARY": "canary-1",
+        "AGENT_BOT_LOGIN": "agent-review",
+    }.items():
+        monkeypatch.setenv(key, value)
+    status = review_apply.main([str(tmp_path / "absent-review.json")])
+    return status, api, summary.read_text()
+
+
+def test_review_apply_posts_off_marker_for_authorized_pr_comment(tmp_path, monkeypatch):
+    status, api, summary = run_off_apply(tmp_path, monkeypatch)
+    assert status == 0
+    assert [(method, path) for method, path, _, _ in api.writes] == [("POST", "issues/7/comments")]
+    assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
+    assert "ghs_synthetic" not in summary
+
+
+def test_review_apply_off_skips_when_already_off(tmp_path, monkeypatch):
+    from agent_repo.markers import marker
+
+    off = {"body": marker("off", "old"), "user": {"login": "agent-review[bot]", "type": "Bot"}}
+    status, api, summary = run_off_apply(tmp_path, monkeypatch, comments=[off])
+    assert status == 0 and api.writes == []
+    assert "automation disabled" in summary
+
+
+@pytest.mark.parametrize(
+    "event,body,mode",
+    [
+        ("comment", "/agent off", "dry-run"),
+        ("comment", "thanks\n/agent off", "live"),
+        ("comment", "/review", "live"),
+        ("pull", "/agent off", "live"),
+        ("issue-comment", "/agent off", "live"),
+    ],
+    ids=["dry-run", "not-first-line", "other-command", "not-a-comment", "issue-comment"],
+)
+def test_review_apply_off_never_writes_without_a_live_off_command(
+    event, body, mode, tmp_path, monkeypatch
+):
+    status, api, summary = run_off_apply(tmp_path, monkeypatch, event=event, body=body, mode=mode)
+    assert api.writes == []
+    if event in {"pull", "issue-comment"}:
+        assert status == 1 and "trusted review inputs unavailable" in summary
+    elif mode == "live":
+        assert status == 0 and "Off command rejected: authorization required." in summary
+
+
+@pytest.mark.parametrize(
+    "permission,failing,first_issue_read,alert",
+    [
+        ("read", None, None, "authorization required"),
+        ("write", "/contents/MAINTAINERS", None, "authorization check failed"),
+        ("write", "/permission", None, "authorization check failed"),
+        ("write", "/permission", 502, "authorization check failed"),
+    ],
+    ids=["revoked-writer", "maintainers-read-error", "permission-read-error", "then-issue-502"],
+)
+def test_review_apply_rejected_off_writes_nothing(
+    permission, failing, first_issue_read, alert, tmp_path, monkeypatch
+):
+    status, api, summary = run_off_apply(
+        tmp_path,
+        monkeypatch,
+        permission=permission,
+        failing=failing,
+        first_issue_read=first_issue_read,
+    )
+    assert status == 0 and api.writes == []
+    assert not [call for call in api.calls if call[1].startswith("issues/")]
+    assert f"Off command rejected: {alert}." in summary and "Apply failed" not in summary
+
+
+@pytest.mark.parametrize(
+    "failing,method",
+    [("/issues/7/comments", "POST"), ("/issues/7", "GET")],
+    ids=["marker-post", "pre-write-issue-read"],
+)
+def test_review_apply_failed_off_marker_post_fails_the_job(failing, method, tmp_path, monkeypatch):
+    status, api, summary = run_off_apply(
+        tmp_path, monkeypatch, failing=failing, failing_method=method
+    )
+    assert status == 1
+    assert "ALERT: Apply failed: GitHub action stopped" in summary
+    assert "agent:off" not in json.dumps(
+        [call for call in api.writes if call[1].endswith("/comments")]
+    )
+    assert "ghs_synthetic" not in summary
+
+
+def test_review_workflow_routes_agent_off_to_apply_without_a_model_run():
+    workflow = load_yaml(Path("consumer/.github/workflows/agent-review.yml"))
+    gate, propose, apply = (
+        workflow["jobs"][name]
+        for name in ("agent-review-gate", "agent-propose-review", "agent-apply-review")
+    )
+    assert gate["outputs"]["reason"] == "${{ steps.gate.outputs.reason }}"
+    for step in propose["steps"]:
+        assert step["if"] == "needs.agent-review-gate.outputs.reason != 'agent-off'", step["name"]
+    download = next(step for step in apply["steps"] if step["name"] == "Download review inputs")
+    assert download["if"] == "needs.agent-review-gate.outputs.reason != 'agent-off'"
+    apply_step = next(step for step in apply["steps"] if step["name"] == "Apply review")
+    assert apply_step["env"]["AGENT_OFF_AUTHORIZED"] == (
+        "${{ needs.agent-review-gate.outputs.reason == 'agent-off' }}"
+    )
+
+
+def test_review_workflow_off_hand_off_survives_a_cancelled_propose_job():
+    workflow = load_yaml(Path("consumer/.github/workflows/agent-review.yml"))
+    propose = workflow["jobs"]["agent-propose-review"]
+    apply = workflow["jobs"]["agent-apply-review"]
+    # A later run on the same PR cancels this run's propose job through the shared group.
+    assert propose["concurrency"]["cancel-in-progress"] is True
+    assert "concurrency" not in apply
+    assert apply["needs"] == ["agent-review-gate", "agent-propose-review"]
+    assert apply["if"] == (
+        "${{ always() && needs.agent-review-gate.result == 'success' && ("
+        "(needs.agent-review-gate.outputs.run == 'true' && "
+        "needs.agent-review-gate.outputs.reason == 'agent-off') || "
+        "(needs.agent-propose-review.result == 'success' && "
+        "needs.agent-propose-review.outputs.run == 'true')) }}"
+    )
+    off_inputs = json.dumps([[step.get("if", ""), step.get("env", {})] for step in apply["steps"]])
+    assert "needs.agent-propose-review.outputs.reason" not in off_inputs

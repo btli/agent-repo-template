@@ -38,14 +38,23 @@ outputs:
   head_sha:
     description: Pull request head captured when the gate authorized the event.
     value: ${{ steps.gate.outputs.head_sha }}
+  issue:
+    description: Fix target issue, from the event issue or the agent/fix-<n> head ref.
+    value: ${{ steps.gate.outputs.issue }}
+  base_sha:
+    description: Fix base, the event GITHUB_SHA or the feedback head's Agent-Base trailer.
+    value: ${{ steps.gate.outputs.base_sha }}
+  head_ref:
+    description: Fix branch, agent/fix-<n>.
+    value: ${{ steps.gate.outputs.head_ref }}
 runs:
   using: composite
   steps:
-    - name: Read configuration from the default branch
+    - name: Read configuration from the event commit
       if: inputs.enabled == 'true'
       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       with:
-        ref: ${{ github.event.repository.default_branch }}
+        ref: ${{ github.sha }}
         path: agent-gate-default
         persist-credentials: false
         token: ${{ inputs.token }}
