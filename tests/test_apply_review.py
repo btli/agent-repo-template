@@ -323,6 +323,7 @@ def run_off_apply(
     comments=(),
     permission="write",
     failing=None,
+    first_issue_read=None,
 ):
     from agent_repo.commands import review_apply
 
@@ -343,11 +344,16 @@ def run_off_apply(
     event_path.write_text(json.dumps(payload))
     api = ReviewAPI(comments=comments)
     original = api.transport
+    failed_issue_reads = []
 
     def transport(request, timeout):
         path = urlparse(request.full_url).path
         if failing and path.endswith(failing):
             return 500, {}, b"{}"
+        if first_issue_read and path.endswith("/issues/7") and not failed_issue_reads:
+            failed_issue_reads.append(path)
+            api.calls.append(("GET", "issues/7", None, None))
+            return first_issue_read, {}, b"{}"
         if path.endswith("/contents/MAINTAINERS"):
             return 404, {}, b"{}"
         if path.endswith("/permission"):
@@ -420,22 +426,28 @@ def test_review_apply_off_never_writes_without_a_live_off_command(
 
 
 @pytest.mark.parametrize(
-    "permission,failing,alert",
+    "permission,failing,first_issue_read,alert",
     [
-        ("read", None, "authorization required"),
-        ("write", "/contents/MAINTAINERS", "authorization check failed"),
-        ("write", "/permission", "authorization check failed"),
+        ("read", None, None, "authorization required"),
+        ("write", "/contents/MAINTAINERS", None, "authorization check failed"),
+        ("write", "/permission", None, "authorization check failed"),
+        ("write", "/permission", 502, "authorization check failed"),
     ],
-    ids=["revoked-writer", "maintainers-read-error", "permission-read-error"],
+    ids=["revoked-writer", "maintainers-read-error", "permission-read-error", "then-issue-502"],
 )
 def test_review_apply_rejected_off_writes_nothing(
-    permission, failing, alert, tmp_path, monkeypatch
+    permission, failing, first_issue_read, alert, tmp_path, monkeypatch
 ):
     status, api, summary = run_off_apply(
-        tmp_path, monkeypatch, permission=permission, failing=failing
+        tmp_path,
+        monkeypatch,
+        permission=permission,
+        failing=failing,
+        first_issue_read=first_issue_read,
     )
     assert status == 0 and api.writes == []
-    assert f"Off command rejected: {alert}." in summary
+    assert not [call for call in api.calls if call[1].startswith("issues/")]
+    assert f"Off command rejected: {alert}." in summary and "Apply failed" not in summary
 
 
 def test_review_workflow_routes_agent_off_to_apply_without_a_model_run():

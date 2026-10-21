@@ -1522,6 +1522,88 @@ def test_off_authorization_read_errors_write_nothing(failing, tmp_path):
     assert "Off command rejected: authorization check failed." in summary
 
 
+@pytest.mark.parametrize(
+    "failures,alert",
+    [
+        ({"/permission": [200]}, "authorization required"),
+        ({"contents/MAINTAINERS": [500]}, "authorization check failed"),
+        ({"/permission": [500]}, "authorization check failed"),
+        ({"/permission": [500], "issues/7": [502]}, "authorization check failed"),
+    ],
+    ids=["revoked-writer", "maintainers-read-error", "permission-read-error", "then-issue-502"],
+)
+def test_cli_rejected_off_never_reaches_live_execution(failures, alert, monkeypatch, tmp_path):
+    from agent_repo.commands.apply import main
+
+    api = API()
+    original = api.transport
+    remaining = {suffix: list(statuses) for suffix, statuses in failures.items()}
+
+    def transport(request, timeout):
+        path = urlparse(request.full_url).path
+        for suffix, statuses in remaining.items():
+            if path.endswith(suffix) and statuses:
+                status = statuses.pop(0)
+                body = {"role_name": "read", "permission": "read"} if status == 200 else {}
+                return status, {}, json.dumps(body).encode()
+        return original(request, timeout)
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    ctx = context(api)
+    monkeypatch.setattr("agent_repo.commands.apply.GitHub", lambda token, repo: api.gh)
+    monkeypatch.setattr(
+        "agent_repo.commands.apply._policy",
+        lambda gh, sha, directory: (ctx.base_sha, ctx.config, ctx.charter),
+    )
+    payload = json.loads(Path("tests/fixtures/events/issues.opened.json").read_text())
+    payload.update(
+        action="created",
+        sender={"login": "maintainer", "type": "User"},
+        issue=dict(payload["issue"], number=7),
+        comment={"body": "/agent off", "user": {"login": "maintainer"}},
+    )
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload))
+    summary = tmp_path / "summary.md"
+    for name, value in {
+        "GITHUB_EVENT_NAME": "issue_comment",
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_RUN_ID": ctx.run_id,
+        "GITHUB_SHA": ctx.base_sha,
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "GH_TOKEN": "test-token",
+        "AGENT_BOT_LOGIN": "agent-apply[bot]",
+        "AGENT_SCAN_KEYS": "\n".join(ctx.secrets),
+        "AGENT_CANARY": ctx.canary,
+        "AGENT_OFF_AUTHORIZED": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert main([str(tmp_path / "absent-decision.json")]) == 0
+    assert api.writes == []
+    assert not [path for _, path, _ in api.calls if path.startswith("issues/")]
+    text = summary.read_text()
+    assert f"Off command rejected: {alert}." in text and "Apply failed" not in text
+
+
+def test_execute_skips_live_calls_only_when_nothing_writes(tmp_path):
+    from agent_repo.apply.actions import Action, execute
+
+    carrier = Action(
+        "add_labels",
+        {"number": 7, "labels": [], "alerts": ["Notice."], "bot_login": "agent-apply[bot]"},
+    )
+    api = API()
+    assert execute([carrier], api.gh, "live", tmp_path / "summary.md") == ["Notice."]
+    assert api.calls == []
+    assert "ALERT: Notice." in (tmp_path / "summary.md").read_text()
+
+    labels = Action(
+        "add_labels", {"number": 7, "labels": ["type:bug"], "bot_login": "agent-apply[bot]"}
+    )
+    execute([carrier, labels], api.gh, "live", tmp_path / "summary.md")
+    assert api.writes == [("POST", "issues/7/labels", {"labels": ["type:bug"]})]
+
+
 def test_gate_and_apply_share_one_writer_check():
     from agent_repo import gate
     from agent_repo.apply import triage

@@ -116,7 +116,11 @@ def execute(actions: list[Action], gh: GitHub | None, mode: str, summary_path: P
         alerts.append("Apply failed: invalid mode.")
     elif mode == "live" and gh is None:
         alerts.append("Apply failed: GitHub client required.")
-    elif mode == "live" and actions:
+    elif mode == "live" and any(
+        # Empty label actions only carry summary alerts, so they never reach GitHub.
+        action.kind != "add_labels" or action.payload.get("labels")
+        for action in actions
+    ):
         try:
             _execute_live(actions, gh)
         except _AutomationDisabled:
