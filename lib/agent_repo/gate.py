@@ -288,6 +288,7 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         ):
             return result(False, "not-agent-draft")
         feedback_issue = branch[1]
+        # GitHub links an issue only through a closing keyword such as "Fixes #n", not "See #n".
         link = rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+#{feedback_issue}(?![0-9])"
         if not re.search(link, pull.get("body") or "", re.IGNORECASE):
             return result(False, "unlinked-issue")

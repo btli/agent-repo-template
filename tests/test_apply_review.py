@@ -323,6 +323,7 @@ def run_off_apply(
     comments=(),
     permission="write",
     failing=None,
+    failing_method=None,
     first_issue_read=None,
 ):
     from agent_repo.commands import review_apply
@@ -348,7 +349,7 @@ def run_off_apply(
 
     def transport(request, timeout):
         path = urlparse(request.full_url).path
-        if failing and path.endswith(failing):
+        if failing and path.endswith(failing) and failing_method in {None, request.method}:
             return 500, {}, b"{}"
         if first_issue_read and path.endswith("/issues/7") and not failed_issue_reads:
             failed_issue_reads.append(path)
@@ -450,6 +451,23 @@ def test_review_apply_rejected_off_writes_nothing(
     assert f"Off command rejected: {alert}." in summary and "Apply failed" not in summary
 
 
+@pytest.mark.parametrize(
+    "failing,method",
+    [("/issues/7/comments", "POST"), ("/issues/7", "GET")],
+    ids=["marker-post", "pre-write-issue-read"],
+)
+def test_review_apply_failed_off_marker_post_fails_the_job(failing, method, tmp_path, monkeypatch):
+    status, api, summary = run_off_apply(
+        tmp_path, monkeypatch, failing=failing, failing_method=method
+    )
+    assert status == 1
+    assert "ALERT: Apply failed: GitHub action stopped" in summary
+    assert "agent:off" not in json.dumps(
+        [call for call in api.writes if call[1].endswith("/comments")]
+    )
+    assert "ghs_synthetic" not in summary
+
+
 def test_review_workflow_routes_agent_off_to_apply_without_a_model_run():
     workflow = load_yaml(Path("consumer/.github/workflows/agent-review.yml"))
     gate, propose, apply = (
@@ -457,12 +475,30 @@ def test_review_workflow_routes_agent_off_to_apply_without_a_model_run():
         for name in ("agent-review-gate", "agent-propose-review", "agent-apply-review")
     )
     assert gate["outputs"]["reason"] == "${{ steps.gate.outputs.reason }}"
-    assert propose["outputs"]["reason"] == "${{ needs.agent-review-gate.outputs.reason }}"
     for step in propose["steps"]:
         assert step["if"] == "needs.agent-review-gate.outputs.reason != 'agent-off'", step["name"]
     download = next(step for step in apply["steps"] if step["name"] == "Download review inputs")
-    assert download["if"] == "needs.agent-propose-review.outputs.reason != 'agent-off'"
+    assert download["if"] == "needs.agent-review-gate.outputs.reason != 'agent-off'"
     apply_step = next(step for step in apply["steps"] if step["name"] == "Apply review")
     assert apply_step["env"]["AGENT_OFF_AUTHORIZED"] == (
-        "${{ needs.agent-propose-review.outputs.reason == 'agent-off' }}"
+        "${{ needs.agent-review-gate.outputs.reason == 'agent-off' }}"
     )
+
+
+def test_review_workflow_off_hand_off_survives_a_cancelled_propose_job():
+    workflow = load_yaml(Path("consumer/.github/workflows/agent-review.yml"))
+    propose = workflow["jobs"]["agent-propose-review"]
+    apply = workflow["jobs"]["agent-apply-review"]
+    # A later run on the same PR cancels this run's propose job through the shared group.
+    assert propose["concurrency"]["cancel-in-progress"] is True
+    assert "concurrency" not in apply
+    assert apply["needs"] == ["agent-review-gate", "agent-propose-review"]
+    assert apply["if"] == (
+        "${{ always() && needs.agent-review-gate.result == 'success' && ("
+        "(needs.agent-review-gate.outputs.run == 'true' && "
+        "needs.agent-review-gate.outputs.reason == 'agent-off') || "
+        "(needs.agent-propose-review.result == 'success' && "
+        "needs.agent-propose-review.outputs.run == 'true')) }}"
+    )
+    off_inputs = json.dumps([[step.get("if", ""), step.get("env", {})] for step in apply["steps"]])
+    assert "needs.agent-propose-review.outputs.reason" not in off_inputs
