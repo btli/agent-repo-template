@@ -314,19 +314,29 @@ def test_second_head_check_catches_move_after_enabled_check(tmp_path):
 
 
 def run_off_apply(
-    tmp_path, monkeypatch, *, event="comment", body="/agent off", mode="live", comments=()
+    tmp_path,
+    monkeypatch,
+    *,
+    event="comment",
+    body="/agent off",
+    mode="live",
+    comments=(),
+    permission="write",
+    failing=None,
 ):
     from agent_repo.commands import review_apply
 
     payload = json.loads(Path("tests/fixtures/events/pull_request_target.opened.json").read_text())
     pull = payload.pop("pull_request")
-    if event == "comment":
+    if event in {"comment", "issue-comment"}:
         payload.update(
             action="created",
             sender={"login": "maintainer", "type": "User"},
             issue=dict(pull, pull_request={"url": "https://example.invalid/pulls/7"}, number=7),
             comment={"body": body, "user": {"login": "maintainer"}},
         )
+        if event == "issue-comment":
+            payload["issue"].pop("pull_request")
     else:
         payload["pull_request"] = dict(pull, number=7)
     event_path = tmp_path / "event.json"
@@ -336,14 +346,13 @@ def run_off_apply(
 
     def transport(request, timeout):
         path = urlparse(request.full_url).path
+        if failing and path.endswith(failing):
+            return 500, {}, b"{}"
         if path.endswith("/contents/MAINTAINERS"):
             return 404, {}, b"{}"
         if path.endswith("/permission"):
-            return (
-                200,
-                {},
-                json.dumps({"role_name": "release-writer", "permission": "write"}).encode(),
-            )
+            value = {"role_name": "release-writer", "permission": permission}
+            return 200, {}, json.dumps(value).encode()
         return original(request, timeout)
 
     config = RepoConfig({"mode": {"review": mode}}, (), ("needs-maintainer",))
@@ -355,7 +364,7 @@ def run_off_apply(
     summary = tmp_path / "summary.md"
     for key, value in {
         "AGENT_OFF_AUTHORIZED": "true",
-        "GITHUB_EVENT_NAME": "issue_comment" if event == "comment" else "pull_request_target",
+        "GITHUB_EVENT_NAME": "pull_request_target" if event == "pull" else "issue_comment",
         "GITHUB_EVENT_PATH": str(event_path),
         "GITHUB_SHA": "a" * 40,
         "GITHUB_RUN_ID": "run-1",
@@ -395,17 +404,38 @@ def test_review_apply_off_skips_when_already_off(tmp_path, monkeypatch):
         ("comment", "thanks\n/agent off", "live"),
         ("comment", "/review", "live"),
         ("pull", "/agent off", "live"),
+        ("issue-comment", "/agent off", "live"),
     ],
-    ids=["dry-run", "not-first-line", "other-command", "not-a-comment"],
+    ids=["dry-run", "not-first-line", "other-command", "not-a-comment", "issue-comment"],
 )
-def test_review_apply_off_never_posts_without_a_live_off_command(
+def test_review_apply_off_never_writes_without_a_live_off_command(
     event, body, mode, tmp_path, monkeypatch
 ):
     status, api, summary = run_off_apply(tmp_path, monkeypatch, event=event, body=body, mode=mode)
-    assert not [path for _, path, _, _ in api.writes if path.endswith("/comments")]
-    assert "agent:off" not in json.dumps(api.writes)
-    if event == "pull":
+    assert api.writes == []
+    if event in {"pull", "issue-comment"}:
         assert status == 1 and "trusted review inputs unavailable" in summary
+    elif mode == "live":
+        assert status == 0 and "Off command rejected: authorization required." in summary
+
+
+@pytest.mark.parametrize(
+    "permission,failing,alert",
+    [
+        ("read", None, "authorization required"),
+        ("write", "/contents/MAINTAINERS", "authorization check failed"),
+        ("write", "/permission", "authorization check failed"),
+    ],
+    ids=["revoked-writer", "maintainers-read-error", "permission-read-error"],
+)
+def test_review_apply_rejected_off_writes_nothing(
+    permission, failing, alert, tmp_path, monkeypatch
+):
+    status, api, summary = run_off_apply(
+        tmp_path, monkeypatch, permission=permission, failing=failing
+    )
+    assert status == 0 and api.writes == []
+    assert f"Off command rejected: {alert}." in summary
 
 
 def test_review_workflow_routes_agent_off_to_apply_without_a_model_run():

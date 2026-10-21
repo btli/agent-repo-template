@@ -215,6 +215,8 @@ def test_rendered_triage_workflow_pins_security_contract(tmp_path: Path):
     assert marker_step["with"]["retention-days"] == 90
     policy_checkout = context_steps["Read default-branch triage policy"]
     assert policy_checkout["with"]["persist-credentials"] is False
+    # The hand-off must read the same policy commit the gate decided on.
+    assert policy_checkout["with"]["ref"] == "${{ github.sha }}"
     assert (
         next(
             step

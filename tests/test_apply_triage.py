@@ -639,15 +639,15 @@ def test_off_rechecks_first_line_and_trusted_maintainers(
             ctx.event, name="issue_comment", comment_body=body, sender=sender, sender_is_bot=bot
         ),
     )
-    run(decision(), ctx, api, tmp_path)
+    _, summary = run(decision(), ctx, api, tmp_path)
     if expected:
         assert len(api.writes) == 1 and api.writes[0][1] == "issues/7/comments"
         assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
         if listed:
             assert refs == ["ref=" + ctx.base_sha]
     else:
-        assert not api.comments
-        assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+        assert api.writes == []
+        assert "Off command rejected: authorization required." in summary
     if refs:
         assert all(ref == "ref=" + ctx.base_sha for ref in refs)
 
@@ -1494,12 +1494,32 @@ def test_off_uses_effective_write_permission(permission, accepted, tmp_path):
     api.gh = GitHub("test-token", "your-org/project", transport=transport)
     ctx = context(api, off=True)
     ctx = replace(ctx, event=replace(ctx.event, name="issue_comment", comment_body="/agent off"))
-    run(decision(), ctx, api, tmp_path)
+    _, summary = run(decision(), ctx, api, tmp_path)
     if accepted:
         assert [path for _, path, _ in api.writes] == ["issues/7/comments"]
         assert "<!-- agent:off run=run-1 -->" in api.writes[0][2]["body"]
     else:
-        assert api.writes == [("POST", "issues/7/labels", {"labels": ["needs-maintainer"]})]
+        assert api.writes == []
+        assert "Off command rejected: authorization required." in summary
+
+
+@pytest.mark.parametrize("failing", ["contents/MAINTAINERS", "/permission"])
+def test_off_authorization_read_errors_write_nothing(failing, tmp_path):
+    api = API()
+    original = api.transport
+
+    def transport(request, timeout):
+        if urlparse(request.full_url).path.endswith(failing):
+            return 500, {}, b"{}"
+        return original(request, timeout)
+
+    api.gh = GitHub("test-token", "your-org/project", transport=transport)
+    ctx = context(api, off=True)
+    ctx = replace(ctx, event=replace(ctx.event, name="issue_comment", comment_body="/agent off"))
+    alerts, summary = run(decision(), ctx, api, tmp_path)
+    assert api.writes == []
+    assert alerts == ["Off command rejected: authorization check failed."]
+    assert "Off command rejected: authorization check failed." in summary
 
 
 def test_gate_and_apply_share_one_writer_check():

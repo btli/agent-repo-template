@@ -117,6 +117,20 @@ def _is_bot(user: object, bot_login: str) -> bool:
     )
 
 
+def _agent_base(message: str) -> str | None:
+    # Git trailers live only in the final paragraph, and the subject is never one.
+    paragraphs = re.split(r"\n[ \t]*\n", message.strip())
+    trailers = paragraphs[-1].splitlines() if len(paragraphs) > 1 else []
+    if not trailers or not all(re.fullmatch(r"[A-Za-z0-9-]+:[ \t]*\S.*", t) for t in trailers):
+        return None
+    bases = [
+        value.strip()
+        for key, _, value in (line.partition(":") for line in trailers)
+        if key.casefold() == "agent-base"
+    ]
+    return bases[0] if len(bases) == 1 and re.fullmatch(r"[0-9a-f]{40}", bases[0]) else None
+
+
 def _agent_pr(event: Event, bot_login: str) -> bool:
     return bool(
         event.is_pr
@@ -151,11 +165,12 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
     fix_target: dict[str, str] = {}
 
     def result(run: bool, reason: str, tier2: bool = False, capped: bool = False) -> GateResult:
+        if not run:
+            return GateResult(run, reason, tier2, capped, command, canary)
         head_sha = event.head_sha or ""
         if re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
             head_sha = ""
-        target = fix_target if run else {}
-        return GateResult(run, reason, tier2, capped, command, canary, head_sha, **target)
+        return GateResult(run, reason, tier2, capped, command, canary, head_sha, **fix_target)
 
     if not ctx.enabled:
         return result(False, "disabled")
@@ -301,14 +316,10 @@ def _evaluate(event: Event, ctx: GateContext, command: Command | None, canary: s
         if re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
             return result(False, "invalid-metadata")
         commit = _mapping(gh.request("GET", f"git/commits/{head_sha}"))
-        bases = re.findall(r"^agent-base:[ \t]*(.*?)[ \t]*$", commit["message"], re.I | re.M)
-        if (
-            commit.get("sha") != head_sha
-            or len(bases) != 1
-            or re.fullmatch(r"[0-9a-f]{40}", bases[0]) is None
-        ):
+        base_sha = _agent_base(commit["message"])
+        if commit.get("sha") != head_sha or base_sha is None:
             return result(False, "invalid-agent-base")
-        fix_target.update(issue=feedback_issue, base_sha=bases[0], head_ref=event.head_ref)
+        fix_target.update(issue=feedback_issue, base_sha=base_sha, head_ref=event.head_ref)
     elif ctx.workflow == "fix":
         if re.fullmatch(r"[0-9a-f]{40}", ctx.event_sha) is None:
             return result(False, "invalid-metadata")

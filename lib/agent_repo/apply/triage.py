@@ -41,6 +41,21 @@ def _maintainer(
     return actions
 
 
+def _off_rejected(ctx: ApplyContext, alert: str) -> list[Action]:
+    # A rejected off request writes nothing; the empty label action only carries the summary alert.
+    return [
+        Action(
+            "add_labels",
+            {
+                "number": ctx.event.number,
+                "labels": [],
+                "alerts": [alert],
+                "bot_login": ctx.bot_login,
+            },
+        )
+    ]
+
+
 def _off(ctx: ApplyContext) -> list[Action] | None:
     if not ctx.off_authorized:
         return None
@@ -55,7 +70,7 @@ def _off(ctx: ApplyContext) -> list[Action] | None:
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}", ctx.event.sender) is None
         or ctx.github is None
     ):
-        return _maintainer(ctx, None, ["Off command rejected: authorization required."])
+        return _off_rejected(ctx, "Off command rejected: authorization required.")
     try:
         maintainers = set()
         try:
@@ -75,9 +90,9 @@ def _off(ctx: ApplyContext) -> list[Action] | None:
         if ctx.event.sender.casefold() not in maintainers and not is_writer(
             ctx.github, ctx.event.sender
         ):
-            return _maintainer(ctx, None, ["Off command rejected: authorization required."])
+            return _off_rejected(ctx, "Off command rejected: authorization required.")
     except Exception:
-        return _maintainer(ctx, None, ["Off command rejected: authorization check failed."])
+        return _off_rejected(ctx, "Off command rejected: authorization check failed.")
     return [
         Action(
             "comment",

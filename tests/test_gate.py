@@ -807,7 +807,11 @@ def test_agent_off_on_a_pr_is_posted_by_apply_and_skips_review_and_fix(tmp_path,
         case["comments"] = posted
         result, _, _, _ = evaluate_case(case, tmp_path)
         assert not result.run and result.reason == "off"
-        assert (result.issue, result.base_sha, result.head_ref) == ("", "", "")
+        assert fix_outputs(result) == ("", "", "", "")
+
+
+def fix_outputs(result):
+    return (result.issue, result.base_sha, result.head_ref, result.head_sha)
 
 
 def feedback_case(**pull_changes):
@@ -835,7 +839,7 @@ def test_new_fix_requires_a_commit_event_sha(event_sha, tmp_path):
     case = dict(next(c for c in CASES if c["id"] == "authorized-label"), event_sha=event_sha)
     result, _, _, _ = evaluate_case(case, tmp_path)
     assert not result.run and result.reason == "invalid-metadata"
-    assert result.base_sha == result.issue == result.head_ref == ""
+    assert fix_outputs(result) == ("", "", "", "")
 
 
 def test_feedback_fix_outputs_pr_head_and_agent_base(tmp_path):
@@ -905,7 +909,7 @@ def test_feedback_fix_refuses_untrusted_pull_requests(changes, reason, tmp_path)
     result, _, _, transport = evaluate_case(feedback_case(**changes), tmp_path)
     assert result.reason == reason and result.run is (reason == "ready")
     if reason != "ready":
-        assert (result.issue, result.base_sha, result.head_ref) == ("", "", "")
+        assert fix_outputs(result) == ("", "", "", "")
         assert not any(path.startswith("git/commits/") for path, _ in transport.requests)
 
 
@@ -918,9 +922,23 @@ def test_feedback_fix_refuses_untrusted_pull_requests(changes, reason, tmp_path)
         f"Fix\n\nAgent-Base: {AGENT_BASE[:-1]}",
         f"Fix\n\nAgent-Base: {AGENT_BASE.upper()}",
         "Fix\n\nAgent-Base: main",
+        f"Agent-Base: {AGENT_BASE}",
+        f"Fix\n\nAgent-Base: {AGENT_BASE}\n\nThe parser now handles empty input.",
+        f"Fix\n\nAgent-Base: {AGENT_BASE}\nfollow-up for the parser",
         None,
     ],
-    ids=["none", "two", "two-casefolded", "short", "uppercase", "ref-name", "missing-message"],
+    ids=[
+        "none",
+        "two",
+        "two-casefolded",
+        "short",
+        "uppercase",
+        "ref-name",
+        "subject-only",
+        "body-only",
+        "mixed-final-paragraph",
+        "missing-message",
+    ],
 )
 def test_feedback_fix_needs_exactly_one_agent_base_trailer(message, tmp_path):
     case = feedback_case()
@@ -928,7 +946,24 @@ def test_feedback_fix_needs_exactly_one_agent_base_trailer(message, tmp_path):
     result, _, _, _ = evaluate_case(case, tmp_path)
     assert not result.run
     assert result.reason == ("invalid-metadata" if message is None else "invalid-agent-base")
-    assert result.base_sha == ""
+    assert fix_outputs(result) == ("", "", "", "")
+
+
+def test_feedback_fix_reads_agent_base_from_the_trailer_block_only(tmp_path):
+    case = feedback_case()
+    quoted = f"Agent-Base: {'e' * 40} was the first attempt."
+    message = f"Fix the parser\n\n{quoted}\n\nAgent-Run: 41\nAgent-Base: {AGENT_BASE}\n"
+    case["commit"] = {"sha": "a" * 40, "message": message}
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert result.run and result.base_sha == AGENT_BASE
+
+
+def test_feedback_fix_api_error_emits_no_fix_outputs(tmp_path):
+    case = feedback_case()
+    case["fail_path"], case["fail_status"] = f"git/commits/{'a' * 40}", 403
+    result, _, _, _ = evaluate_case(case, tmp_path)
+    assert not result.run and result.reason == "api-error-403"
+    assert fix_outputs(result) == ("", "", "", "")
 
 
 def test_feedback_fix_rejects_a_commit_for_another_head(tmp_path):
