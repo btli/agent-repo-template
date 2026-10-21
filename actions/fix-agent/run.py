@@ -40,9 +40,10 @@ POLICY_FILES = (
     "CONTRIBUTING.md",
 )
 # Config keys that make git run a command; after setup, H's files could be that command.
+# An include is refused unread, since it can load such keys from a file H puts in the tree.
 COMMAND_CONFIG = (
     r"core\.(hookspath|fsmonitor)|filter\..*|diff\.external|diff\..*\.(textconv|command)"
-    r"|merge\..*\.driver"
+    r"|merge\..*\.driver|include\.path|includeif\..*\.path"
 )
 # Apply writes exactly this message, so no model text can add, drop or move a trailer.
 AGENT_COMMIT = re.compile(
