@@ -935,13 +935,24 @@ def agent_message(base: str, *, bases: int = 1) -> str:
 
 
 def prior_agent_commit(
-    action: dict, files: dict[str, str], message: str = "", *, scripts: tuple[str, ...] = ()
+    action: dict,
+    files: dict[str, str],
+    message: str = "",
+    *,
+    scripts: tuple[str, ...] = (),
+    links: tuple[str, ...] = (),
 ) -> str:
     # A previous fix run left commit H on the agent branch, on top of the base.
     work, base = action["work"], action["env"]["BASE_SHA"]
     git(work, "checkout", "-q", "--detach", base)
     for name, text in files.items():
+        # A prior patch may replace a tracked directory with a file or a link.
+        if (work / name).is_dir():
+            git(work, "rm", "-r", "-q", "--", name)
         (work / name).parent.mkdir(parents=True, exist_ok=True)
+        if name in links:
+            (work / name).symlink_to(text)
+            continue
         (work / name).write_text(text)
         (work / name).chmod(0o755 if name in scripts else 0o644)
     # Forced, since a prior patch may track a path the base ignores.
@@ -1077,12 +1088,15 @@ def test_feedback_setup_refuses_an_unverified_head(action, problem):
     assert git(work, "rev-parse", "HEAD").strip() == expected
 
 
-# Setup output H would replace: a plain file, an ignored file H force-tracks, and a file in an
-# ignored directory H adds to.
+# Setup output H would replace: a plain file, an ignored file H force-tracks, a file in an
+# ignored directory H adds to, and ignored files at any depth in a tracked directory H replaces.
 COLLISIONS = {
     "plain": ("notes.txt", "notes.txt"),
     "ignored_file": ("deps/tool", "deps/tool"),
     "ignored_parent": ("deps/tool", "deps/other"),
+    "directory_to_file": ("pkg", "pkg/.cache"),
+    "directory_to_symlink": ("pkg", "pkg/.cache"),
+    "nested_below_symlink": ("pkg", "pkg/sub/.cache"),
 }
 
 
@@ -1090,11 +1104,14 @@ COLLISIONS = {
 def test_feedback_overlay_never_overwrites_setup_output(action, collision):
     work = action["work"]
     tracked, written = COLLISIONS[collision]
-    commit_base_file(action, ".gitignore", b"deps/\n")
+    commit_base_file(action, ".gitignore", b"deps/\n.cache\n")
+    commit_base_file(action, "pkg/file", b"base\n")
+    commit_base_file(action, "pkg/sub/file", b"base\n")
     base = action["env"]["BASE_SHA"]
-    prior_agent_commit(action, {tracked: "prior\n"})
+    links = (tracked,) if collision.endswith("symlink") else ()
+    prior_agent_commit(action, {tracked: "destination" if links else "prior\n"}, links=links)
     event_commit(action, base)
-    use_setup(action, f"mkdir -p deps && echo setup > {written}")
+    use_setup(action, f"mkdir -p deps pkg/sub && echo setup > {written}")
     result = run_action(action, "setup")
     assert result.returncode == 1
     assert "Project setup refused: setup output conflicts with the feedback head." in result.stderr

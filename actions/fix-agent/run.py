@@ -203,6 +203,15 @@ def refuse_setup_collisions(work: Path, base_sha: str, head: str) -> None:
             path = b"/".join(parts[:depth])
             if path not in tracked and os.path.lexists(work / os.fsdecode(path)):
                 raise Refused("setup output conflicts with the feedback head")
+        # H may replace a tracked directory with a file or link, deleting setup output inside it.
+        top = work / os.fsdecode(name)
+        if top.is_dir() and not top.is_symlink():
+            for root, dirs, files in os.walk(top, onerror=raise_walk_error):
+                below = (
+                    os.fsencode((Path(root) / entry).relative_to(work)) for entry in dirs + files
+                )
+                if any(path not in tracked for path in below):
+                    raise Refused("setup output conflicts with the feedback head")
 
 
 def move_head(work: Path, old: str, new: str) -> None:
