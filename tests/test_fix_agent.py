@@ -934,13 +934,18 @@ def agent_message(base: str, *, bases: int = 1) -> str:
     return f"Fix #7\n\n{trailers}Agent-Run: 1233\nAgent-Tests: test_lib.py::test_add"
 
 
-def prior_agent_commit(action: dict, files: dict[str, str], message: str = "") -> str:
+def prior_agent_commit(
+    action: dict, files: dict[str, str], message: str = "", *, scripts: tuple[str, ...] = ()
+) -> str:
     # A previous fix run left commit H on the agent branch, on top of the base.
     work, base = action["work"], action["env"]["BASE_SHA"]
     git(work, "checkout", "-q", "--detach", base)
     for name, text in files.items():
+        (work / name).parent.mkdir(parents=True, exist_ok=True)
         (work / name).write_text(text)
-    git(work, "add", ".")
+        (work / name).chmod(0o755 if name in scripts else 0o644)
+    # Forced, since a prior patch may track a path the base ignores.
+    git(work, "add", "-f", "--", *files)
     git(work, "commit", "-q", "-m", message or agent_message(base))
     head = git(work, "rev-parse", "HEAD").strip()
     git(work, "update-ref", f"refs/remotes/origin/{FEEDBACK_REF}", head)
@@ -974,8 +979,10 @@ def test_feedback_setup_runs_only_base_code_and_agent_patch_is_cumulative(action
     marks.mkdir()
     for name, text in setup_files(marks, "base").items():
         commit_base_file(action, name, text.encode())
+    # A change inside a directory the base already tracks is not a setup-output collision.
+    commit_base_file(action, "pkg/mod.py", b"base\n")
     base = env["BASE_SHA"]
-    head = prior_agent_commit(action, setup_files(marks, "hostile"))
+    head = prior_agent_commit(action, setup_files(marks, "hostile") | {"pkg/mod.py": "prior\n"})
     event_commit(action, base)
     script = "import json; print(json.load(open('package.json'))['scripts']['postinstall'])"
     use_setup(action, f'python3 setup.py && make -s && sh -c "$(python3 -c "{script}")"')
@@ -1004,7 +1011,15 @@ FEEDBACK_REFUSALS = {
     "head_not_descendant": "feedback head does not descend from the base SHA",
     "malformed_ref": "invalid inputs",
     "ref_without_head": "invalid inputs",
+    "malformed_event_sha": "invalid inputs",
+    "dirty_base_checkout": "work tree is not clean before setup",
+    "dropped_head_update": "work tree is not at the base SHA",
 }
+DROP_UPDATE_REF = """#!/bin/bash
+# Drops ref updates, so only the action's own HEAD check can notice the base was not reached.
+for arg in "$@"; do [ "$arg" = update-ref ] && exit 0; done
+exec {git} "$@"
+"""
 
 
 @pytest.mark.parametrize("problem", sorted(FEEDBACK_REFUSALS))
@@ -1025,8 +1040,21 @@ def test_feedback_setup_refuses_an_unverified_head(action, problem):
         git(work, "add", "side.txt")
         git(work, "commit", "-q", "-m", "side branch")
         env["BASE_SHA"] = git(work, "rev-parse", "HEAD").strip()
+    elif problem == "dirty_base_checkout":
+        # Only the base keeps a CRLF blob under a text attribute, so it checks out modified.
+        commit_base_file(action, "crlf.txt", b"x\r\ny\r\n")
+        commit_base_file(action, ".gitattributes", b"crlf.txt text\n")
     head = prior_agent_commit(action, {"notes.txt": "prior\n"}, messages.get(problem, ""))
-    event_commit(action, base, *([env["BASE_SHA"]] if problem == "base_not_first_parent" else []))
+    if problem == "dirty_base_checkout":
+        # The default branch later renormalized the file, so the event checkout is clean.
+        event_commit(action, env["BASE_SHA"])
+        git(work, "add", "--renormalize", ".")
+        git(work, "commit", "-q", "-m", "renormalize")
+        env["GITHUB_SHA"] = git(work, "rev-parse", "HEAD").strip()
+    else:
+        merge = [env["BASE_SHA"]] if problem == "base_not_first_parent" else []
+        event_commit(action, base, *merge)
+    event = env["GITHUB_SHA"]
     if problem == "head_not_on_ref":
         git(work, "update-ref", f"refs/remotes/origin/{FEEDBACK_REF}", base)
     elif problem == "head_not_descendant":
@@ -1037,20 +1065,83 @@ def test_feedback_setup_refuses_an_unverified_head(action, problem):
         env["FEEDBACK_HEAD_REF"] = "agent/fix-7/../../heads/main"
     elif problem == "ref_without_head":
         env["FEEDBACK_HEAD_SHA"] = ""
+    elif problem == "malformed_event_sha":
+        env["GITHUB_SHA"] = "x" * 40
+    elif problem == "dropped_head_update":
+        write_script(action["bin"] / "git", DROP_UPDATE_REF.format(git=shutil.which("git")))
     result = run_action(action, "setup")
     assert not marker.exists()
     assert result.returncode == 1
     assert f"Project setup refused: {FEEDBACK_REFUSALS[problem]}." in result.stderr
-    assert git(work, "rev-parse", "HEAD").strip() == env["GITHUB_SHA"]
+    expected = env["BASE_SHA"] if problem == "dirty_base_checkout" else event
+    assert git(work, "rev-parse", "HEAD").strip() == expected
 
 
-def test_feedback_overlay_never_overwrites_setup_output(action):
-    work, base = action["work"], action["env"]["BASE_SHA"]
-    prior_agent_commit(action, {"notes.txt": "prior\n"})
+# Setup output H would replace: a plain file, an ignored file H force-tracks, and a file in an
+# ignored directory H adds to.
+COLLISIONS = {
+    "plain": ("notes.txt", "notes.txt"),
+    "ignored_file": ("deps/tool", "deps/tool"),
+    "ignored_parent": ("deps/tool", "deps/other"),
+}
+
+
+@pytest.mark.parametrize("collision", sorted(COLLISIONS))
+def test_feedback_overlay_never_overwrites_setup_output(action, collision):
+    work = action["work"]
+    tracked, written = COLLISIONS[collision]
+    commit_base_file(action, ".gitignore", b"deps/\n")
+    base = action["env"]["BASE_SHA"]
+    prior_agent_commit(action, {tracked: "prior\n"})
     event_commit(action, base)
-    use_setup(action, "echo setup > notes.txt")
+    use_setup(action, f"mkdir -p deps && echo setup > {written}")
     result = run_action(action, "setup")
     assert result.returncode == 1
     assert "Project setup refused: setup output conflicts with the feedback head." in result.stderr
-    assert (work / "notes.txt").read_text() == "setup\n"
+    assert (work / written).read_text() == "setup\n"
     assert git(work, "rev-parse", "HEAD").strip() == base
+
+
+# Repository state setup may leave that would let H's files run as git commands.
+OVERLAY_COMMANDS = {
+    "hooks_path": ("git config core.hooksPath hooks", "git config can run commands"),
+    "fsmonitor": ("git config core.fsmonitor hooks/run", "git config can run commands"),
+    "external_diff": ("git config diff.external hooks/run", "git config can run commands"),
+    "textconv": ("git config diff.x.textconv hooks/run", "git config can run commands"),
+    "diff_command": ("git config diff.x.command hooks/run", "git config can run commands"),
+    "merge_driver": ("git config merge.x.driver hooks/run", "git config can run commands"),
+    "smudge_filter": ("git config filter.foo.smudge 'sh hooks/run'", "git config can run commands"),
+    "nested_repository": ("git init -q vendor", "work tree contains git metadata"),
+}
+
+
+@pytest.mark.parametrize("problem", sorted(OVERLAY_COMMANDS))
+def test_feedback_overlay_refuses_commands_setup_configured(action, problem, tmp_path):
+    work, marker = action["work"], tmp_path / "hook.ran"
+    base = action["env"]["BASE_SHA"]
+    hook = f"#!/bin/sh\ntouch {marker}\ncat\n"
+    files = {"hooks/reference-transaction": hook, "hooks/run": hook}
+    files |= {".gitattributes": "notes.txt filter=foo\n", "notes.txt": "prior\n"}
+    prior_agent_commit(action, files, scripts=tuple(files)[:2])
+    event_commit(action, base)
+    command, message = OVERLAY_COMMANDS[problem]
+    use_setup(action, command)
+    result = run_action(action, "setup")
+    assert result.returncode == 1
+    assert f"Project setup refused: {message}." in result.stderr
+    assert not marker.exists()
+    assert git(work, "rev-parse", "HEAD").strip() == base
+
+
+def test_feedback_overlay_runs_no_repository_hook(action, tmp_path):
+    # Hooks stay off for every git command, even one trusted setup installs in the git dir.
+    work, marker = action["work"], tmp_path / "hook.ran"
+    base = action["env"]["BASE_SHA"]
+    head = prior_agent_commit(action, {"notes.txt": "prior\n"})
+    event_commit(action, base)
+    hook = work / ".git" / "hooks" / "reference-transaction"
+    use_setup(action, f"printf '#!/bin/sh\\ntouch {marker}\\n' > {hook} && chmod +x {hook}")
+    result = run_action(action, "setup")
+    assert result.returncode == 0, result.stderr
+    assert hook.is_file() and not marker.exists()
+    assert git(work, "rev-parse", "HEAD").strip() == head

@@ -39,6 +39,11 @@ POLICY_FILES = (
     "AGENTS.md",
     "CONTRIBUTING.md",
 )
+# Config keys that make git run a command; after setup, H's files could be that command.
+COMMAND_CONFIG = (
+    r"core\.(hookspath|fsmonitor)|filter\..*|diff\.external|diff\..*\.(textconv|command)"
+    r"|merge\..*\.driver"
+)
 # Apply writes exactly this message, so no model text can add, drop or move a trailer.
 AGENT_COMMIT = re.compile(
     r"Fix #[1-9][0-9]*\n\nAgent-Base: (?P<base>[0-9a-f]{40})\nAgent-Run: [A-Za-z0-9_.-]{1,64}\n"
@@ -48,6 +53,11 @@ AGENT_COMMIT = re.compile(
 
 class Refused(Exception):
     """A fixed, credential-free reason why no fix artifact was produced."""
+
+
+def git(work: Path, git_dir: Path, *args: str) -> bytes:
+    # Hooks stay off for every git command the action runs, whatever repository config says.
+    return run_git(work, git_dir, "-c", f"core.hooksPath={os.devnull}", *args)
 
 
 def checkouts() -> tuple[Path, Path]:
@@ -75,8 +85,9 @@ def refuse_persisted_credentials(tree: Path, git_dir: Path) -> None:
 
 def refuse_unexpected_head(git_dir: Path, base_sha: str) -> None:
     # rev-parse reads only the git dir, not the work tree, so it may run before the filter guard.
+    command = ["git", f"--git-dir={git_dir}", "-c", f"core.hooksPath={os.devnull}", "rev-parse"]
     head = subprocess.run(
-        ["git", f"--git-dir={git_dir}", "rev-parse", "--verify", "HEAD^{commit}"],
+        [*command, "--verify", "HEAD^{commit}"],
         env=git_environment(),
         capture_output=True,
         text=True,
@@ -93,7 +104,7 @@ def refuse_unclean_work_tree(work: Path, git_dir: Path, reason: str, *, ignored:
     except ValueError as exc:
         raise Refused(str(exc)) from None
     status = ["status", "--porcelain", "-z", "--untracked-files=all"]
-    if run_git(work, git_dir, *status, *(["--ignored"] if ignored else [])):
+    if git(work, git_dir, *status, *(["--ignored"] if ignored else [])):
         raise Refused(reason)
 
 
@@ -142,7 +153,7 @@ def feedback_inputs() -> tuple[str, str, str] | None:
 
 def is_ancestor(work: Path, git_dir: Path, ancestor: str, descendant: str) -> bool:
     try:
-        run_git(work, git_dir, "merge-base", "--is-ancestor", ancestor, descendant)
+        git(work, git_dir, "merge-base", "--is-ancestor", ancestor, descendant)
     except subprocess.CalledProcessError:
         return False
     return True
@@ -153,21 +164,51 @@ def refuse_unverified_feedback(work: Path, base_sha: str, head: str, ref: str, e
     # A fetch-depth 0 checkout already holds every branch, so no token is needed to check H.
     if not is_ancestor(work, git_dir, head, f"refs/remotes/origin/{ref}"):
         raise Refused("feedback head is not on the agent branch")
-    message = run_git(work, git_dir, "cat-file", "commit", head).partition(b"\n\n")[2]
+    message = git(work, git_dir, "cat-file", "commit", head).partition(b"\n\n")[2]
     match = AGENT_COMMIT.fullmatch(message.decode("utf-8", "replace"))
     if match is None or match["base"] != base_sha:
         raise Refused("feedback head is not an agent commit on the base SHA")
     # Plain ancestry would accept an agent commit that reached the default branch by a merge.
-    if base_sha.encode() not in run_git(work, git_dir, "rev-list", "--first-parent", event).split():
+    if base_sha.encode() not in git(work, git_dir, "rev-list", "--first-parent", event).split():
         raise Refused("feedback base is not on the default branch's first-parent chain")
     if not is_ancestor(work, git_dir, base_sha, head):
         raise Refused("feedback head does not descend from the base SHA")
 
 
+def refuse_overlay_commands(work: Path) -> None:
+    # Setup may have changed repository config or the tree, and H's content is agent-written.
+    git_dir = work / ".git"
+    listing = git(work, git_dir, "config", "--includes", "--list", "-z", "--show-scope")
+    fields = listing.decode().split("\0")
+    # The action's own -c options are command scope; every repository scope is checked.
+    for scope, entry in zip(fields[0::2], fields[1::2], strict=False):
+        if scope != "command" and re.fullmatch(COMMAND_CONFIG, entry.partition("\n")[0]):
+            raise Refused("git config can run commands")
+    try:
+        refuse_repository_commands(work, git_dir)
+    except ValueError as exc:
+        raise Refused(str(exc)) from None
+
+
+def refuse_setup_collisions(work: Path, base_sha: str, head: str) -> None:
+    # read-tree overwrites ignored files, so any setup output on a path H changes is refused.
+    git_dir = work / ".git"
+    changed = git(work, git_dir, "diff", "--name-only", "-z", "--no-renames", base_sha, head)
+    tracked = set(
+        git(work, git_dir, "ls-tree", "-r", "-t", "-z", "--name-only", base_sha).split(b"\0")
+    )
+    for name in filter(None, changed.split(b"\0")):
+        parts = name.split(b"/")
+        for depth in range(1, len(parts) + 1):
+            path = b"/".join(parts[:depth])
+            if path not in tracked and os.path.lexists(work / os.fsdecode(path)):
+                raise Refused("setup output conflicts with the feedback head")
+
+
 def move_head(work: Path, old: str, new: str) -> None:
-    # A two-tree read-tree runs no hooks and refuses to overwrite any untracked file.
-    run_git(work, work / ".git", "read-tree", "-m", "-u", old, new)
-    run_git(work, work / ".git", "update-ref", "--no-deref", "HEAD", new)
+    # A two-tree read-tree with hooks off; callers refuse filters and colliding setup output.
+    git(work, work / ".git", "read-tree", "-m", "-u", old, new)
+    git(work, work / ".git", "update-ref", "--no-deref", "HEAD", new)
 
 
 def run_setup_command(work: Path, command: str) -> int:
@@ -219,8 +260,13 @@ def setup() -> int:
         return 0
     # The prior agent commit enters the tree only after setup has run the base's own code.
     try:
+        refuse_overlay_commands(work)
+        refuse_setup_collisions(work, base_sha, feedback[0])
         move_head(work, base_sha, feedback[0])
-    except subprocess.SubprocessError:
+    except Refused as exc:
+        print(f"Project setup refused: {exc}.", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, subprocess.SubprocessError):
         print(
             "Project setup refused: setup output conflicts with the feedback head.", file=sys.stderr
         )
@@ -241,22 +287,22 @@ def string_values(value: object) -> list[str]:
 
 def binary_file_bytes(work: Path, git_dir: Path, base_sha: str) -> list[bytes]:
     # Binary hunks are base85 in the patch, so those files' own bytes are scanned; text is in it.
-    stats = run_git(work, git_dir, "diff", "--numstat", "-z", "--no-renames", base_sha)
+    stats = git(work, git_dir, "diff", "--numstat", "-z", "--no-renames", base_sha)
     names = [stat.split(b"\t", 2)[2] for stat in stats.split(b"\0") if stat.startswith(b"-\t-\t")]
     # A binary patch also encodes the base pre-image, so deleted or replaced bytes are read too.
-    base = set(run_git(work, git_dir, "ls-tree", "-r", "-z", "--name-only", base_sha).split(b"\0"))
+    base = set(git(work, git_dir, "ls-tree", "-r", "-z", "--name-only", base_sha).split(b"\0"))
     show = [f"{base_sha}:{os.fsdecode(name)}" for name in names if name in base]
-    blobs = [run_git(work, git_dir, "cat-file", "blob", spec) for spec in show]
+    blobs = [git(work, git_dir, "cat-file", "blob", spec) for spec in show]
     paths = [work / os.fsdecode(name) for name in names]
     # A link's target is text in the patch; a linked file or parent dir could leave the tree.
     regular = [path for path in paths if path.is_file() and not path.is_symlink()]
     inside = [path for path in regular if path.resolve().is_relative_to(work)]
     # The patch encodes the blob git makes with the path's attributes, such as a re-encoding.
     hashed = [
-        run_git(work, git_dir, "hash-object", "-w", f"--path={path.relative_to(work)}", str(path))
+        git(work, git_dir, "hash-object", "-w", f"--path={path.relative_to(work)}", str(path))
         for path in inside
     ]
-    encoded = [run_git(work, git_dir, "cat-file", "blob", oid.strip().decode()) for oid in hashed]
+    encoded = [git(work, git_dir, "cat-file", "blob", oid.strip().decode()) for oid in hashed]
     return blobs + [path.read_bytes() for path in inside] + encoded
 
 
