@@ -27,7 +27,6 @@ LIMITS = {
 }
 EVENT_SHA = "c" * 40
 AGENT_BASE = "d" * 40
-# Feedback fixes must also link their issue in the PR body, which this frozen case predates.
 EXPECTED_OVERRIDES = {
     "fix-agent-draft": {"run": False, "reason": "unlinked-issue", "tier2_allowed": False}
 }
