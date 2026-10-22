@@ -37,6 +37,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
         PREFLIGHT_ACTION_PATH: ${{ github.action_path }}
+        PREFLIGHT_ACTION_REF: ${{ github.action_ref }}
         PREFLIGHT_DEFAULT_BRANCH: ${{ inputs.default-branch }}
         PREFLIGHT_WORKFLOWS_DIR: ${{ inputs.workflows-dir }}
         PREFLIGHT_OUTPUT: ${{ inputs.output }}
@@ -47,7 +48,8 @@ runs:
       run: |
         args=(--default-branch "$PREFLIGHT_DEFAULT_BRANCH"
               --workflows-dir "$PREFLIGHT_WORKFLOWS_DIR" --output "$PREFLIGHT_OUTPUT"
-              --run-id "$PREFLIGHT_RUN_ID" --base-sha "$PREFLIGHT_BASE_SHA")
+              --run-id "$PREFLIGHT_RUN_ID" --base-sha "$PREFLIGHT_BASE_SHA"
+              --template-ref "$PREFLIGHT_ACTION_REF")
         if [[ "$PREFLIGHT_TOKEN_READONLY" == true ]]; then
           args+=(--token-readonly)
         fi

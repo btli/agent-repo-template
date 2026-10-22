@@ -1,14 +1,17 @@
 import hashlib
 import importlib
 import json
+import os
 import shutil
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from agent_repo.cli import main as cli
 from agent_repo.github import GitHub
+from agent_repo.schema import load_schema, validate
 from agent_repo.yamljson import load_yaml
 
 FIXTURES = Path(__file__).parent / "fixtures" / "preflight"
@@ -192,6 +195,9 @@ def test_command_artifact_and_output(case, tmp_path, monkeypatch, capsys):
     success = case in {"safe", "exposed"}
     assert result == (0 if success else 1)
     artifact = json.loads(output.read_text())
+    assert artifact["schema_version"] == "1"
+    assert artifact["accepted_template_exposures"] == []
+    assert validate(artifact, load_schema("preflight")) == []
     assert artifact["pass"] is (case == "safe")
     assert artifact["run_id"] == "123"
     assert artifact["base_sha"] == "c" * 40
@@ -797,9 +803,11 @@ def test_action_forwards_verified_settings(tmp_path, monkeypatch):
     binary = tmp_path / "python3"
     binary.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
     binary.chmod(0o755)
+    original_path = os.environ["PATH"]
     monkeypatch.setenv("PATH", str(tmp_path))
     settings = {
         "ACTION_PATH": str(action_path.parent),
+        "ACTION_REF": "d" * 40,
         "DEFAULT_BRANCH": "main",
         "WORKFLOWS_DIR": "consumer workflows",
         "OUTPUT": "preflight.json",
@@ -825,11 +833,31 @@ def test_action_forwards_verified_settings(tmp_path, monkeypatch):
         "123",
         "--base-sha",
         "c" * 40,
+        "--template-ref",
+        "d" * 40,
         "--token-readonly",
         "--safe-environment",
         "release",
         "--safe-environment",
         "staging",
+    ]
+    assert step["env"]["PREFLIGHT_ACTION_REF"] == "${{ github.action_ref }}"
+    monkeypatch.setenv("PATH", original_path)
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    workflow = (FIXTURES / "template_fix_propose.yml").read_text().replace(TEMPLATE_REF, "d" * 40)
+    (workflows / "agent-fix.yml").write_text(workflow)
+    monkeypatch.setattr(GitHub, "_urlopen", staticmethod(api_transport(workflows)))
+    monkeypatch.setenv("GH_TOKEN", "credential-canary")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "your-org/project")
+    arguments = result.stdout.splitlines()[2:]
+    arguments[arguments.index("--workflows-dir") + 1] = str(workflows)
+    arguments[arguments.index("--output") + 1] = str(tmp_path / "preflight.json")
+    assert cli(["preflight", *arguments]) == 0
+    artifact = json.loads((tmp_path / "preflight.json").read_text())
+    assert artifact["pass"] is True
+    assert artifact["accepted_template_exposures"] == [
+        {"rule": "template-fix-propose", "job": "propose", "secret": "AGENT_FIX_KEY"}
     ]
 
 
@@ -1059,3 +1087,258 @@ def test_target_event_privileges(fixture, expected, token_readonly):
     for item in result:
         assert item.job in item.detail
         assert "fix.accept_ci_exposure" in item.detail
+
+
+TEMPLATE_REF = "43c2d3b58ce3ebccd38d9ee2a05464966b6a94da"
+
+
+def fix_workflow():
+    return load_yaml(FIXTURES / "template_fix_propose.yml")
+
+
+def scan_template(workflow, template_ref=TEMPLATE_REF):
+    module = implementation()
+    return module.analyze(
+        {"agent-fix.yml": workflow},
+        module.PreflightContext("main", template_ref=template_ref),
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "inputs"),
+    [
+        ("btli/agent-repo-template/actions/gate", {}),
+        ("btli/agent-repo-template/actions/setup", {}),
+        ("BTLI/agent-repo-template/actions/preflight", {}),
+        ("btli/agent-repo-template/actions/decide", {}),
+        (
+            "btli/agent-repo-template/actions/decide",
+            {"default-branch": "${{ github.event.repository.default_branch }}"},
+        ),
+        ("btli/agent-repo-template/actions/triage-agent", {}),
+        ("btli/agent-repo-template/actions/review-agent", {}),
+        ("btli/agent-repo-template/actions/apply", {}),
+        ("actions/checkout", {"persist-credentials": False}),
+        ("actions/checkout", {"ref": "${{ github.sha }}", "persist-credentials": False}),
+        (
+            "actions/checkout",
+            {"ref": "${{ github.event.repository.default_branch }}", "persist-credentials": False},
+        ),
+        ("actions/download-artifact", {}),
+        ("actions/upload-artifact", {}),
+        ("actions/create-github-app-token", {}),
+    ],
+)
+def test_target_template_allowlist(action, inputs):
+    module = implementation()
+    workflow = {
+        "on": "issue_comment",
+        "permissions": {"contents": "write"},
+        "jobs": {
+            "check": {
+                "runs-on": "ubuntu-24.04",
+                "steps": [{"uses": f"{action}@{TEMPLATE_REF}", "with": inputs}],
+            }
+        },
+    }
+    assert module.analyze({"ci.yml": workflow}, module.PreflightContext("main")) == []
+    workflow["jobs"]["check"]["steps"].append({"run": "echo ready"})
+    assert [
+        item.rule for item in module.analyze({"ci.yml": workflow}, module.PreflightContext("main"))
+    ] == ["pull_request_target"]
+
+
+@pytest.mark.parametrize(
+    ("action", "inputs"),
+    [
+        ("btli/agent-repo-template/actions/decide", {"default-branch": "main"}),
+        ("btli/agent-repo-template/actions/gate", {"ref": "${{ github.sha }}"}),
+        ("btli/agent-repo-template/actions/review-agent", {"repository": "your-org/project"}),
+        ("btli/agent-repo-template/actions/apply", {"token": "${{ secrets.OTHER_TOKEN }}"}),
+        ("btli/agent-repo-template/actions/gate", {"github-token": "${{ github.token }}"}),
+        ("btli/agent-repo-template/actions/fix-agent", {}),
+        ("btli/other/actions/gate", {}),
+        ("btli/AGENT-REPO-TEMPLATE/actions/gate", {}),
+        ("actions/checkout", {"ref": "${{ github.head_ref }}", "persist-credentials": False}),
+        ("actions/checkout", {"repository": "your-org/project", "persist-credentials": False}),
+        ("actions/checkout", {}),
+        ("actions/checkout", {"persist-credentials": "false"}),
+        ("actions/checkout", {"ref": None, "persist-credentials": False}),
+        ("actions/download-artifact", {"run-id": "123"}),
+        ("actions/download-artifact", {"github-token": "${{ github.token }}"}),
+    ],
+)
+def test_target_allowlist_rejects_overrides(action, inputs):
+    assert [item.rule for item in scan_template(fix_workflow())] == ["template-fix-propose"]
+    workflow = {
+        "on": "issue_comment",
+        "permissions": {"contents": "write"},
+        "jobs": {
+            "check": {
+                "runs-on": "ubuntu-24.04",
+                "steps": [{"uses": f"{action}@{TEMPLATE_REF}", "with": inputs}],
+            }
+        },
+    }
+    assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("extra-run",), {"run": "echo ready"}),
+        (("steps", 3, "env"), {"AGENT_FIX_KEY": "${{ secrets.AGENT_FIX_KEY }}"}),
+        (("steps", 0, "with", "ref"), "${{ github.head_ref }}"),
+        (("steps", 1, "with", "ref"), "${{ needs.gate.outputs.head_ref }}"),
+        (("steps", 0, "with", "repository"), "your-org/project"),
+        (("steps", 4, "uses"), "btli/agent-repo-template/actions/fix-agent@v0.0.0"),
+        (("steps", 2, "with", "run-id"), "123"),
+        (("steps", 2, "with", "github-token"), "${{ github.token }}"),
+        (("steps", 4, "env", "EXTRA"), "${{ secrets.EXTRA }}"),
+        (("permissions", "contents"), "write"),
+        (("permissions", "id-token"), "write"),
+        (("steps", 4, "with", "token"), "${{ github.token }}"),
+        (("steps", 4, "with", "agent-timeout"), 1800),
+        (("steps", 1, "with", "fetch-depth"), 1),
+        (("steps", 0, "with", "persist-credentials"), True),
+        (("steps", 4, "with", "base-sha"), "${{ github.head_ref }}"),
+        (("steps", 4, "with", "issue-file"), "${{ github.head_ref }}"),
+        (("steps", 5, "with", "token"), "${{ secrets.GITHUB_TOKEN }}"),
+        (("steps", 5, "with", "token"), "${{ github.token }}"),
+        (("steps", 4, "with", "allowed-endpoints"), "example.com:443"),
+        (("steps", 4, "if"), "false"),
+        (("environment",), "other"),
+        (("timeout-minutes",), 25),
+        (("needs",), "other"),
+        (("if",), "always()"),
+        (("concurrency", "cancel-in-progress"), False),
+        (("env",), {"AGENT_FIX_KEY": "${{ secrets.AGENT_FIX_KEY }}"}),
+        (("container",), "alpine"),
+    ],
+)
+def test_fix_rule_requires_canonical_job(path, value):
+    workflow = fix_workflow()
+    assert [item.rule for item in scan_template(workflow)] == ["template-fix-propose"]
+    target = workflow["jobs"]["propose"]
+    for key in path[:-1]:
+        target = target[key]
+    if path == ("extra-run",):
+        target["steps"].append(value)
+    else:
+        target[path[-1]] = value
+    result = scan_template(workflow)
+    assert "template-fix-propose" not in {item.rule for item in result}
+    assert "pull_request_target" in {item.rule for item in result}
+
+
+@pytest.mark.parametrize("template_ref", [None, "", "v0.0.0", "a" * 40])
+def test_fix_rule_requires_self_pin(template_ref):
+    assert [item.rule for item in scan_template(fix_workflow())] == ["template-fix-propose"]
+    assert [item.rule for item in scan_template(fix_workflow(), template_ref)] == [
+        "pull_request_target"
+    ]
+
+
+def test_uniform_old_template_pin_is_ordinary_exposure():
+    assert [item.rule for item in scan_template(fix_workflow())] == ["template-fix-propose"]
+    workflow = load_yaml(FIXTURES / "template_fix_propose_old.yml")
+    result = scan_template(workflow)
+    assert [item.rule for item in result] == ["pull_request_target"]
+    assert result[0].secrets == ("AGENT_FIX_KEY",)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    [
+        ("bracket_secret", ("NPM_TOKEN",)),
+        ("bracket_numeric_secret", ("TOKEN_2",)),
+        ("dynamic_secret", ("*",)),
+        ("github_token", ()),
+    ],
+)
+def test_exposure_secret_names(fixture, expected):
+    module = implementation()
+    workflow = load_yaml(FIXTURES / f"{fixture}.yml")
+    workflow["permissions"] = {"contents": "write"}
+    result = module.analyze({"ci.yml": workflow}, module.PreflightContext("main"))
+    assert result
+    assert all(item.secrets == expected for item in result)
+
+
+@pytest.mark.parametrize(
+    "schema_fault", [None, "rule", "accepted_rule", "extra", "version", "secret"]
+)
+def test_fix_command_validates_and_logs_accepted_exposure(
+    schema_fault, tmp_path, monkeypatch, capsys
+):
+    command = importlib.import_module("agent_repo.commands.preflight")
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    shutil.copy(FIXTURES / "template_fix_propose.yml", workflows / "agent-fix.yml")
+    monkeypatch.setattr(GitHub, "_urlopen", staticmethod(api_transport(workflows)))
+    monkeypatch.setenv("GH_TOKEN", "credential-canary")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "your-org/project")
+    summary = tmp_path / "summary"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    output = tmp_path / "preflight.json"
+    args = [
+        "preflight",
+        "--default-branch",
+        "main",
+        "--workflows-dir",
+        str(workflows),
+        "--template-ref",
+        TEMPLATE_REF,
+        "--output",
+        str(output),
+        "--run-id",
+        "123",
+        "--base-sha",
+        "c" * 40,
+    ]
+    assert cli(args) == 0
+    artifact = json.loads(output.read_text())
+    assert artifact["pass"] is True
+    assert artifact["exposures"] == []
+    assert artifact["accepted_template_exposures"] == [
+        {"rule": "template-fix-propose", "job": "propose", "secret": "AGENT_FIX_KEY"}
+    ]
+    assert validate(artifact, load_schema("preflight")) == []
+    captured = capsys.readouterr()
+    assert "template-fix-propose" in captured.out + summary.read_text()
+    assert "AGENT_FIX_KEY" in captured.out and "AGENT_FIX_KEY" in summary.read_text()
+    assert (
+        "credential-canary"
+        not in captured.out + captured.err + output.read_text() + summary.read_text()
+    )
+    if schema_fault is not None:
+        invalid = deepcopy(artifact)
+        if schema_fault == "rule":
+            invalid["exposures"] = [
+                {
+                    "workflow": "ci.yml",
+                    "job": "propose",
+                    "rule": "unknown",
+                    "detail": "Refused.",
+                    "secrets": ["AGENT_FIX_KEY"],
+                }
+            ]
+        elif schema_fault == "accepted_rule":
+            invalid["accepted_template_exposures"][0]["rule"] = "unknown"
+        elif schema_fault == "extra":
+            invalid["accepted_template_exposures"][0]["extra"] = "unexpected"
+        elif schema_fault == "version":
+            invalid["schema_version"] = "2"
+        else:
+            del invalid["accepted_template_exposures"][0]["secret"]
+        assert validate(invalid, load_schema("preflight"))
+        original_validate = command.validate
+        monkeypatch.setattr(
+            command, "validate", lambda instance, schema: original_validate(invalid, schema)
+        )
+        output.unlink()
+        assert cli(args) == 1
+        assert not output.exists()
+        captured = capsys.readouterr()
+        assert "pass=false" in captured.out
+        assert "credential-canary" not in captured.out + captured.err

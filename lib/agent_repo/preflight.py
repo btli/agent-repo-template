@@ -72,6 +72,13 @@ AGENT_REF_EVENTS = frozenset(
 )
 # Deliberately minimal: only these pinned metadata actions may use target-event credentials.
 TARGET_ACTIONS = frozenset({"actions/labeler", "actions/first-interaction", "actions/stale"})
+TEMPLATE_ACTIONS = frozenset(
+    {"gate", "decide", "triage-agent", "review-agent", "apply", "preflight", "setup"}
+)
+MODEL_ACTIONS = frozenset({"triage-agent", "review-agent", "fix-agent"})
+ROLE_KEYS = frozenset({"AGENT_TRIAGE_KEY", "AGENT_REVIEW_KEY", "AGENT_FIX_KEY", "*"})
+TEMPLATE_PREFIX = "btli/agent-repo-template/actions/"
+FIX_RULE = "template-fix-propose"
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,7 @@ class Exposure:
     job: str
     rule: str
     detail: str
+    secrets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,7 @@ class PreflightContext:
     agent_ref_glob: str = "agent/fix-*"
     token_readonly: bool = False
     safe_environments: frozenset[str] = frozenset()
+    template_ref: str | None = None
 
 
 def _glob_tokens(pattern: str) -> list[tuple[str, bool]] | None:
@@ -287,6 +296,39 @@ def _job_secrets(job: dict, workflow: dict, grants: frozenset[str] | None) -> bo
     )
 
 
+def _secret_names(
+    value: object, grants: frozenset[str] | None = None, *, include_token: bool = False
+) -> set[str]:
+    names = set()
+    if isinstance(value, dict):
+        if value.get("secrets") == "inherit":
+            if grants is None:
+                names.add("*")
+            else:
+                names.update(name.upper() for name in grants)
+        for child in value.values():
+            names.update(_secret_names(child, grants, include_token=include_token))
+    elif isinstance(value, list):
+        for child in value:
+            names.update(_secret_names(child, grants, include_token=include_token))
+    elif isinstance(value, str):
+        for expression in _expressions(value):
+            if not _secrets("${{" + expression + "}}", grants=grants, include_token=include_token):
+                continue
+            normalized = _context(expression)
+            matches = list(re.finditer(r"\bsecrets\.([a-z_][a-z_0-9]*)", normalized))
+            names.update(
+                match[1].upper()
+                for match in matches
+                if (include_token or match[1] != "github_token")
+                and (grants is None or match[1] in grants)
+            )
+            remainder = re.sub(r"\bsecrets\.[a-z_][a-z_0-9]*", "", normalized)
+            if re.search(r"\bsecrets\b", remainder):
+                names.add("*")
+    return names
+
+
 def _callee_grants(job: dict, grants: frozenset[str] | None) -> frozenset[str] | None:
     passed = job.get("secrets", {})
     if passed == "inherit":
@@ -343,7 +385,7 @@ def _hosted(runner: object) -> bool:
 
 
 def _context(value: str) -> str:
-    value = re.sub(r"\[\s*[\"']([A-Za-z_]+)[\"']\s*\]", r".\1", value)
+    value = re.sub(r"\[\s*[\"']([A-Za-z_][A-Za-z_0-9]*)[\"']\s*\]", r".\1", value)
     return re.sub(r"\s*\.\s*", ".", value).lower()
 
 
@@ -395,6 +437,190 @@ def _safe_action(step: dict) -> bool:
     return "run" not in step and match is not None and match[1].lower() in TARGET_ACTIONS
 
 
+def _pinned_action(step: dict) -> tuple[str, str]:
+    uses = step.get("uses")
+    match = (
+        re.fullmatch(r"([^/@]+)/([^@]+)@([0-9a-fA-F]{40})", uses) if isinstance(uses, str) else None
+    )
+    if match is None or "run" in step:
+        return "", ""
+    return f"{match[1].casefold()}/{match[2]}", match[3].lower()
+
+
+def _role_keys_scoped(job: dict, workflow: dict) -> bool:
+    if (
+        _secret_names(
+            [workflow.get("env"), {key: value for key, value in job.items() if key != "steps"}]
+        )
+        & ROLE_KEYS
+    ):
+        return False
+    model_steps = [
+        step
+        for step in _steps(job)
+        if _pinned_action(step)[0] in {TEMPLATE_PREFIX + name for name in MODEL_ACTIONS}
+        and step.get("with", {}).get("mode", "propose") != "apply"
+    ]
+    for step in _steps(job):
+        if not _secret_names(step) & ROLE_KEYS:
+            continue
+        if len(model_steps) != 1 or step is not model_steps[0]:
+            return False
+        if _secret_names({key: value for key, value in step.items() if key != "env"}) & ROLE_KEYS:
+            return False
+    return True
+
+
+def _safe_target_action(step: dict, previous: list[dict]) -> bool:
+    if _safe_action(step):
+        return True
+    action, _ = _pinned_action(step)
+    inputs = step.get("with", {})
+    if not isinstance(inputs, dict):
+        return False
+    if (
+        action.startswith(TEMPLATE_PREFIX)
+        and action.removeprefix(TEMPLATE_PREFIX) in TEMPLATE_ACTIONS
+    ):
+        name = action.removeprefix(TEMPLATE_PREFIX)
+        if "ref" in inputs or "repository" in inputs:
+            return False
+        for key, value in inputs.items():
+            if "token" not in key.casefold():
+                continue
+            if key != "token":
+                return False
+            trusted_tokens = {"${{ github.token }}"}
+            if name == "apply" or (name == "review-agent" and inputs.get("mode") == "apply"):
+                trusted_tokens.update(
+                    "${{ steps." + prior["id"] + ".outputs.token }}"
+                    for prior in previous
+                    if _pinned_action(prior)[0] == "actions/create-github-app-token"
+                    and isinstance(prior.get("id"), str)
+                )
+            if value not in trusted_tokens:
+                return False
+        if "default-branch" in inputs and (
+            name != "decide"
+            or inputs["default-branch"] != "${{ github.event.repository.default_branch }}"
+        ):
+            return False
+        if name == "setup":
+            return not any(_secret_names(prior) & ROLE_KEYS for prior in [*previous, step])
+        return True
+    if action == "actions/checkout":
+        return (
+            (
+                "ref" not in inputs
+                or inputs["ref"]
+                in {"${{ github.sha }}", "${{ github.event.repository.default_branch }}"}
+            )
+            and "repository" not in inputs
+            and inputs.get("persist-credentials") is False
+        )
+    if action == "actions/download-artifact":
+        return not {"run-id", "github-token"} & inputs.keys()
+    return action in {"actions/upload-artifact", "actions/create-github-app-token"}
+
+
+def _template_fix_propose(name: str, job: dict, workflow: dict, ctx: PreflightContext) -> bool:
+    if (
+        name != "propose"
+        or not isinstance(ctx.template_ref, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{40}", ctx.template_ref)
+    ):
+        return False
+    if not _events(workflow).keys() <= {"issues", "issue_comment"} or any(
+        key in workflow for key in ("env", "defaults")
+    ):
+        return False
+    expected = {
+        "needs": "gate",
+        "if": "needs.gate.outputs.run == 'true'",
+        "runs-on": "ubuntu-24.04",
+        "timeout-minutes": 30,
+        "environment": "agent-propose-fix",
+        "permissions": {"contents": "read"},
+        "concurrency": {
+            "group": "agent-fix-propose-${{ needs.gate.outputs.issue }}",
+            "cancel-in-progress": True,
+        },
+    }
+    if {key: value for key, value in job.items() if key != "steps"} != expected:
+        return False
+    if any(_head_reference(value) for value in _strings(_executable(job, workflow))):
+        return False
+    steps = _steps(job)
+    actions = [
+        "actions/checkout",
+        "actions/checkout",
+        "actions/download-artifact",
+        TEMPLATE_PREFIX + "setup",
+        TEMPLATE_PREFIX + "fix-agent",
+        "actions/upload-artifact",
+    ]
+    if len(steps) != len(actions) or [_pinned_action(step)[0] for step in steps] != actions:
+        return False
+    if any(step.keys() - {"name", "uses", "with", "env"} for step in steps):
+        return False
+    if any("env" in step for index, step in enumerate(steps) if index != 4):
+        return False
+    if any("token" in key.casefold() for step in steps for key in step.get("with", {})):
+        return False
+    if any(_pinned_action(steps[index])[1] != ctx.template_ref.lower() for index in (3, 4)):
+        return False
+    if steps[4].get("env") != {"AGENT_FIX_KEY": "${{ secrets.AGENT_FIX_KEY }}"}:
+        return False
+    if _secret_names(job, include_token=True) != {"AGENT_FIX_KEY"} or not _role_keys_scoped(
+        job, workflow
+    ):
+        return False
+    for index, step in enumerate(steps):
+        if index != 4 and not _safe_target_action(step, steps[:index]):
+            return False
+    policy, work = steps[0].get("with"), steps[1].get("with")
+    if policy != {"ref": "${{ github.sha }}", "path": "policy", "persist-credentials": False}:
+        return False
+    if work != {
+        "ref": "${{ github.sha }}",
+        "path": "work",
+        "fetch-depth": 0,
+        "persist-credentials": False,
+    }:
+        return False
+    if steps[3].get("with") != {
+        "gateway-url": "${{ vars.AGENT_GATEWAY_URL }}",
+        "gateway-kind": "${{ vars.AGENT_GATEWAY_KIND }}",
+        "model": "${{ vars.AGENT_FIX_MODEL }}",
+        "api-key-env": "AGENT_FIX_KEY",
+    }:
+        return False
+    inputs = steps[4].get("with", {})
+    fixed_inputs = {
+        "work-path": "work",
+        "policy-path": "policy",
+        "base-sha": "${{ needs.gate.outputs.base_sha }}",
+        "feedback-head-sha": "${{ needs.gate.outputs.head_sha }}",
+        "feedback-head-ref": "${{ needs.gate.outputs.head_ref }}",
+        "api-key-env": "AGENT_FIX_KEY",
+        "allowed-endpoints": "${{ vars.AGENT_FIX_ALLOWED_ENDPOINTS }}",
+    }
+    if inputs.keys() != fixed_inputs.keys() | {"issue-file", "output-dir", "agent-timeout"} or any(
+        inputs[key] != value for key, value in fixed_inputs.items()
+    ):
+        return False
+    timeout = inputs["agent-timeout"]
+    return (
+        isinstance(timeout, int)
+        and not isinstance(timeout, bool)
+        and 0 < timeout <= 1500
+        and isinstance(inputs["issue-file"], str)
+        and bool(inputs["issue-file"])
+        and isinstance(inputs["output-dir"], str)
+        and bool(inputs["output-dir"])
+    )
+
+
 def _target_unsafe(
     job: dict,
     workflow: dict,
@@ -410,7 +636,9 @@ def _target_unsafe(
     steps = _steps(job)
     if not steps or "container" in job or "services" in job:
         return True
-    return any(not _safe_action(step) for step in steps)
+    return not _role_keys_scoped(job, workflow) or any(
+        not _safe_target_action(step, steps[:index]) for index, step in enumerate(steps)
+    )
 
 
 def _downstream_unsafe(
@@ -544,7 +772,13 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
                 if "id-token" in writes:
                     rules.add("id-token")
             if is_target and _target_unsafe(job, workflow, writes, grants):
-                rules.add("pull_request_target")
+                rules.add(
+                    FIX_RULE
+                    if not is_reachable
+                    and not is_downstream
+                    and _template_fix_propose(name, job, workflow, ctx)
+                    else "pull_request_target"
+                )
             environment = job.get("environment")
             if isinstance(environment, dict):
                 environment = environment.get("name")
@@ -599,8 +833,20 @@ def analyze(workflows: dict[str, object], ctx: PreflightContext) -> list[Exposur
         "Use the logged fix.accept_ci_exposure override to accept this exposure.",
         "agent-apply": "Push or pull request workflow declares agent-apply.",
         "reusable_workflow": "Reusable caller may expose privileged credentials.",
+        FIX_RULE: "Canonical template fix job accepts exposure of AGENT_FIX_KEY.",
     }
     return [
-        Exposure(path, name, rule, details[rule].format(job=name))
+        Exposure(
+            path,
+            name,
+            rule,
+            details[rule].format(job=name),
+            tuple(
+                sorted(
+                    _secret_names(parsed[path]["jobs"][name])
+                    | _secret_names(parsed[path].get("env"))
+                )
+            ),
+        )
         for path, name, rule in sorted(findings)
     ]

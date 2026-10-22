@@ -68,8 +68,6 @@ jobs:
           gateway-url: ${{ vars.AGENT_GATEWAY_URL }}
           gateway-kind: ${{ vars.AGENT_GATEWAY_KIND }}
           model: ${{ vars.AGENT_REVIEW_MODEL }}
-        env:
-          LLM_API_KEY: ${{ secrets.AGENT_REVIEW_KEY }}
       - name: Propose review
         if: needs.agent-review-gate.outputs.reason != 'agent-off'
         id: propose

@@ -1,0 +1,81 @@
+name: Agent fix fixture
+on:
+  issue_comment:
+    types: [created]
+permissions: {contents: read}
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      issue: ${{ steps.gate.outputs.issue }}
+      base_sha: ${{ steps.gate.outputs.base_sha }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+      head_ref: ${{ steps.gate.outputs.head_ref }}
+    steps:
+      - id: gate
+        uses: btli/agent-repo-template/actions/gate@bbeaff10b3b8f381c92b708e4fa07aeb93d86970 # v0.0.0
+        with:
+          workflow: fix
+          enabled: ${{ vars.AGENTS_ENABLED }}
+          bot-login: ${{ vars.AGENT_BOT_LOGIN }}
+  propose:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: agent-propose-fix
+    permissions: {contents: read}
+    concurrency:
+      group: agent-fix-propose-${{ needs.gate.outputs.issue }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout fix policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: policy
+          persist-credentials: false
+      - name: Checkout fix work
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: work
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download gate context
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: agent-fix-context-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-fix/context
+      - name: Set up repository agent
+        uses: btli/agent-repo-template/actions/setup@bbeaff10b3b8f381c92b708e4fa07aeb93d86970 # v0.0.0
+        with:
+          gateway-url: ${{ vars.AGENT_GATEWAY_URL }}
+          gateway-kind: ${{ vars.AGENT_GATEWAY_KIND }}
+          model: ${{ vars.AGENT_FIX_MODEL }}
+          api-key-env: AGENT_FIX_KEY
+      - name: Propose fix
+        uses: btli/agent-repo-template/actions/fix-agent@bbeaff10b3b8f381c92b708e4fa07aeb93d86970 # v0.0.0
+        with:
+          work-path: work
+          policy-path: policy
+          base-sha: ${{ needs.gate.outputs.base_sha }}
+          feedback-head-sha: ${{ needs.gate.outputs.head_sha }}
+          feedback-head-ref: ${{ needs.gate.outputs.head_ref }}
+          api-key-env: AGENT_FIX_KEY
+          agent-timeout: 1500
+          allowed-endpoints: ${{ vars.AGENT_FIX_ALLOWED_ENDPOINTS }}
+          issue-file: ${{ runner.temp }}/agent-fix/context/issue.txt
+          output-dir: ${{ runner.temp }}/agent-fix/proposal
+        env:
+          AGENT_FIX_KEY: ${{ secrets.AGENT_FIX_KEY }}
+      - name: Share fix proposal
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-fix-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/agent-fix/proposal/fix.json
+            ${{ runner.temp }}/agent-fix/proposal/fix.patch
+          if-no-files-found: error
+          retention-days: 1
