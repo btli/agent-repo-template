@@ -1096,6 +1096,19 @@ def fix_workflow():
     return load_yaml(FIXTURES / "template_fix_propose.yml")
 
 
+def target_workflow(action, inputs):
+    return {
+        "on": "issue_comment",
+        "permissions": {"contents": "write"},
+        "jobs": {
+            "check": {
+                "runs-on": "ubuntu-24.04",
+                "steps": [{"uses": f"{action}@{TEMPLATE_REF}", "with": inputs}],
+            }
+        },
+    }
+
+
 def scan_template(workflow, template_ref=TEMPLATE_REF):
     module = implementation()
     return module.analyze(
@@ -1131,16 +1144,7 @@ def scan_template(workflow, template_ref=TEMPLATE_REF):
 )
 def test_target_template_allowlist(action, inputs):
     module = implementation()
-    workflow = {
-        "on": "issue_comment",
-        "permissions": {"contents": "write"},
-        "jobs": {
-            "check": {
-                "runs-on": "ubuntu-24.04",
-                "steps": [{"uses": f"{action}@{TEMPLATE_REF}", "with": inputs}],
-            }
-        },
-    }
+    workflow = target_workflow(action, inputs)
     assert module.analyze({"ci.yml": workflow}, module.PreflightContext("main")) == []
     workflow["jobs"]["check"]["steps"].append({"run": "echo ready"})
     assert [
@@ -1170,16 +1174,7 @@ def test_target_template_allowlist(action, inputs):
 )
 def test_target_allowlist_rejects_overrides(action, inputs):
     assert [item.rule for item in scan_template(fix_workflow())] == ["template-fix-propose"]
-    workflow = {
-        "on": "issue_comment",
-        "permissions": {"contents": "write"},
-        "jobs": {
-            "check": {
-                "runs-on": "ubuntu-24.04",
-                "steps": [{"uses": f"{action}@{TEMPLATE_REF}", "with": inputs}],
-            }
-        },
-    }
+    workflow = target_workflow(action, inputs)
     assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
 
 
