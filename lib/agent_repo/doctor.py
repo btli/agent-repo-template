@@ -6,11 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_repo.bootstrap import (
+    APP_IDENTITY_UNKNOWN,
     ENVIRONMENTS,
     MODEL_VARIABLES,
     RULESET_NAMES,
     SHA,
     UPSTREAM,
+    App,
     BootstrapError,
     Gh,
     GhError,
@@ -19,13 +21,13 @@ from agent_repo.bootstrap import (
     _quote,
     environment_is_safe,
     file_content,
-    find_installation,
     load_yaml_bytes,
     read_blob,
     read_environments,
     read_rulesets,
     read_target,
     read_variables,
+    resolve_app,
     resolve_tag,
     ruleset_body,
     ruleset_shape,
@@ -38,9 +40,14 @@ from agent_repo.preflight import FIX_RULE, HOSTED_RUNNERS, PreflightContext, ana
 
 # The fix-agent feedback isolation landed in this upstream commit; older fix-agent pins lack it.
 T10B_MERGE = "43c2d3b58ce3ebccd38d9ee2a05464966b6a94da"
-UNSAFE_SHARED_APP = (
-    "UNSAFE ON SHARED APP: consumer CI can expose agent credentials and the GitHub App "
-    "installation reaches more than this repository."
+UNSAFE_SHARED_APP_CONFIRMED = (
+    "UNSAFE ON SHARED APP: consumer CI can expose agent credentials and the GitHub App is "
+    "installed on every repository of this organization (repository_selection=all)."
+)
+UNSAFE_SHARED_APP_ASSUMED = (
+    "UNSAFE ON SHARED APP: consumer CI can expose agent credentials and the GitHub App's reach "
+    "cannot be read with maintainer credentials, so it is assumed to reach other repositories; "
+    "fix apply re-checks the installation with the App token before any push."
 )
 RULESETS_UNSAFE = (
     "UNSAFE: rulesets are unavailable, so nothing stops the GitHub App from writing non-agent refs."
@@ -216,6 +223,23 @@ def _runners(gh: Gh, repo: str, report: Report) -> None:
         report.warn(f"Self-hosted runners are registered with labels: {', '.join(sorted(labels))}.")
 
 
+def org_shares_app(gh: Gh, target: Target, app: App | None) -> bool:
+    """Only an org listing of this App with repository_selection=all confirms the sharing."""
+    if app is None or target.owner_type != "Organization":
+        return False
+    owner = target.repo.split("/", 1)[0]
+    try:
+        installations = gh.items(
+            f"orgs/{_quote(owner)}/installations?per_page=100", "installations"
+        )
+    except GhError:
+        return False
+    return any(
+        _field(item, "app_slug") == app.slug and _field(item, "repository_selection") == "all"
+        for item in installations
+    )
+
+
 def run_doctor(gh: Gh, repo: str, app_slug: str | None = None) -> Report:
     report = Report()
     target = read_target(gh, repo)
@@ -274,23 +298,21 @@ def run_doctor(gh: Gh, repo: str, app_slug: str | None = None) -> Report:
         report.warn("The default workflow token can write; make it read-only in the settings.")
 
     try:
-        installation = find_installation(gh, repo, app_slug)
+        app = resolve_app(gh, app_slug)
     except BootstrapError as exc:
         report.error(str(exc))
-        installation = None
-    bot = variables.get("AGENT_BOT_LOGIN")
-    if installation is None:
-        report.error("No GitHub App installation reaches this repository.")
+        app = None
     else:
-        report.ok(
-            f"GitHub App {installation.slug} is installed "
-            f"(repository_selection={installation.selection})."
-        )
-        bot = f"{installation.slug}[bot]"
+        if app is None:
+            report.error(APP_IDENTITY_UNKNOWN)
+    bot = variables.get("AGENT_BOT_LOGIN")
+    if app is not None:
+        report.ok(f"GitHub App {app.slug} has client id {app.client_id}.")
+        bot = f"{app.slug}[bot]"
         if variables.get("AGENT_BOT_LOGIN") not in (None, bot):
-            report.error(f"AGENT_BOT_LOGIN must be {bot} for the installed GitHub App.")
-        if variables.get("AGENT_APP_CLIENT_ID") not in (None, installation.client_id):
-            report.error("AGENT_APP_CLIENT_ID does not match the installed GitHub App.")
+            report.error(f"AGENT_BOT_LOGIN must be {bot} for the configured GitHub App.")
+        if variables.get("AGENT_APP_CLIENT_ID") not in (None, app.client_id):
+            report.error("AGENT_APP_CLIENT_ID does not match the configured GitHub App.")
 
     try:
         rulesets = read_rulesets(gh, repo)
@@ -347,8 +369,12 @@ def run_doctor(gh: Gh, repo: str, app_slug: str | None = None) -> Report:
         report.ok("Consumer CI exposes no agent credentials outside accepted template jobs.")
     elif _field(raw, "fix", "accept_ci_exposure") is True:
         report.warn("fix.accept_ci_exposure is true; it never clears UNSAFE ON SHARED APP.")
-    if ordinary and installation is not None and installation.reaches_other_repositories(repo):
-        report.error(UNSAFE_SHARED_APP, prefix="")
+    # Maintainer credentials never prove the App reaches only this repository, so unknown is shared.
+    if ordinary:
+        confirmed = org_shares_app(gh, target, app)
+        report.error(
+            UNSAFE_SHARED_APP_CONFIRMED if confirmed else UNSAFE_SHARED_APP_ASSUMED, prefix=""
+        )
     return report
 
 

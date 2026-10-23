@@ -11,10 +11,20 @@ state = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(state)
 
 REPO, TARGET, UPSTREAM, PIN = state.REPO, state.TARGET, state.UPSTREAM, state.PIN
-UNSAFE_SHARED_APP = (
-    "UNSAFE ON SHARED APP: consumer CI can expose agent credentials and the GitHub App "
-    "installation reaches more than this repository."
+CONFIRMED = (
+    "UNSAFE ON SHARED APP: consumer CI can expose agent credentials and the GitHub App is "
+    "installed on every repository of this organization (repository_selection=all)."
 )
+ASSUMED = (
+    "UNSAFE ON SHARED APP: consumer CI can expose agent credentials and the GitHub App's reach "
+    "cannot be read with maintainer credentials, so it is assumed to reach other repositories; "
+    "fix apply re-checks the installation with the App token before any push."
+)
+APP_IDENTITY_UNKNOWN = (
+    "ERROR: GitHub App identity unknown: pass --app-slug; it is resolved through the public "
+    "GET /apps/{app_slug}."
+)
+ORG_INSTALLATIONS = "GET orgs/your-org/installations"
 EXPOSED_CI = b"""name: CI
 on: pull_request
 permissions:
@@ -51,8 +61,21 @@ def _fix_workflow(pin: str = PIN) -> bytes:
 
 def _check(tmp_path, responses: dict):
     fake = state.FakeGitHub(tmp_path, responses)
-    result = fake.run("--check", "--repo", REPO)
+    result = fake.run("--check", "--repo", REPO, "--app-slug", "example-agent")
     return fake, result
+
+
+def _org_listing(selection: str, slug: str = "example-agent") -> dict:
+    installation = {
+        "app_slug": slug,
+        "client_id": "Iv23liExample",
+        "repository_selection": selection,
+    }
+    return {"json": {"total_count": 1, "installations": [installation]}}
+
+
+def _installation_calls(fake) -> list[str]:
+    return [call["endpoint"] for call in fake.calls() if "installations" in call["endpoint"]]
 
 
 def test_a_bootstrapped_repository_passes_check_with_read_calls_only(tmp_path):
@@ -67,10 +90,16 @@ def test_a_bootstrapped_repository_passes_check_with_read_calls_only(tmp_path):
     assert f"{TARGET}/environments/agent-apply/secrets" in endpoints
     assert f"{UPSTREAM}/git/ref/tags/{state.VERSION}" in endpoints
 
-    direct = fake.run(
-        command=[sys.executable, str(ROOT / "lib/agent_repo_cli.py"), "doctor", "--repo", REPO]
-    )
+    assert "OK: GitHub App example-agent has client id Iv23liExample." in result.stdout
+    assert _installation_calls(fake) == []
+
+    doctor = [sys.executable, str(ROOT / "lib/agent_repo_cli.py"), "doctor", "--repo", REPO]
+    direct = fake.run(command=[*doctor, "--app-slug", "example-agent"])
     assert (direct.returncode, direct.stdout) == (0, result.stdout)
+    anonymous = fake.run(command=doctor)
+    assert anonymous.returncode == 1
+    assert APP_IDENTITY_UNKNOWN in anonymous.stdout.splitlines()
+    assert all(call["method"] == "GET" for call in fake.calls())
 
 
 def _drift(responses: dict, change: str) -> None:
@@ -204,7 +233,7 @@ def _drift(responses: dict, change: str) -> None:
         ("endpoints", "ERROR: Missing variable AGENT_FIX_ALLOWED_ENDPOINTS."),
         (
             "bot-login",
-            "ERROR: AGENT_BOT_LOGIN must be example-agent[bot] for the installed GitHub App.",
+            "ERROR: AGENT_BOT_LOGIN must be example-agent[bot] for the configured GitHub App.",
         ),
         (
             "tampered-tag",
@@ -260,35 +289,45 @@ def test_llm_only_mode_needs_no_system_one_key_and_warns_about_close(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("selection", "repositories", "accept", "shared"),
+    ("owner", "listing", "exposed", "accept", "expected"),
     [
-        ("all", [REPO], False, True),
-        ("selected", [REPO, "your-org/other"], False, True),
-        ("selected", [REPO], False, False),
-        ("all", [REPO], True, True),
+        ("User", None, True, False, ASSUMED),
+        ("Organization", _org_listing("all"), True, False, CONFIRMED),
+        ("Organization", _org_listing("selected"), True, False, ASSUMED),
+        ("Organization", {"status": 403}, True, False, ASSUMED),
+        ("Organization", _org_listing("all", "other-app"), True, False, ASSUMED),
+        ("Organization", _org_listing("all"), False, False, None),
+        ("User", None, True, True, ASSUMED),
     ],
 )
-def test_unsafe_on_shared_app_needs_an_exposure_and_an_app_reaching_other_repos(
-    tmp_path, selection, repositories, accept, shared
+def test_unknown_app_reach_is_shared_whenever_consumer_ci_exposes_credentials(
+    tmp_path, owner, listing, exposed, accept, expected
 ):
     config = state.consumer_files()[".agents/config.yml"]
     if accept:
         config = config.replace(b"accept_ci_exposure: false", b"accept_ci_exposure: true")
-    files = _files(**{".github/workflows/ci.yml": EXPOSED_CI, ".agents/config.yml": config})
-    responses = _with_files(state.healthy_target(), files)
-    responses["GET user/installations"]["json"]["installations"][0]["repository_selection"] = (
-        selection
-    )
-    responses["GET user/installations/99/repositories"] = {
-        "json": {"repositories": [{"full_name": name} for name in repositories]}
-    }
+    changes = {".agents/config.yml": config}
+    if exposed:
+        changes[".github/workflows/ci.yml"] = EXPOSED_CI
+    responses = _with_files(state.healthy_target(), _files(**changes))
+    responses[f"GET {TARGET}"]["json"]["owner"]["type"] = owner
+    if listing is not None:
+        responses[ORG_INSTALLATIONS] = listing
 
-    _, result = _check(tmp_path, responses)
+    fake, result = _check(tmp_path, responses)
 
     lines = result.stdout.splitlines()
-    assert result.returncode == 1
-    assert "ERROR: CI exposure: ci.yml job deploy rule secrets reaches DEPLOY_TOKEN." in lines
-    assert (UNSAFE_SHARED_APP in lines) is shared
+    assert [line for line in lines if line.startswith("UNSAFE")] == ([expected] if expected else [])
+    assert all(call["method"] == "GET" for call in fake.calls())
+    if owner == "User" or not exposed:
+        assert _installation_calls(fake) == []
+    else:
+        assert _installation_calls(fake) == ["orgs/your-org/installations?per_page=100"]
+    if exposed:
+        assert result.returncode == 1
+        assert "ERROR: CI exposure: ci.yml job deploy rule secrets reaches DEPLOY_TOKEN." in lines
+    else:
+        assert result.returncode == 0, result.stdout
     if accept:
         assert (
             "WARN: fix.accept_ci_exposure is true; it never clears UNSAFE ON SHARED APP." in lines
@@ -298,7 +337,8 @@ def test_unsafe_on_shared_app_needs_an_exposure_and_an_app_reaching_other_repos(
 def test_the_accepted_template_fix_exposure_is_not_an_ordinary_exposure(tmp_path):
     files = _files(**{".github/workflows/agent-fix.yml": _fix_workflow()})
     responses = _with_files(state.healthy_target(), files)
-    responses["GET user/installations"]["json"]["installations"][0]["repository_selection"] = "all"
+    responses[f"GET {TARGET}"]["json"]["owner"]["type"] = "Organization"
+    responses[ORG_INSTALLATIONS] = _org_listing("all")
 
     _, result = _check(tmp_path, responses)
 

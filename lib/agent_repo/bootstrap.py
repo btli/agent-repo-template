@@ -69,6 +69,11 @@ RULESETS_UNAVAILABLE = (
     "Rulesets are unavailable for this repository; bootstrap cannot protect non-agent refs."
 )
 NOT_ON_MAIN = "Template commit is not on upstream main."
+APP_IDENTITY_UNKNOWN = (
+    "GitHub App identity unknown: pass --app-slug; it is resolved through the public "
+    "GET /apps/{app_slug}."
+)
+APP_NOT_FOUND = "The --app-slug GitHub App was not found through GET /apps/{app_slug}."
 
 
 class BootstrapError(Exception):
@@ -265,6 +270,7 @@ class Target:
     tree_sha: str
     files: dict[str, str]
     admin: bool
+    owner_type: object
 
 
 def read_target(gh: Gh, repo: str) -> Target:
@@ -274,7 +280,8 @@ def read_target(gh: Gh, repo: str) -> Target:
         raise BootstrapError("Cannot read the target repository.")
     head = _sha(_field(gh.get(f"repos/{repo}/git/ref/heads/{quote(branch)}"), "object", "sha"))
     tree_sha, files = read_tree(gh, repo, head)
-    return Target(repo, branch, head, tree_sha, files, _field(info, "permissions", "admin") is True)
+    admin = _field(info, "permissions", "admin") is True
+    return Target(repo, branch, head, tree_sha, files, admin, _field(info, "owner", "type"))
 
 
 def file_content(gh: Gh, target: Target, path: str) -> bytes | None:
@@ -283,51 +290,25 @@ def file_content(gh: Gh, target: Target, path: str) -> bytes | None:
 
 
 @dataclass(frozen=True)
-class Installation:
-    id: int
+class App:
     slug: str
     client_id: str
-    selection: str
-    repositories: tuple[str, ...]
-
-    def reaches_other_repositories(self, repo: str) -> bool:
-        return self.selection == "all" or any(
-            name.casefold() != repo.casefold() for name in self.repositories
-        )
 
 
-def find_installation(gh: Gh, repo: str, slug: str | None = None) -> Installation | None:
-    owner = repo.split("/", 1)[0].casefold()
-    found = []
-    for item in gh.items("user/installations?per_page=100", "installations"):
-        login = _field(item, "account", "login")
-        if not isinstance(login, str) or login.casefold() != owner:
-            continue
-        if slug is not None and item.get("app_slug") != slug:
-            continue
-        if not isinstance(item.get("id"), int) or not isinstance(item.get("app_slug"), str):
-            raise BootstrapError("GitHub returned an invalid App installation.")
-        repositories = tuple(
-            str(entry.get("full_name"))
-            for entry in gh.items(
-                f"user/installations/{item['id']}/repositories?per_page=100", "repositories"
-            )
-        )
-        if item.get("repository_selection") == "all" or repo.casefold() in {
-            name.casefold() for name in repositories
-        }:
-            found.append(
-                Installation(
-                    item["id"],
-                    item["app_slug"],
-                    str(item.get("client_id") or ""),
-                    str(item.get("repository_selection")),
-                    repositories,
-                )
-            )
-    if len(found) > 1:
-        raise BootstrapError("Several GitHub Apps reach this repository; pass --app-slug.")
-    return found[0] if found else None
+def resolve_app(gh: Gh, slug: str | None) -> App | None:
+    """Resolve --app-slug through the public apps API; installations are never listed."""
+    if slug is None:
+        return None
+    try:
+        data = gh.get(f"apps/{_quote(slug)}")
+    except GhError:
+        raise BootstrapError(APP_NOT_FOUND) from None
+    found, client_id = _field(data, "slug"), _field(data, "client_id")
+    if not isinstance(found, str) or found.casefold() != slug.casefold():
+        raise BootstrapError(APP_NOT_FOUND)
+    if not isinstance(client_id, str) or not client_id:
+        raise BootstrapError(APP_NOT_FOUND)
+    return App(found, client_id)
 
 
 def read_environments(gh: Gh, repo: str) -> dict[str, list | None]:
@@ -764,7 +745,14 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
     if not isinstance(labels, list) or not all(isinstance(name, str) for name in labels):
         raise BootstrapError(".agents/labels.yml must hold a labels list.")
     llm_only = config.get("system_one") is None
-    installation = find_installation(gh, repo, options.app_slug)
+    try:
+        app = resolve_app(gh, options.app_slug)
+    except BootstrapError as exc:
+        plan.errors.append(str(exc))
+        app = None
+    else:
+        if app is None:
+            plan.errors.append(APP_IDENTITY_UNKNOWN)
     environments = read_environments(gh, repo)
     existing = read_variables(gh, repo)
     readonly = token_readonly(gh, repo)
@@ -776,18 +764,10 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
     wanted: dict[str, str] = {}
     if "AGENTS_ENABLED" not in existing:
         wanted["AGENTS_ENABLED"] = "true"
-    if installation is None:
-        owner = repo.split("/", 1)[0]
-        plan.errors.append(
-            "No GitHub App installation reaches this repository; register one with "
-            f"./bootstrap.sh app-link --owner {owner}, install it, then rerun."
-        )
-    else:
-        wanted["AGENT_BOT_LOGIN"] = f"{installation.slug}[bot]"
-        wanted["AGENT_APP_CLIENT_ID"] = installation.client_id
-        plan.lines.append(
-            f"GitHub App {installation.slug}: repository_selection={installation.selection}."
-        )
+    if app is not None:
+        wanted["AGENT_BOT_LOGIN"] = f"{app.slug}[bot]"
+        wanted["AGENT_APP_CLIENT_ID"] = app.client_id
+        plan.lines.append(f"GitHub App {app.slug} has client id {app.client_id}.")
     kind = _gateway("AGENT_GATEWAY_KIND", "--gateway-kind", options.gateway_kind, existing, plan)
     url = _gateway("AGENT_GATEWAY_URL", "--gateway-url", options.gateway_url, existing, plan)
     if kind is not None and kind not in {"databricks", "litellm"}:

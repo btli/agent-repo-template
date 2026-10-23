@@ -135,6 +135,7 @@ def empty_target() -> dict:
                 "full_name": REPO,
                 "default_branch": "main",
                 "permissions": {"admin": True},
+                "owner": {"login": "your-org", "type": "User"},
             }
         },
         f"GET {TARGET}/git/ref/heads/main": {"json": {"object": {"type": "commit", "sha": BASE}}},
@@ -151,20 +152,13 @@ def empty_target() -> dict:
         f"GET {TARGET}/rulesets": {"json": []},
         f"GET {TARGET}/actions/secrets": {"json": {"secrets": []}},
         f"GET {TARGET}/actions/runners": {"json": {"runners": []}},
-        "GET user/installations": {
+        "GET apps/example-agent": {
             "json": {
-                "installations": [
-                    {
-                        "id": 99,
-                        "app_slug": "example-agent",
-                        "client_id": "Iv23liExample",
-                        "repository_selection": "selected",
-                        "account": {"login": "your-org"},
-                    }
-                ]
+                "slug": "example-agent",
+                "client_id": "Iv23liExample",
+                "owner": {"login": "your-org"},
             }
         },
-        "GET user/installations/99/repositories": {"json": {"repositories": [{"full_name": REPO}]}},
     }
     _upstream(state)
     set_files(state, {"README.md": b"# Example\n", "uv.lock": b"version = 1\n"})

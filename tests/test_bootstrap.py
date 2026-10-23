@@ -19,7 +19,12 @@ REPO, TARGET, UPSTREAM = state.REPO, state.TARGET, state.UPSTREAM
 PIN, VERSION = state.PIN, state.VERSION
 GATEWAY = ("--gateway-url", state.GATEWAY_URL, "--gateway-kind", "databricks")
 SYSTEM_ONE = ("--system-one-url", "https://systemone.example.com")
-INSTALL = ("--repo", REPO, "--ref", VERSION, *GATEWAY, *SYSTEM_ONE)
+APP = ("--app-slug", "example-agent")
+INSTALL = ("--repo", REPO, "--ref", VERSION, *GATEWAY, *SYSTEM_ONE, *APP)
+APP_IDENTITY_UNKNOWN = (
+    "GitHub App identity unknown: pass --app-slug; it is resolved through the public "
+    "GET /apps/{app_slug}."
+)
 BRANCH = f"bootstrap/agent-repo-template-{VERSION}"
 
 
@@ -60,6 +65,28 @@ def test_plan_previews_every_mutation_with_read_calls_only(tmp_path):
     assert f"gh secret set AGENT_TRIAGE_KEY --repo {REPO} --env agent-propose-triage" in output
     assert f"gh secret set AGENT_SYSTEM_ONE_KEY --repo {REPO} --env agent-propose-triage" in output
     assert not (fake.home / ".agent-repo-template").exists()
+    assert "GET apps/example-agent" in _endpoints(fake.calls())
+    assert not [call for call in fake.calls() if "installations" in call["endpoint"]]
+
+
+def test_app_identity_comes_only_from_app_slug_and_its_absence_refuses_every_write(tmp_path):
+    responses = state.empty_target()
+    responses["GET apps/missing-agent"] = {"status": 404}
+    fake = state.FakeGitHub(tmp_path, responses)
+    without = INSTALL[: -len(APP)]
+    missing = (*without, "--app-slug", "missing-agent")
+
+    for arguments, message in (
+        (("--plan", *without), APP_IDENTITY_UNKNOWN),
+        (without, APP_IDENTITY_UNKNOWN),
+        (missing, "The --app-slug GitHub App was not found through GET /apps/{app_slug}."),
+    ):
+        result = fake.run(*arguments)
+
+        assert result.returncode == 1
+        assert f"ERROR: {message}" in result.stdout.splitlines()
+        assert fake.writes() == []
+        assert not [call for call in fake.calls() if "installations" in call["endpoint"]]
 
 
 def test_install_lands_files_on_a_draft_pr_branch_and_journals_every_write(tmp_path):
@@ -237,7 +264,7 @@ def test_a_commit_off_upstream_main_is_refused(tmp_path, pin):
     }
     fake = state.FakeGitHub(tmp_path, responses)
 
-    result = fake.run("--repo", REPO, *pin, *GATEWAY, *SYSTEM_ONE)
+    result = fake.run("--repo", REPO, *pin, *GATEWAY, *SYSTEM_ONE, *APP)
 
     assert result.returncode == 1
     assert "Template commit is not on upstream main." in result.stdout
@@ -252,7 +279,7 @@ def test_candidate_installs_a_commit_on_upstream_main_with_its_version_comment(t
     fake = state.FakeGitHub(tmp_path, responses)
 
     result = fake.run(
-        "--repo", REPO, "--candidate", PIN, "--version", "v0.0.0-dev", *GATEWAY, *SYSTEM_ONE
+        "--repo", REPO, "--candidate", PIN, "--version", "v0.0.0-dev", *GATEWAY, *SYSTEM_ONE, *APP
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
