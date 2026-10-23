@@ -75,16 +75,17 @@ def _run(
             str(checkout),
         )
         _git(checkout, "checkout", "--quiet", "--detach", red_base or commit)
+        required = test_files(ids)
         if red_base:
-            files = set(test_files(ids))
-            for path in tuple(files):
+            files = set(required)
+            for path in required:
                 for parent in (PurePosixPath(path).parent, *PurePosixPath(path).parents):
                     files.add(str(parent / "conftest.py"))
             for path in sorted(files):
-                _copy_test(repo, commit, path, checkout, required=path in test_files(ids))
+                _copy_test(repo, commit, path, checkout, required=path in required)
         else:
             # Validate the same files for the green run before any head code executes.
-            for path in test_files(ids):
+            for path in required:
                 _copy_test(repo, commit, path, checkout, required=True)
         report = scratch / "junit.xml"
         environment = git_environment()
