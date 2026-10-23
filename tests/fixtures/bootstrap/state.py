@@ -70,6 +70,32 @@ SECRETS = {
 }
 
 
+CUSTOM_POLICY = {"protected_branches": False, "custom_branch_policies": True}
+# Deployment patterns by environment name: the first group excludes every agent and pull ref.
+SAFE_PATTERNS = {"production": "main", "release": "release/*", "heads-main": "refs/heads/main"}
+UNSAFE_PATTERNS = {
+    "staging": "*",
+    "preview": "pull/*/merge",
+    "agentish": "agent/*",
+    "fix-wide": "agent/fix-??*",
+    "fix-range": "agent/fix-[2-9]*",
+    "pull-wide": "pull/??*/merge",
+    "fix-exact": "agent/fix-2",
+    "pull-exact": "pull/2/merge",
+    "a-star": "a*",
+    "brace": "{agent,x}/fix-*",
+}
+
+
+def add_environments(state: dict, patterns: dict[str, str]) -> None:
+    listing = state[f"GET {TARGET}/environments"]["json"]["environments"]
+    for name, pattern in patterns.items():
+        listing.append({"name": name, "deployment_branch_policy": dict(CUSTOM_POLICY)})
+        state[f"GET {TARGET}/environments/{name}/deployment-branch-policies"] = {
+            "json": {"branch_policies": [{"id": 1, "name": pattern, "type": "branch"}]}
+        }
+
+
 def blob_sha(data: bytes) -> str:
     return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
 
@@ -152,6 +178,8 @@ def empty_target() -> dict:
         f"GET {TARGET}/rulesets": {"json": []},
         f"GET {TARGET}/actions/secrets": {"json": {"secrets": []}},
         f"GET {TARGET}/actions/runners": {"json": {"runners": []}},
+        # A private App, the usual adopter case: GET /apps/{slug} answers 404 even for its owner.
+        "GET apps/example-agent": {"status": 404},
         "GET users/example-agent%5Bbot%5D": {
             "json": {"login": "example-agent[bot]", "type": "Bot"}
         },

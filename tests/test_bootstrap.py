@@ -25,6 +25,10 @@ APP_IDENTITY_UNKNOWN = (
     "GitHub App identity unknown: pass --app-slug and --app-client-id from the App's settings page."
 )
 BRANCH = f"bootstrap/agent-repo-template-{VERSION}"
+APP_LOOKUP_FAILED = (
+    "GET /apps/{app_slug} failed with an error other than a private App's 404; "
+    "bootstrap cannot cross-check the App."
+)
 
 
 def _tree_files(fake) -> dict[str, str]:
@@ -111,6 +115,14 @@ def test_app_identity_needs_both_flags_and_a_bot_account_or_refuses_every_write(
     responses["GET apps/example-agent"]["json"]["client_id"] = "Iv23liExample"
     assert fake.run("--plan", *INSTALL).returncode == 0
     assert fake.writes() == []
+
+    # Only a private App's 404 is excused; any other apps lookup failure stops before any write.
+    for status, arguments in ((403, ("--plan", *INSTALL)), (502, INSTALL)):
+        responses["GET apps/example-agent"] = {"status": status}
+        failed = fake.run(*arguments)
+        assert failed.returncode == 1
+        assert f"ERROR: {APP_LOOKUP_FAILED}" in failed.stdout.splitlines()
+        assert fake.writes() == []
 
 
 def test_install_lands_files_on_a_draft_pr_branch_and_journals_every_write(tmp_path):
@@ -200,6 +212,10 @@ def test_existing_files_are_kept_without_force_and_replaced_with_force(tmp_path)
 
 def test_partial_failure_prints_rollback_and_a_rerun_resumes(tmp_path):
     responses = state.empty_target()
+    protected = {"protected_branches": True, "custom_branch_policies": False}
+    responses[f"GET {TARGET}/environments"]["json"]["environments"] = [
+        {"name": "agent-apply", "deployment_branch_policy": protected}
+    ]
     responses[f"POST {TARGET}/rulesets"] = {"status": 422}
     fake = state.FakeGitHub(tmp_path, responses)
 
@@ -210,7 +226,12 @@ def test_partial_failure_prints_rollback_and_a_rerun_resumes(tmp_path):
     assert "Bootstrap stopped: create ruleset agent-repo-template branches failed." in output
     rollback = output.split("Rollback commands, newest first:", 1)[1]
     assert f"gh api -X DELETE {TARGET}/labels/type%3Abug" in rollback
-    assert f"gh api -X DELETE {TARGET}/environments/agent-apply" in rollback
+    apply = f"{TARGET}/environments/agent-apply"
+    restore = json.dumps({"deployment_branch_policy": protected})
+    assert f"echo '{restore}' | gh api -X PUT {apply} --input -" in rollback
+    assert rollback.index(f"DELETE {apply}/deployment-branch-policies/") < rollback.index(restore)
+    assert f"gh api -X DELETE {apply}\n" not in rollback
+    assert f"gh api -X DELETE {TARGET}/environments/agent-propose-fix" in rollback
     assert f"gh api -X DELETE {TARGET}/actions/variables/AGENT_FIX_MODEL" in rollback
     assert rollback.index("AGENT_FIX_MODEL") < rollback.index("type%3Abug")
     assert not [call for call in fake.writes() if call["endpoint"] == f"{TARGET}/pulls"]
@@ -336,19 +357,63 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
     assert "update variable AGENT_BOT_LOGIN" in result.stdout
 
 
-def test_unavailable_rulesets_stop_bootstrap_before_any_write(tmp_path):
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            "rulesets-unavailable",
+            "Rulesets are unavailable for this repository; "
+            "bootstrap cannot protect non-agent refs.",
+        ),
+        ("not-admin", "Bootstrap needs repository admin access."),
+        (
+            "extra-policy",
+            "Environment agent-apply has deployment policies other than main; "
+            "remove them and rerun.",
+        ),
+        (
+            "branch-content",
+            f"Branch {BRANCH} already exists with other content; merge or delete it, then rerun.",
+        ),
+        (
+            "empty-config",
+            ".agents/config.yml is not a valid agent configuration; fix it or pass --force.",
+        ),
+        ("empty-labels", ".agents/labels.yml must hold a labels list."),
+    ],
+)
+def test_bootstrap_stops_before_any_write(tmp_path, change, message):
     responses = state.empty_target()
-    responses[f"GET {TARGET}/rulesets"] = {"status": 403}
+    if change == "rulesets-unavailable":
+        responses[f"GET {TARGET}/rulesets"] = {"status": 403}
+    elif change == "not-admin":
+        responses[f"GET {TARGET}"]["json"]["permissions"]["admin"] = False
+    elif change == "extra-policy":
+        state.add_environments(responses, {"agent-apply": "main"})
+        policies = f"GET {TARGET}/environments/agent-apply/deployment-branch-policies"
+        extra = {"id": 2, "name": "release/*", "type": "branch"}
+        responses[policies]["json"]["branch_policies"].append(extra)
+    elif change == "branch-content":
+        head = "d" * 40
+        responses[f"GET {TARGET}/git/matching-refs/heads/{BRANCH}"] = {
+            "json": [{"ref": f"refs/heads/{BRANCH}", "object": {"sha": head}}]
+        }
+        responses[f"GET {TARGET}/git/trees/{head}"] = {
+            "json": {"sha": "e" * 40, "tree": [], "truncated": False}
+        }
+    else:
+        # A zero-byte retained file is validated as itself, never replaced by the default.
+        path = ".agents/config.yml" if change == "empty-config" else ".agents/labels.yml"
+        state.set_files(responses, {"README.md": b"# Example\n", path: b""})
     fake = state.FakeGitHub(tmp_path, responses)
 
-    result = fake.run(*INSTALL)
+    for arguments in (("--plan", *INSTALL), INSTALL):
+        result = fake.run(*arguments)
 
-    assert result.returncode == 1
-    assert (
-        "Rulesets are unavailable for this repository; bootstrap cannot protect non-agent refs."
-        in result.stdout
-    )
-    assert fake.writes() == []
+        assert result.returncode == 1
+        assert f"ERROR: {message}" in result.stdout.splitlines()
+        assert "Bootstrap made no changes." in result.stdout
+        assert fake.writes() == []
 
 
 def test_a_writable_default_token_is_reported_and_never_changed(tmp_path):
@@ -371,35 +436,17 @@ def test_a_writable_default_token_is_reported_and_never_changed(tmp_path):
 
 def test_safe_environments_need_a_policy_that_excludes_agent_and_pull_refs(tmp_path):
     responses = state.empty_target()
-    custom = {"protected_branches": False, "custom_branch_policies": True}
-    patterns = {
-        "production": "main",
-        "release": "release/*",
-        "staging": "*",
-        "preview": "pull/*/merge",
-        "agentish": "agent/*",
-    }
-    environments = [{"name": name, "deployment_branch_policy": custom} for name in patterns]
-    environments.append(
-        {
-            "name": "open",
-            "deployment_branch_policy": {
-                "protected_branches": True,
-                "custom_branch_policies": False,
-            },
-        }
+    state.add_environments(responses, {**state.SAFE_PATTERNS, **state.UNSAFE_PATTERNS})
+    protected = {"protected_branches": True, "custom_branch_policies": False}
+    responses[f"GET {TARGET}/environments"]["json"]["environments"].append(
+        {"name": "open", "deployment_branch_policy": protected}
     )
-    responses[f"GET {TARGET}/environments"] = {"json": {"environments": environments}}
-    for name, pattern in patterns.items():
-        responses[f"GET {TARGET}/environments/{name}/deployment-branch-policies"] = {
-            "json": {"branch_policies": [{"id": 1, "name": pattern, "type": "branch"}]}
-        }
     fake = state.FakeGitHub(tmp_path, responses)
 
     result = fake.run("--plan", *INSTALL)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    safe = sorted([*state.ENVIRONMENTS, "production", "release"])
+    safe = sorted([*state.ENVIRONMENTS, *state.SAFE_PATTERNS])
     assert (
         f"set variable AGENT_SAFE_ENVIRONMENTS = {json.dumps(chr(10).join(safe))}" in result.stdout
     )

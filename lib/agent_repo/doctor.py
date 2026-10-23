@@ -21,6 +21,7 @@ from agent_repo.bootstrap import (
     environment_is_safe,
     file_content,
     load_yaml_bytes,
+    model_values,
     read_blob,
     read_environments,
     read_rulesets,
@@ -31,6 +32,7 @@ from agent_repo.bootstrap import (
     ruleset_body,
     ruleset_shape,
     token_readonly,
+    valid_model,
     workflow_secrets,
 )
 from agent_repo.charter import lint_charter
@@ -63,6 +65,7 @@ REQUIRED_VARIABLES = (
     *MODEL_VARIABLES.values(),
     "AGENT_FIX_ALLOWED_ENDPOINTS",
 )
+VERIFIED_VARIABLES = ("AGENT_SAFE_ENVIRONMENTS", "AGENT_CI_DEFAULT_TOKEN_READONLY")
 FIX_WORKFLOW = ".github/workflows/agent-fix.yml"
 
 
@@ -286,7 +289,7 @@ def run_doctor(
             if name.casefold() not in existing:
                 report.error(f"Missing label {name}.")
 
-    environments = read_environments(gh, repo)
+    environments, _ = read_environments(gh, repo)
     for name in ENVIRONMENTS:
         if name not in environments:
             report.error(f"Missing environment {name}; rerun bootstrap.")
@@ -299,8 +302,17 @@ def run_doctor(
     for name in (*REQUIRED_VARIABLES, *(() if llm_only else ("AGENT_SYSTEM_ONE_URL",))):
         if name not in variables:
             report.error(f"Missing variable {name}.")
+    for name in VERIFIED_VARIABLES:
+        if name not in variables:
+            report.error(f"Missing variable {name}; rerun bootstrap to set it.")
     if variables.get("AGENTS_ENABLED", "true") != "true":
         report.warn("AGENTS_ENABLED is not true, so every agent workflow is off.")
+    if config is not None:
+        for error in model_values(raw)[1]:
+            report.error(error)
+    for name in MODEL_VARIABLES.values():
+        if name in variables and not valid_model(variables[name]):
+            report.error(f"Variable {name} is not an Anthropic-family gateway model id.")
     for role, name in MODEL_VARIABLES.items():
         if config is not None and name in variables and variables[name] != raw["models"][role]:
             report.error(
@@ -356,8 +368,10 @@ def run_doctor(
 
     context = PreflightContext(
         target.default_branch,
-        token_readonly=variables.get("AGENT_CI_DEFAULT_TOKEN_READONLY") == "true",
-        safe_environments=frozenset(listed),
+        token_readonly=readonly and variables.get("AGENT_CI_DEFAULT_TOKEN_READONLY") == "true",
+        safe_environments=frozenset(
+            name for name in listed if environment_is_safe(environments.get(name))
+        ),
         template_ref=template_ref,
     )
     try:

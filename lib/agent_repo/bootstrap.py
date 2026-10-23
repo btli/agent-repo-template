@@ -1,7 +1,6 @@
 """Install the template into a repository through the maintainer's own `gh` authentication."""
 
 import base64
-import fnmatch
 import hashlib
 import json
 import re
@@ -58,8 +57,10 @@ COMMAND_DEFAULTS = (
     ),
     ("package-lock.json", {"setup": "npm ci", "test": "npm test"}),
 )
-# Refs an agent branch or a pull request run deploys from (GITHUB_REF and its short form).
-AGENT_REF_PROBES = ("agent/fix-1", "refs/heads/agent/fix-1", "pull/1/merge", "refs/pull/1/merge")
+# Ref prefixes an agent branch or a pull request run deploys from (GITHUB_REF and short form).
+AGENT_REF_PREFIXES = ("agent/fix-", "refs/heads/agent/fix-", "pull/", "refs/pull/")
+GLOB_CHARACTERS = "*?[{\\"
+AGENT_REF = re.compile(r"(?:refs/heads/)?agent/fix-.+|(?:refs/)?pull/[^/]+/merge")
 CONTRIBUTING_SECTION = "CONTRIBUTING.agents.md"
 SHA = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?")
@@ -76,6 +77,10 @@ APP_SLUG_MISSING = "GitHub App identity incomplete: pass --app-slug."
 APP_CLIENT_ID_MISSING = "GitHub App identity incomplete: pass --app-client-id."
 APP_BOT_MISSING = "GitHub App bot account not found: GET /users/{app_slug}[bot] must return a Bot."
 APP_MISMATCH = "The public GET /apps/{app_slug} does not match --app-slug and --app-client-id."
+APP_LOOKUP_FAILED = (
+    "GET /apps/{app_slug} failed with an error other than a private App's 404; "
+    "bootstrap cannot cross-check the App."
+)
 
 
 class BootstrapError(Exception):
@@ -84,6 +89,10 @@ class BootstrapError(Exception):
 
 class GhError(BootstrapError):
     """Raised when a `gh api` call fails; the message names only the method and endpoint."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class Gh:
@@ -107,7 +116,9 @@ class Gh:
         except (OSError, subprocess.TimeoutExpired):
             raise GhError(f"gh api failed: {method} {endpoint}") from None
         if result.returncode != 0:
-            raise GhError(f"gh api failed: {method} {endpoint}")
+            # Only the numeric status is kept from gh's error output, never its text.
+            status = re.search(r"\(HTTP (\d{3})\)", result.stderr)
+            raise GhError(f"gh api failed: {method} {endpoint}", int(status[1]) if status else None)
         return result.stdout
 
     def get(self, endpoint: str) -> object:
@@ -249,7 +260,9 @@ def load_yaml_bytes(data: bytes, name: str) -> object:
 def parse_config(data: bytes) -> dict:
     raw = load_yaml_bytes(data, ".agents/config.yml")
     if not isinstance(raw, dict) or validate(raw, load_schema("config")):
-        raise BootstrapError("Agent configuration is invalid.")
+        raise BootstrapError(
+            ".agents/config.yml is not a valid agent configuration; fix it or pass --force."
+        )
     return raw
 
 
@@ -320,7 +333,9 @@ def resolve_app(gh: Gh, slug: str | None, client_id: str | None) -> App:
     # Private Apps, the usual adopter case, answer GET /apps/{slug} with 404; only cross-check.
     try:
         public = gh.get(f"apps/{_quote(slug)}")
-    except GhError:
+    except GhError as error:
+        if error.status != 404:
+            raise BootstrapError(APP_LOOKUP_FAILED) from None
         public = None
     if public is not None and (
         str(_field(public, "slug")).casefold() != slug.casefold()
@@ -330,14 +345,15 @@ def resolve_app(gh: Gh, slug: str | None, client_id: str | None) -> App:
     return App(found.removesuffix("[bot]"), client_id)
 
 
-def read_environments(gh: Gh, repo: str) -> dict[str, list | None]:
-    """Map each environment to its custom deployment patterns, or None without a custom policy."""
-    environments = {}
+def read_environments(gh: Gh, repo: str) -> tuple[dict[str, list | None], dict[str, object]]:
+    """Map each environment to its custom patterns (None without them) and its policy object."""
+    environments, policies = {}, {}
     for item in gh.items(f"repos/{repo}/environments?per_page=100", "environments"):
         name = item.get("name")
         if not isinstance(name, str):
             continue
         patterns = None
+        policies[name] = item.get("deployment_branch_policy")
         if _field(item, "deployment_branch_policy", "custom_branch_policies") is True:
             patterns = [
                 (policy.get("name"), policy.get("type", "branch"))
@@ -348,18 +364,24 @@ def read_environments(gh: Gh, repo: str) -> dict[str, list | None]:
                 )
             ]
         environments[name] = patterns
-    return environments
+    return environments, policies
+
+
+def pattern_is_safe(pattern: object) -> bool:
+    """A deployment pattern is safe only if it provably matches no agent or pull ref."""
+    if not isinstance(pattern, str):
+        return False
+    glob = next((index for index, char in enumerate(pattern) if char in GLOB_CHARACTERS), None)
+    if glob is None:
+        return AGENT_REF.fullmatch(pattern) is None
+    literal = pattern[:glob]
+    return not any(
+        literal.startswith(prefix) or prefix.startswith(literal) for prefix in AGENT_REF_PREFIXES
+    )
 
 
 def environment_is_safe(patterns: list | None) -> bool:
-    # fnmatch lets `*` cross `/`, a superset of GitHub's File.fnmatch, so doubt means unsafe.
-    if not patterns:
-        return False
-    return not any(
-        not isinstance(name, str) or fnmatch.fnmatchcase(probe, name)
-        for name, _ in patterns
-        for probe in AGENT_REF_PROBES
-    )
+    return bool(patterns) and all(pattern_is_safe(name) for name, _ in patterns)
 
 
 def read_variables(gh: Gh, repo: str) -> dict[str, str]:
@@ -496,7 +518,7 @@ def plan_labels(gh: Gh, repo: str, names: list[str], plan: Plan) -> None:
 
 
 def plan_environments(
-    gh: Gh, repo: str, default_branch: str, environments: dict, plan: Plan
+    gh: Gh, repo: str, default_branch: str, environments: dict, policies: dict, plan: Plan
 ) -> list[str]:
     """Plan the four agent environments and return every environment that will be safe."""
     wanted = (default_branch, "branch")
@@ -505,15 +527,13 @@ def plan_environments(
         patterns = environments.get(name)
         if patterns is None:
             existed = name in environments
+            previous = json.dumps({"deployment_branch_policy": policies.get(name)})
 
-            def put(endpoint=endpoint, existed=existed) -> str:
+            def put(endpoint=endpoint, existed=existed, previous=previous) -> str:
                 policy = {"protected_branches": False, "custom_branch_policies": True}
                 gh.write("PUT", endpoint, {"deployment_branch_policy": policy})
                 if existed:
-                    return (
-                        "echo '{\"deployment_branch_policy\": null}' | "
-                        f"gh api -X PUT {endpoint} --input -"
-                    )
+                    return f"echo {shlex.quote(previous)} | gh api -X PUT {endpoint} --input -"
                 return f"gh api -X DELETE {endpoint}"
 
             verb = "restrict environment" if existed else "create environment"
@@ -758,7 +778,11 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
     changes, plan.notes = plan_files(gh, target, rendered, options.force)
 
     def landed(path: str) -> bytes:
-        return changes.get(path) or file_content(gh, target, path) or rendered[path]
+        # An existing empty file is validated as itself, so compare against None, not truthiness.
+        for content in (changes.get(path), file_content(gh, target, path)):
+            if content is not None:
+                return content
+        return rendered[path]
 
     config = parse_config(landed(".agents/config.yml"))
     labels = _field(load_yaml_bytes(landed(".agents/labels.yml"), ".agents/labels.yml"), "labels")
@@ -770,12 +794,12 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
     except BootstrapError as exc:
         plan.errors.append(str(exc))
         app = None
-    environments = read_environments(gh, repo)
+    environments, policies = read_environments(gh, repo)
     existing = read_variables(gh, repo)
     readonly = token_readonly(gh, repo)
 
     plan_labels(gh, repo, labels, plan)
-    safe = plan_environments(gh, repo, target.default_branch, environments, plan)
+    safe = plan_environments(gh, repo, target.default_branch, environments, policies, plan)
     models, errors = model_values(config)
     plan.errors += errors
     wanted: dict[str, str] = {}

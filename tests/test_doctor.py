@@ -39,6 +39,30 @@ jobs:
 """
 
 
+STAGING_CI = EXPOSED_CI.replace(
+    b"    runs-on: ubuntu-24.04\n", b"    runs-on: ubuntu-24.04\n    environment: staging\n"
+)
+UNDECLARED_CI = b"""name: CI
+on: pull_request
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo deploy
+"""
+SECRET_EXPOSURE = "ERROR: CI exposure: ci.yml job deploy rule secrets reaches DEPLOY_TOKEN."
+# The consumer CI workflow and the exposure line doctor must print for each scenario.
+EXPOSURES = {
+    "deploy-secret": (EXPOSED_CI, SECRET_EXPOSURE),
+    "listed-staging": (STAGING_CI, SECRET_EXPOSURE),
+    "writable-token": (
+        UNDECLARED_CI,
+        "ERROR: CI exposure: ci.yml job deploy rule permissions reaches no named secret.",
+    ),
+}
+MODEL_RULE = "is not an Anthropic-family gateway model id."
+
+
 def _files(**changes: bytes | None) -> dict[str, bytes]:
     files = {"README.md": b"# Example\n", **state.consumer_files()}
     for path, data in changes.items():
@@ -200,6 +224,24 @@ def _drift(responses: dict, change: str) -> None:
                 ]
             }
         }
+    elif change in {"safe-list-missing", "token-variable-missing"}:
+        name = (
+            "AGENT_SAFE_ENVIRONMENTS"
+            if change == "safe-list-missing"
+            else "AGENT_CI_DEFAULT_TOKEN_READONLY"
+        )
+        variables[name] = None
+    elif change == "non-anthropic-model":
+        config = state.consumer_files()[".agents/config.yml"].replace(
+            b"claude-sonnet-4-5", b"gpt-4o"
+        )
+        _with_files(responses, _files(**{".agents/config.yml": config}))
+        variables.update(
+            {
+                name: "gpt-4o"
+                for name in ("AGENT_TRIAGE_MODEL", "AGENT_REVIEW_MODEL", "AGENT_FIX_MODEL")
+            }
+        )
     elif change == "charter":
         charter = state.consumer_files()[".agents/charter.md"].replace(b"## Mission", b"## Goal")
         _with_files(responses, _files(**{".agents/charter.md": charter}))
@@ -277,6 +319,16 @@ def _drift(responses: dict, change: str) -> None:
         ),
         ("runner", "ERROR: Self-hosted runner build-1 uses the GitHub-hosted label ubuntu-24.04."),
         ("charter", "ERROR: Charter: missing required heading: Mission"),
+        (
+            "safe-list-missing",
+            "ERROR: Missing variable AGENT_SAFE_ENVIRONMENTS; rerun bootstrap to set it.",
+        ),
+        (
+            "token-variable-missing",
+            "ERROR: Missing variable AGENT_CI_DEFAULT_TOKEN_READONLY; rerun bootstrap to set it.",
+        ),
+        ("non-anthropic-model", f"ERROR: models.fix {MODEL_RULE}"),
+        ("non-anthropic-model", f"ERROR: Variable AGENT_FIX_MODEL {MODEL_RULE}"),
     ],
 )
 def test_doctor_reports_each_drift_as_an_error(tmp_path, change, message):
@@ -288,6 +340,25 @@ def test_doctor_reports_each_drift_as_an_error(tmp_path, change, message):
     assert result.returncode == 1
     assert message in result.stdout.splitlines()
     assert "Doctor found no errors." not in result.stdout
+
+
+def test_doctor_reverifies_every_listed_environment_by_pattern_overlap(tmp_path):
+    responses = state.healthy_target()
+    patterns = {**state.SAFE_PATTERNS, **state.UNSAFE_PATTERNS}
+    state.add_environments(responses, patterns)
+    listed = "\n".join([*sorted(state.ENVIRONMENTS), *patterns])
+    state.set_variables(responses, {"AGENT_SAFE_ENVIRONMENTS": listed})
+
+    _, result = _check(tmp_path, responses)
+
+    prefix = "ERROR: AGENT_SAFE_ENVIRONMENTS lists "
+    reported = {
+        line.removeprefix(prefix).split(",", 1)[0]
+        for line in result.stdout.splitlines()
+        if line.startswith(prefix)
+    }
+    assert reported == set(state.UNSAFE_PATTERNS)
+    assert result.returncode == 1
 
 
 def test_llm_only_mode_needs_no_system_one_key_and_warns_about_close(tmp_path):
@@ -313,13 +384,15 @@ def test_llm_only_mode_needs_no_system_one_key_and_warns_about_close(tmp_path):
 @pytest.mark.parametrize(
     ("owner", "listing", "exposed", "accept", "expected"),
     [
-        ("User", None, True, False, ASSUMED),
-        ("Organization", _org_listing("all"), True, False, CONFIRMED),
-        ("Organization", _org_listing("selected"), True, False, ASSUMED),
-        ("Organization", {"status": 403}, True, False, ASSUMED),
-        ("Organization", _org_listing("all", "other-app"), True, False, ASSUMED),
-        ("Organization", _org_listing("all"), False, False, None),
-        ("User", None, True, True, ASSUMED),
+        ("User", None, "deploy-secret", False, ASSUMED),
+        ("Organization", _org_listing("all"), "deploy-secret", False, CONFIRMED),
+        ("Organization", _org_listing("selected"), "deploy-secret", False, ASSUMED),
+        ("Organization", {"status": 403}, "deploy-secret", False, ASSUMED),
+        ("Organization", _org_listing("all", "other-app"), "deploy-secret", False, ASSUMED),
+        ("Organization", _org_listing("all"), None, False, None),
+        ("User", None, "deploy-secret", True, ASSUMED),
+        ("User", None, "listed-staging", False, ASSUMED),
+        ("User", None, "writable-token", False, ASSUMED),
     ],
 )
 def test_unknown_app_reach_is_shared_whenever_consumer_ci_exposes_credentials(
@@ -330,8 +403,18 @@ def test_unknown_app_reach_is_shared_whenever_consumer_ci_exposes_credentials(
         config = config.replace(b"accept_ci_exposure: false", b"accept_ci_exposure: true")
     changes = {".agents/config.yml": config}
     if exposed:
-        changes[".github/workflows/ci.yml"] = EXPOSED_CI
+        changes[".github/workflows/ci.yml"] = EXPOSURES[exposed][0]
     responses = _with_files(state.healthy_target(), _files(**changes))
+    # A listed safe environment or a token flag that live state disproves never hides an exposure.
+    if exposed == "listed-staging":
+        environments = responses[f"GET {TARGET}/environments"]["json"]["environments"]
+        environments.append({"name": "staging", "deployment_branch_policy": None})
+        listed = "\n".join([*sorted(state.ENVIRONMENTS), "staging"])
+        state.set_variables(responses, {"AGENT_SAFE_ENVIRONMENTS": listed})
+    elif exposed == "writable-token":
+        responses[f"GET {TARGET}/actions/permissions/workflow"] = {
+            "json": {"default_workflow_permissions": "write"}
+        }
     responses[f"GET {TARGET}"]["json"]["owner"]["type"] = owner
     if listing is not None:
         responses[ORG_INSTALLATIONS] = listing
@@ -347,7 +430,7 @@ def test_unknown_app_reach_is_shared_whenever_consumer_ci_exposes_credentials(
         assert _installation_calls(fake) == ["orgs/your-org/installations?per_page=100"]
     if exposed:
         assert result.returncode == 1
-        assert "ERROR: CI exposure: ci.yml job deploy rule secrets reaches DEPLOY_TOKEN." in lines
+        assert EXPOSURES[exposed][1] in lines
     else:
         assert result.returncode == 0, result.stdout
     if accept:
