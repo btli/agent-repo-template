@@ -152,12 +152,8 @@ def empty_target() -> dict:
         f"GET {TARGET}/rulesets": {"json": []},
         f"GET {TARGET}/actions/secrets": {"json": {"secrets": []}},
         f"GET {TARGET}/actions/runners": {"json": {"runners": []}},
-        "GET apps/example-agent": {
-            "json": {
-                "slug": "example-agent",
-                "client_id": "Iv23liExample",
-                "owner": {"login": "your-org"},
-            }
+        "GET users/example-agent%5Bbot%5D": {
+            "json": {"login": "example-agent[bot]", "type": "Bot"}
         },
     }
     _upstream(state)

@@ -19,11 +19,10 @@ REPO, TARGET, UPSTREAM = state.REPO, state.TARGET, state.UPSTREAM
 PIN, VERSION = state.PIN, state.VERSION
 GATEWAY = ("--gateway-url", state.GATEWAY_URL, "--gateway-kind", "databricks")
 SYSTEM_ONE = ("--system-one-url", "https://systemone.example.com")
-APP = ("--app-slug", "example-agent")
+APP = ("--app-slug", "example-agent", "--app-client-id", "Iv23liExample")
 INSTALL = ("--repo", REPO, "--ref", VERSION, *GATEWAY, *SYSTEM_ONE, *APP)
 APP_IDENTITY_UNKNOWN = (
-    "GitHub App identity unknown: pass --app-slug; it is resolved through the public "
-    "GET /apps/{app_slug}."
+    "GitHub App identity unknown: pass --app-slug and --app-client-id from the App's settings page."
 )
 BRANCH = f"bootstrap/agent-repo-template-{VERSION}"
 
@@ -65,21 +64,32 @@ def test_plan_previews_every_mutation_with_read_calls_only(tmp_path):
     assert f"gh secret set AGENT_TRIAGE_KEY --repo {REPO} --env agent-propose-triage" in output
     assert f"gh secret set AGENT_SYSTEM_ONE_KEY --repo {REPO} --env agent-propose-triage" in output
     assert not (fake.home / ".agent-repo-template").exists()
-    assert "GET apps/example-agent" in _endpoints(fake.calls())
+    endpoints = _endpoints(fake.calls())
+    assert {"GET users/example-agent%5Bbot%5D", "GET apps/example-agent"} <= set(endpoints)
     assert not [call for call in fake.calls() if "installations" in call["endpoint"]]
 
 
-def test_app_identity_comes_only_from_app_slug_and_its_absence_refuses_every_write(tmp_path):
+def test_app_identity_needs_both_flags_and_a_bot_account_or_refuses_every_write(tmp_path):
     responses = state.empty_target()
-    responses["GET apps/missing-agent"] = {"status": 404}
+    responses["GET users/missing-agent%5Bbot%5D"] = {"status": 404}
+    responses["GET users/human-agent%5Bbot%5D"] = {
+        "json": {"login": "human-agent[bot]", "type": "User"}
+    }
     fake = state.FakeGitHub(tmp_path, responses)
     without = INSTALL[: -len(APP)]
-    missing = (*without, "--app-slug", "missing-agent")
+    client = ("--app-client-id", "Iv23liExample")
+    bot_missing = "GitHub App bot account not found: GET /users/{app_slug}[bot] must return a Bot."
 
     for arguments, message in (
         (("--plan", *without), APP_IDENTITY_UNKNOWN),
         (without, APP_IDENTITY_UNKNOWN),
-        (missing, "The --app-slug GitHub App was not found through GET /apps/{app_slug}."),
+        (
+            (*without, "--app-slug", "example-agent"),
+            "GitHub App identity incomplete: pass --app-client-id.",
+        ),
+        (("--plan", *without, *client), "GitHub App identity incomplete: pass --app-slug."),
+        ((*without, "--app-slug", "missing-agent", *client), bot_missing),
+        (("--plan", *without, "--app-slug", "human-agent", *client), bot_missing),
     ):
         result = fake.run(*arguments)
 
@@ -87,6 +97,20 @@ def test_app_identity_comes_only_from_app_slug_and_its_absence_refuses_every_wri
         assert f"ERROR: {message}" in result.stdout.splitlines()
         assert fake.writes() == []
         assert not [call for call in fake.calls() if "installations" in call["endpoint"]]
+
+    # A public App is cross-checked: its client id must match the flag.
+    responses["GET apps/example-agent"] = {
+        "json": {"slug": "example-agent", "client_id": "Iv23liOther"}
+    }
+    mismatch = fake.run("--plan", *INSTALL)
+    assert mismatch.returncode == 1
+    assert (
+        "ERROR: The public GET /apps/{app_slug} does not match --app-slug and --app-client-id."
+        in mismatch.stdout.splitlines()
+    )
+    responses["GET apps/example-agent"]["json"]["client_id"] = "Iv23liExample"
+    assert fake.run("--plan", *INSTALL).returncode == 0
+    assert fake.writes() == []
 
 
 def test_install_lands_files_on_a_draft_pr_branch_and_journals_every_write(tmp_path):

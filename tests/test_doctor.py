@@ -21,8 +21,8 @@ ASSUMED = (
     "fix apply re-checks the installation with the App token before any push."
 )
 APP_IDENTITY_UNKNOWN = (
-    "ERROR: GitHub App identity unknown: pass --app-slug; it is resolved through the public "
-    "GET /apps/{app_slug}."
+    "ERROR: GitHub App identity unknown: pass --app-slug and --app-client-id "
+    "from the App's settings page."
 )
 ORG_INSTALLATIONS = "GET orgs/your-org/installations"
 EXPOSED_CI = b"""name: CI
@@ -61,7 +61,7 @@ def _fix_workflow(pin: str = PIN) -> bytes:
 
 def _check(tmp_path, responses: dict):
     fake = state.FakeGitHub(tmp_path, responses)
-    result = fake.run("--check", "--repo", REPO, "--app-slug", "example-agent")
+    result = fake.run("--check", "--repo", REPO)
     return fake, result
 
 
@@ -90,15 +90,27 @@ def test_a_bootstrapped_repository_passes_check_with_read_calls_only(tmp_path):
     assert f"{TARGET}/environments/agent-apply/secrets" in endpoints
     assert f"{UPSTREAM}/git/ref/tags/{state.VERSION}" in endpoints
 
-    assert "OK: GitHub App example-agent has client id Iv23liExample." in result.stdout
+    identity = (
+        "OK: GitHub App example-agent has client id Iv23liExample "
+        "and bot account example-agent[bot]."
+    )
+    assert identity in result.stdout.splitlines()
+    assert "GET users/example-agent%5Bbot%5D" in {
+        f"GET {call['endpoint']}" for call in fake.calls()
+    }
     assert _installation_calls(fake) == []
 
     doctor = [sys.executable, str(ROOT / "lib/agent_repo_cli.py"), "doctor", "--repo", REPO]
-    direct = fake.run(command=[*doctor, "--app-slug", "example-agent"])
+    flags = ("--app-slug", "example-agent", "--app-client-id", "Iv23liExample")
+    direct = fake.run(command=[*doctor, *flags])
     assert (direct.returncode, direct.stdout) == (0, result.stdout)
-    anonymous = fake.run(command=doctor)
-    assert anonymous.returncode == 1
-    assert APP_IDENTITY_UNKNOWN in anonymous.stdout.splitlines()
+    mismatched = fake.run(
+        command=[*doctor, "--app-slug", "other-agent", "--app-client-id", "Iv23liOther"]
+    )
+    assert mismatched.returncode == 1
+    lines = mismatched.stdout.splitlines()
+    assert "ERROR: --app-slug does not match AGENT_BOT_LOGIN." in lines
+    assert "ERROR: --app-client-id does not match AGENT_APP_CLIENT_ID." in lines
     assert all(call["method"] == "GET" for call in fake.calls())
 
 
@@ -144,6 +156,10 @@ def _drift(responses: dict, change: str) -> None:
         variables["AGENT_FIX_ALLOWED_ENDPOINTS"] = None
     elif change == "bot-login":
         variables["AGENT_BOT_LOGIN"] = "example-agent"
+    elif change == "identity-missing":
+        variables.update({"AGENT_BOT_LOGIN": None, "AGENT_APP_CLIENT_ID": None})
+    elif change == "bot-missing":
+        responses["GET users/example-agent%5Bbot%5D"] = {"status": 404}
     elif change == "tampered-tag":
         responses[f"GET {UPSTREAM}/git/tags/{state.TAG_OBJECT}"] = {
             "json": {"object": {"type": "commit", "sha": "e" * 40}}
@@ -233,7 +249,13 @@ def _drift(responses: dict, change: str) -> None:
         ("endpoints", "ERROR: Missing variable AGENT_FIX_ALLOWED_ENDPOINTS."),
         (
             "bot-login",
-            "ERROR: AGENT_BOT_LOGIN must be example-agent[bot] for the configured GitHub App.",
+            "ERROR: AGENT_BOT_LOGIN must be a bot login ending in [bot].",
+        ),
+        ("identity-missing", APP_IDENTITY_UNKNOWN),
+        (
+            "bot-missing",
+            "ERROR: GitHub App bot account not found: "
+            "GET /users/{app_slug}[bot] must return a Bot.",
         ),
         (
             "tampered-tag",

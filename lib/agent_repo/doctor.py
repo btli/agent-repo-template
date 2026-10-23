@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_repo.bootstrap import (
-    APP_IDENTITY_UNKNOWN,
     ENVIRONMENTS,
     MODEL_VARIABLES,
     RULESET_NAMES,
@@ -240,7 +239,33 @@ def org_shares_app(gh: Gh, target: Target, app: App | None) -> bool:
     )
 
 
-def run_doctor(gh: Gh, repo: str, app_slug: str | None = None) -> Report:
+def _declared_app(
+    gh: Gh, variables: dict, slug: str | None, client_id: str | None, report: Report
+) -> App | None:
+    """The repository variables declare the App; flags, when given, must agree with them."""
+    login = variables.get("AGENT_BOT_LOGIN")
+    declared_slug = login.removesuffix("[bot]") if login and login.endswith("[bot]") else None
+    if login and declared_slug is None:
+        report.error("AGENT_BOT_LOGIN must be a bot login ending in [bot].")
+    declared_client = variables.get("AGENT_APP_CLIENT_ID")
+    if slug and declared_slug and slug.casefold() != declared_slug.casefold():
+        report.error("--app-slug does not match AGENT_BOT_LOGIN.")
+    if client_id and declared_client and client_id != declared_client:
+        report.error("--app-client-id does not match AGENT_APP_CLIENT_ID.")
+    try:
+        app = resolve_app(gh, slug or declared_slug, client_id or declared_client)
+    except BootstrapError as exc:
+        report.error(str(exc))
+        return None
+    report.ok(
+        f"GitHub App {app.slug} has client id {app.client_id} and bot account {app.slug}[bot]."
+    )
+    return app
+
+
+def run_doctor(
+    gh: Gh, repo: str, app_slug: str | None = None, app_client_id: str | None = None
+) -> Report:
     report = Report()
     target = read_target(gh, repo)
     config = _configuration(gh, target, report)
@@ -297,22 +322,8 @@ def run_doctor(gh: Gh, repo: str, app_slug: str | None = None) -> Report:
     elif not readonly:
         report.warn("The default workflow token can write; make it read-only in the settings.")
 
-    try:
-        app = resolve_app(gh, app_slug)
-    except BootstrapError as exc:
-        report.error(str(exc))
-        app = None
-    else:
-        if app is None:
-            report.error(APP_IDENTITY_UNKNOWN)
-    bot = variables.get("AGENT_BOT_LOGIN")
-    if app is not None:
-        report.ok(f"GitHub App {app.slug} has client id {app.client_id}.")
-        bot = f"{app.slug}[bot]"
-        if variables.get("AGENT_BOT_LOGIN") not in (None, bot):
-            report.error(f"AGENT_BOT_LOGIN must be {bot} for the configured GitHub App.")
-        if variables.get("AGENT_APP_CLIENT_ID") not in (None, app.client_id):
-            report.error("AGENT_APP_CLIENT_ID does not match the configured GitHub App.")
+    app = _declared_app(gh, variables, app_slug, app_client_id, report)
+    bot = f"{app.slug}[bot]" if app is not None else variables.get("AGENT_BOT_LOGIN")
 
     try:
         rulesets = read_rulesets(gh, repo)
@@ -378,9 +389,9 @@ def run_doctor(gh: Gh, repo: str, app_slug: str | None = None) -> Report:
     return report
 
 
-def check(repo: str, app_slug: str | None = None) -> int:
+def check(repo: str, app_slug: str | None = None, app_client_id: str | None = None) -> int:
     try:
-        report = run_doctor(Gh(), repo, app_slug)
+        report = run_doctor(Gh(), repo, app_slug, app_client_id)
     except BootstrapError as exc:
         print(f"ERROR: {exc}")
         return 1

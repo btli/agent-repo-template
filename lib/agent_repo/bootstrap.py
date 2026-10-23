@@ -70,10 +70,12 @@ RULESETS_UNAVAILABLE = (
 )
 NOT_ON_MAIN = "Template commit is not on upstream main."
 APP_IDENTITY_UNKNOWN = (
-    "GitHub App identity unknown: pass --app-slug; it is resolved through the public "
-    "GET /apps/{app_slug}."
+    "GitHub App identity unknown: pass --app-slug and --app-client-id from the App's settings page."
 )
-APP_NOT_FOUND = "The --app-slug GitHub App was not found through GET /apps/{app_slug}."
+APP_SLUG_MISSING = "GitHub App identity incomplete: pass --app-slug."
+APP_CLIENT_ID_MISSING = "GitHub App identity incomplete: pass --app-client-id."
+APP_BOT_MISSING = "GitHub App bot account not found: GET /users/{app_slug}[bot] must return a Bot."
+APP_MISMATCH = "The public GET /apps/{app_slug} does not match --app-slug and --app-client-id."
 
 
 class BootstrapError(Exception):
@@ -295,20 +297,35 @@ class App:
     client_id: str
 
 
-def resolve_app(gh: Gh, slug: str | None) -> App | None:
-    """Resolve --app-slug through the public apps API; installations are never listed."""
-    if slug is None:
-        return None
+def resolve_app(gh: Gh, slug: str | None, client_id: str | None) -> App:
+    """Confirm a declared App identity with public lookups; installations are never listed."""
+    if not slug and not client_id:
+        raise BootstrapError(APP_IDENTITY_UNKNOWN)
+    if not slug:
+        raise BootstrapError(APP_SLUG_MISSING)
+    if not client_id:
+        raise BootstrapError(APP_CLIENT_ID_MISSING)
+    login = f"{slug}[bot]"
     try:
-        data = gh.get(f"apps/{_quote(slug)}")
+        bot = gh.get(f"users/{_quote(login)}")
     except GhError:
-        raise BootstrapError(APP_NOT_FOUND) from None
-    found, client_id = _field(data, "slug"), _field(data, "client_id")
-    if not isinstance(found, str) or found.casefold() != slug.casefold():
-        raise BootstrapError(APP_NOT_FOUND)
-    if not isinstance(client_id, str) or not client_id:
-        raise BootstrapError(APP_NOT_FOUND)
-    return App(found, client_id)
+        raise BootstrapError(APP_BOT_MISSING) from None
+    found = _field(bot, "login")
+    if _field(bot, "type") != "Bot" or not isinstance(found, str):
+        raise BootstrapError(APP_BOT_MISSING)
+    if found.casefold() != login.casefold():
+        raise BootstrapError(APP_BOT_MISSING)
+    # Private Apps, the usual adopter case, answer GET /apps/{slug} with 404; only cross-check.
+    try:
+        public = gh.get(f"apps/{_quote(slug)}")
+    except GhError:
+        public = None
+    if public is not None and (
+        str(_field(public, "slug")).casefold() != slug.casefold()
+        or _field(public, "client_id") != client_id
+    ):
+        raise BootstrapError(APP_MISMATCH)
+    return App(found.removesuffix("[bot]"), client_id)
 
 
 def read_environments(gh: Gh, repo: str) -> dict[str, list | None]:
@@ -709,6 +726,7 @@ class InstallOptions:
     gateway_kind: str | None = None
     system_one_url: str | None = None
     app_slug: str | None = None
+    app_client_id: str | None = None
 
 
 def _require_admin(gh: Gh, repo: str) -> Target:
@@ -746,13 +764,10 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
         raise BootstrapError(".agents/labels.yml must hold a labels list.")
     llm_only = config.get("system_one") is None
     try:
-        app = resolve_app(gh, options.app_slug)
+        app = resolve_app(gh, options.app_slug, options.app_client_id)
     except BootstrapError as exc:
         plan.errors.append(str(exc))
         app = None
-    else:
-        if app is None:
-            plan.errors.append(APP_IDENTITY_UNKNOWN)
     environments = read_environments(gh, repo)
     existing = read_variables(gh, repo)
     readonly = token_readonly(gh, repo)

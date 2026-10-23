@@ -53,12 +53,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--gateway-kind")
     parser.add_argument("--system-one-url")
     parser.add_argument("--app-slug")
+    parser.add_argument("--app-client-id")
     parser.add_argument("--journal", type=Path)
     args = parser.parse_args(argv)
     if REPOSITORY.fullmatch(args.repo) is None:
         parser.error("--repo must be OWNER/NAME")
     if args.check:
-        return check(args.repo, args.app_slug)
+        return check(args.repo, args.app_slug, args.app_client_id)
     journal = Journal(args.journal or journal_path(args.repo))
     try:
         if args.sync_models:
@@ -84,6 +85,7 @@ def main(argv: list[str]) -> int:
                 args.gateway_kind,
                 args.system_one_url,
                 args.app_slug,
+                args.app_client_id,
             )
             plan = plan_install(Gh(), options)
     except BootstrapError as exc:
