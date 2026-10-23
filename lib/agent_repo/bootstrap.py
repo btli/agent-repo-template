@@ -311,9 +311,11 @@ def resolve_app(gh: Gh, slug: str | None, client_id: str | None) -> App:
     except GhError:
         raise BootstrapError(APP_BOT_MISSING) from None
     found = _field(bot, "login")
-    if _field(bot, "type") != "Bot" or not isinstance(found, str):
-        raise BootstrapError(APP_BOT_MISSING)
-    if found.casefold() != login.casefold():
+    if (
+        _field(bot, "type") != "Bot"
+        or not isinstance(found, str)
+        or found.casefold() != login.casefold()
+    ):
         raise BootstrapError(APP_BOT_MISSING)
     # Private Apps, the usual adopter case, answer GET /apps/{slug} with 404; only cross-check.
     try:
@@ -340,7 +342,7 @@ def read_environments(gh: Gh, repo: str) -> dict[str, list | None]:
             patterns = [
                 (policy.get("name"), policy.get("type", "branch"))
                 for policy in gh.items(
-                    f"repos/{repo}/environments/{quote(name, safe='')}"
+                    f"repos/{repo}/environments/{_quote(name)}"
                     "/deployment-branch-policies?per_page=100",
                     "branch_policies",
                 )
