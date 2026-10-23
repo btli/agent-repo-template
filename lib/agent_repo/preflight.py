@@ -447,6 +447,14 @@ def _pinned_action(step: dict) -> tuple[str, str]:
     return f"{match[1].casefold()}/{match[2]}", match[3].lower()
 
 
+def _action_inputs(step: dict) -> dict | None:
+    inputs = step.get("with", {})
+    if not isinstance(inputs, dict) or not all(isinstance(key, str) for key in inputs):
+        return None
+    normalized = {key.casefold(): value for key, value in inputs.items()}
+    return normalized if len(normalized) == len(inputs) else None
+
+
 def _role_keys_scoped(job: dict, workflow: dict) -> bool:
     if (
         _secret_names(
@@ -459,12 +467,15 @@ def _role_keys_scoped(job: dict, workflow: dict) -> bool:
         step
         for step in _steps(job)
         if _pinned_action(step)[0] in {TEMPLATE_PREFIX + name for name in MODEL_ACTIONS}
-        and step.get("with", {}).get("mode", "propose") != "apply"
+        and (_action_inputs(step) or {}).get("mode", "propose") != "apply"
     ]
     for step in _steps(job):
         if not _secret_names(step) & ROLE_KEYS:
             continue
         if len(model_steps) != 1 or step is not model_steps[0]:
+            return False
+        model = _pinned_action(step)[0].removeprefix(TEMPLATE_PREFIX).removesuffix("-agent")
+        if _secret_names(step) & ROLE_KEYS != {f"AGENT_{model.upper()}_KEY"}:
             return False
         if _secret_names({key: value for key, value in step.items() if key != "env"}) & ROLE_KEYS:
             return False
@@ -472,12 +483,12 @@ def _role_keys_scoped(job: dict, workflow: dict) -> bool:
 
 
 def _safe_target_action(step: dict, previous: list[dict]) -> bool:
+    inputs = _action_inputs(step)
+    if inputs is None:
+        return False
     if _safe_action(step):
         return True
     action, _ = _pinned_action(step)
-    inputs = step.get("with", {})
-    if not isinstance(inputs, dict):
-        return False
     if (
         action.startswith(TEMPLATE_PREFIX)
         and action.removeprefix(TEMPLATE_PREFIX) in TEMPLATE_ACTIONS
@@ -506,7 +517,7 @@ def _safe_target_action(step: dict, previous: list[dict]) -> bool:
         ):
             return False
         if name == "setup":
-            return not any(_secret_names(prior) & ROLE_KEYS for prior in [*previous, step])
+            return not any(_secret_names(prior) for prior in [*previous, step])
         return True
     if action == "actions/checkout":
         return (
@@ -534,6 +545,26 @@ def _template_fix_propose(name: str, job: dict, workflow: dict, ctx: PreflightCo
         key in workflow for key in ("env", "defaults")
     ):
         return False
+    gate = {
+        "runs-on": "ubuntu-24.04",
+        "outputs": {
+            key: "${{ steps.gate.outputs." + key + " }}"
+            for key in ("run", "issue", "base_sha", "head_sha", "head_ref")
+        },
+        "steps": [
+            {
+                "id": "gate",
+                "uses": TEMPLATE_PREFIX + "gate@" + ctx.template_ref.lower(),
+                "with": {
+                    "workflow": "fix",
+                    "enabled": "${{ vars.AGENTS_ENABLED }}",
+                    "bot-login": "${{ vars.AGENT_BOT_LOGIN }}",
+                },
+            }
+        ],
+    }
+    if workflow.get("permissions") != {"contents": "read"} or workflow["jobs"].get("gate") != gate:
+        return False
     expected = {
         "needs": "gate",
         "if": "needs.gate.outputs.run == 'true'",
@@ -560,6 +591,11 @@ def _template_fix_propose(name: str, job: dict, workflow: dict, ctx: PreflightCo
         "actions/upload-artifact",
     ]
     if len(steps) != len(actions) or [_pinned_action(step)[0] for step in steps] != actions:
+        return False
+    if any(
+        _action_inputs(step) is None or step.get("with", {}) != _action_inputs(step)
+        for step in steps
+    ):
         return False
     if any(step.keys() - {"name", "uses", "with", "env"} for step in steps):
         return False
@@ -595,6 +631,17 @@ def _template_fix_propose(name: str, job: dict, workflow: dict, ctx: PreflightCo
         "api-key-env": "AGENT_FIX_KEY",
     }:
         return False
+    if steps[2].get("with") != {
+        "name": "agent-fix-context-${{ github.run_id }}",
+        "path": "${{ runner.temp }}/agent-fix/context",
+    } or steps[5].get("with") != {
+        "name": "agent-fix-${{ github.run_id }}",
+        "path": "${{ runner.temp }}/agent-fix/proposal/fix.json\n"
+        "${{ runner.temp }}/agent-fix/proposal/fix.patch\n",
+        "if-no-files-found": "error",
+        "retention-days": 1,
+    }:
+        return False
     inputs = steps[4].get("with", {})
     fixed_inputs = {
         "work-path": "work",
@@ -604,8 +651,10 @@ def _template_fix_propose(name: str, job: dict, workflow: dict, ctx: PreflightCo
         "feedback-head-ref": "${{ needs.gate.outputs.head_ref }}",
         "api-key-env": "AGENT_FIX_KEY",
         "allowed-endpoints": "${{ vars.AGENT_FIX_ALLOWED_ENDPOINTS }}",
+        "issue-file": "${{ runner.temp }}/agent-fix/context/issue.txt",
+        "output-dir": "${{ runner.temp }}/agent-fix/proposal",
     }
-    if inputs.keys() != fixed_inputs.keys() | {"issue-file", "output-dir", "agent-timeout"} or any(
+    if inputs.keys() != fixed_inputs.keys() | {"agent-timeout"} or any(
         inputs[key] != value for key, value in fixed_inputs.items()
     ):
         return False

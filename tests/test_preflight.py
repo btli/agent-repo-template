@@ -1209,6 +1209,14 @@ def test_target_allowlist_rejects_overrides(action, inputs):
         (("concurrency", "cancel-in-progress"), False),
         (("env",), {"AGENT_FIX_KEY": "${{ secrets.AGENT_FIX_KEY }}"}),
         (("container",), "alpine"),
+        (("steps", 0, "with", "path"), "other-policy"),
+        (("steps", 3, "env"), {"BASH_ENV": "/tmp/setup-env"}),
+        (("steps", 5, "name"), "${{ secrets.GITHUB_TOKEN }}"),
+        (("steps", 5, "with", "name"), "x-${{ secrets.GITHUB_TOKEN }}"),
+        (("steps", 5, "with", "name"), "x-${{ github.token }}"),
+        (("steps", 2, "with", "path"), "policy"),
+        (("steps", 4, "with", "issue-file"), "${{ github.event.comment.body }}"),
+        (("steps", 4, "with", "output-dir"), "policy"),
     ],
 )
 def test_fix_rule_requires_canonical_job(path, value):
@@ -1249,6 +1257,7 @@ def test_uniform_old_template_pin_is_ordinary_exposure():
         ("bracket_numeric_secret", ("TOKEN_2",)),
         ("dynamic_secret", ("*",)),
         ("github_token", ()),
+        ("workflow_env", ("NPM_TOKEN",)),
     ],
 )
 def test_exposure_secret_names(fixture, expected):
@@ -1337,3 +1346,146 @@ def test_fix_command_validates_and_logs_accepted_exposure(
         captured = capsys.readouterr()
         assert "pass=false" in captured.out
         assert "credential-canary" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("spelling", [str.upper, str.title], ids=["uppercase", "mixed-case"])
+@pytest.mark.parametrize(
+    ("action", "inputs"),
+    [
+        ("btli/agent-repo-template/actions/gate", {"ref": "other"}),
+        ("btli/agent-repo-template/actions/gate", {"repository": "your-org/project"}),
+        ("btli/agent-repo-template/actions/apply", {"token": "${{ secrets.OTHER_TOKEN }}"}),
+        ("btli/agent-repo-template/actions/gate", {"github-token": "${{ github.token }}"}),
+        ("btli/agent-repo-template/actions/decide", {"default-branch": "other"}),
+        ("actions/checkout", {"ref": "other", "persist-credentials": False}),
+        ("actions/checkout", {"repository": "your-org/project", "persist-credentials": False}),
+        ("actions/checkout", {"persist-credentials": True}),
+        ("actions/download-artifact", {"run-id": "123"}),
+        ("actions/download-artifact", {"github-token": "${{ github.token }}"}),
+        ("actions/download-artifact", {"run-id": "123", "github-token": "${{ github.token }}"}),
+    ],
+)
+def test_target_restricted_inputs_ignore_case(spelling, action, inputs):
+    workflow = target_workflow(
+        action,
+        {
+            (
+                "persist-credentials"
+                if key == "persist-credentials" and len(inputs) > 1
+                else spelling(key)
+            ): value
+            for key, value in inputs.items()
+        },
+    )
+    assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
+
+
+@pytest.mark.parametrize("spelling", [str.upper, str.title], ids=["uppercase", "mixed-case"])
+def test_checkout_accepts_case_insensitive_safe_inputs(spelling):
+    inputs = {spelling("ref"): "${{ github.sha }}", spelling("persist-credentials"): False}
+    assert scan_template(target_workflow("actions/checkout", inputs)) == []
+
+
+@pytest.mark.parametrize(
+    "action", ["actions/checkout", "actions/upload-artifact", "actions/labeler"]
+)
+def test_target_rejects_duplicate_case_inputs(action):
+    workflow = target_workflow(action, {"persist-credentials": False, "PERSIST-CREDENTIALS": False})
+    assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
+
+
+@pytest.mark.parametrize(
+    "mutation", ["run", "foreign", "pin", "inputs", "outputs", "env", "permissions"]
+)
+def test_fix_rule_requires_canonical_gate(mutation):
+    workflow = fix_workflow()
+    gate = workflow["jobs"]["gate"]
+    if mutation == "run":
+        gate["steps"] = [{"run": 'echo "run=true" >> "$GITHUB_OUTPUT"'}]
+    elif mutation == "foreign":
+        gate["steps"][0]["uses"] = "your-org/gate@" + TEMPLATE_REF
+    elif mutation == "pin":
+        gate["steps"][0]["uses"] = "btli/agent-repo-template/actions/gate@" + "a" * 40
+    elif mutation == "inputs":
+        gate["steps"][0]["with"]["workflow"] = "review"
+    elif mutation == "outputs":
+        gate["outputs"]["run"] = "true"
+    elif mutation == "env":
+        gate["env"] = {"OTHER": "value"}
+    else:
+        workflow["permissions"] = {"contents": "write"}
+    result = scan_template(workflow)
+    assert any(item.job == "propose" and item.rule == "pull_request_target" for item in result)
+    assert "template-fix-propose" not in {item.rule for item in result}
+
+
+@pytest.mark.parametrize("step_index", [0, 2, 3, 4, 5])
+def test_fix_rule_rejects_noncanonical_input_spelling(step_index):
+    workflow = fix_workflow()
+    inputs = workflow["jobs"]["propose"]["steps"][step_index]["with"]
+    key = next(iter(inputs))
+    inputs[key.upper()] = inputs.pop(key)
+    assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
+
+
+def test_fix_rule_rejects_additional_dispatch_trigger():
+    workflow = fix_workflow()
+    workflow["on"]["workflow_dispatch"] = None
+    assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "renamed_setup_key",
+        "bracket_setup_key",
+        "quoted_numeric_setup_key",
+        "wrong_model_key",
+        "all_model_keys",
+        "dynamic_model_key",
+        "model_before_setup",
+        "second_setup",
+    ],
+)
+def test_rendered_review_key_confinement(mutation, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]))
+    from tools.render_consumer import render_consumer
+
+    rendered = render_consumer(TEMPLATE_REF, "v0.0.0", temporary_parent=tmp_path)
+    workflow = load_yaml(rendered / "consumer/.github/workflows/agent-review.yml")
+    steps = workflow["jobs"]["agent-propose-review"]["steps"]
+    if mutation.endswith("setup_key"):
+        secret = {
+            "renamed_setup_key": "${{ secrets.ANTHROPIC_API_KEY }}",
+            "bracket_setup_key": "${{ secrets['API_KEY'] }}",
+            "quoted_numeric_setup_key": '${{ secrets["API_KEY_2"] }}',
+        }[mutation]
+        steps[1]["env"] = {"LLM_API_KEY": secret}
+    elif mutation == "wrong_model_key":
+        steps[2]["env"] = {"LLM_API_KEY": "${{ secrets.AGENT_FIX_KEY }}"}
+    elif mutation == "all_model_keys":
+        steps[2]["env"] = {"LLM_API_KEY": "${{ toJSON(secrets) }}"}
+    elif mutation == "dynamic_model_key":
+        steps[2]["env"] = {"LLM_API_KEY": "${{ secrets[vars.ROLE_KEY] }}"}
+    elif mutation == "model_before_setup":
+        steps[1], steps[2] = steps[2], steps[1]
+    else:
+        steps.append(deepcopy(steps[1]))
+    result = scan_template(workflow)
+    assert any(
+        item.job == "agent-propose-review" and item.rule == "pull_request_target" for item in result
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "key"),
+    [
+        ("triage-agent", "AGENT_REVIEW_KEY"),
+        ("review-agent", "AGENT_TRIAGE_KEY"),
+        ("review-agent", "AGENT_FIX_KEY"),
+    ],
+)
+def test_model_actions_reject_other_role_keys(action, key):
+    workflow = target_workflow("btli/agent-repo-template/actions/" + action, {})
+    workflow["jobs"]["check"]["steps"][0]["env"] = {"LLM_API_KEY": "${{ secrets." + key + " }}"}
+    assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
