@@ -1217,6 +1217,28 @@ def test_target_allowlist_rejects_overrides(action, inputs):
         (("steps", 2, "with", "path"), "policy"),
         (("steps", 4, "with", "issue-file"), "${{ github.event.comment.body }}"),
         (("steps", 4, "with", "output-dir"), "policy"),
+        pytest.param(
+            ("steps", 4, "uses"),
+            "btli/agent-repo-template/actions/fix-agent@" + "a" * 40,
+            id="fix-agent-only-pin",
+        ),
+        pytest.param(
+            ("steps", 3, "uses"),
+            "btli/agent-repo-template/actions/setup@" + "a" * 40,
+            id="setup-only-pin",
+        ),
+        pytest.param(
+            ("steps", 3, "uses"),
+            "btli/agent-repo-template/actions/gate@" + TEMPLATE_REF,
+            id="gate-instead-of-setup",
+        ),
+        pytest.param(
+            ("steps", 4, "env", "NODE_OPTIONS"),
+            "--require /tmp/setup-env",
+            id="extra-model-env",
+        ),
+        pytest.param(("steps", 3, "with", "model"), "other", id="setup-model"),
+        pytest.param(("steps", 3, "with", "api-key-env"), "OTHER", id="setup-api-key-env"),
     ],
 )
 def test_fix_rule_requires_canonical_job(path, value):
@@ -1240,6 +1262,17 @@ def test_fix_rule_requires_self_pin(template_ref):
     assert [item.rule for item in scan_template(fix_workflow(), template_ref)] == [
         "pull_request_target"
     ]
+
+
+@pytest.mark.parametrize("mutation", ["workflow_env", "renamed_job"])
+def test_fix_rule_requires_canonical_workflow(mutation):
+    workflow = fix_workflow()
+    assert [item.rule for item in scan_template(workflow)] == ["template-fix-propose"]
+    if mutation == "workflow_env":
+        workflow["env"] = {"OTHER": "${{ secrets.OTHER }}"}
+    else:
+        workflow["jobs"]["renamed"] = workflow["jobs"].pop("propose")
+    assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
 
 
 def test_uniform_old_template_pin_is_ordinary_exposure():
@@ -1448,6 +1481,8 @@ def test_fix_rule_rejects_additional_dispatch_trigger():
         "workflow_env",
         "job_env",
         "uppercase_apply_mode",
+        "mixed_case_apply_mode",
+        "expression_apply_mode",
     ],
 )
 def test_rendered_review_key_confinement(mutation, tmp_path, monkeypatch):
@@ -1480,6 +1515,10 @@ def test_rendered_review_key_confinement(mutation, tmp_path, monkeypatch):
     elif mutation == "uppercase_apply_mode":
         del steps[2]["with"]["mode"]
         steps[2]["with"]["MODE"] = "apply"
+    elif mutation in {"mixed_case_apply_mode", "expression_apply_mode"}:
+        steps[2]["with"]["mode"] = (
+            "Apply" if mutation == "mixed_case_apply_mode" else "${{ 'apply' }}"
+        )
     else:
         steps.append(deepcopy(steps[1]))
     result = scan_template(workflow)
@@ -1502,4 +1541,16 @@ def test_rendered_review_key_confinement(mutation, tmp_path, monkeypatch):
 def test_model_actions_reject_other_role_keys(action, key):
     workflow = target_workflow("btli/agent-repo-template/actions/" + action, {})
     workflow["jobs"]["check"]["steps"][0]["env"] = {"LLM_API_KEY": "${{ secrets." + key + " }}"}
+    assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]
+
+
+@pytest.mark.parametrize("scope", ["workflow", "job"])
+def test_model_role_key_cannot_be_inherited_without_setup(scope):
+    workflow = target_workflow("btli/agent-repo-template/actions/review-agent", {"mode": "propose"})
+    job = workflow["jobs"]["check"]
+    step = job["steps"][0]
+    step["env"] = {"LLM_API_KEY": "${{ secrets.AGENT_REVIEW_KEY }}"}
+    assert scan_template(workflow) == []
+    inherited = workflow if scope == "workflow" else job
+    inherited["env"] = step.pop("env")
     assert [item.rule for item in scan_template(workflow)] == ["pull_request_target"]

@@ -467,7 +467,7 @@ def _role_keys_scoped(job: dict, workflow: dict) -> bool:
         step
         for step in _steps(job)
         if _pinned_action(step)[0] in {TEMPLATE_PREFIX + name for name in MODEL_ACTIONS}
-        and (_action_inputs(step) or {}).get("mode", "propose") != "apply"
+        and (_action_inputs(step) or {}).get("mode", "propose") == "propose"
     ]
     for step in _steps(job):
         if not _secret_names(step) & ROLE_KEYS:
