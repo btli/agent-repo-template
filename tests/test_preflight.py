@@ -1445,6 +1445,9 @@ def test_fix_rule_rejects_additional_dispatch_trigger():
         "dynamic_model_key",
         "model_before_setup",
         "second_setup",
+        "workflow_env",
+        "job_env",
+        "uppercase_apply_mode",
     ],
 )
 def test_rendered_review_key_confinement(mutation, tmp_path, monkeypatch):
@@ -1469,12 +1472,23 @@ def test_rendered_review_key_confinement(mutation, tmp_path, monkeypatch):
         steps[2]["env"] = {"LLM_API_KEY": "${{ secrets[vars.ROLE_KEY] }}"}
     elif mutation == "model_before_setup":
         steps[1], steps[2] = steps[2], steps[1]
+    elif mutation in {"workflow_env", "job_env"}:
+        inherited = (
+            workflow if mutation == "workflow_env" else workflow["jobs"]["agent-propose-review"]
+        )
+        inherited["env"] = {"LLM_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}
+    elif mutation == "uppercase_apply_mode":
+        del steps[2]["with"]["mode"]
+        steps[2]["with"]["MODE"] = "apply"
     else:
         steps.append(deepcopy(steps[1]))
     result = scan_template(workflow)
     assert any(
         item.job == "agent-propose-review" and item.rule == "pull_request_target" for item in result
     )
+    if mutation in {"workflow_env", "job_env"}:
+        inherited["env"]["LLM_API_KEY"] = "${{ secrets.GITHUB_TOKEN }}"
+        assert scan_template(workflow) == []
 
 
 @pytest.mark.parametrize(

@@ -685,6 +685,10 @@ def _target_unsafe(
     steps = _steps(job)
     if not steps or "container" in job or "services" in job:
         return True
+    if _secret_names([workflow.get("env"), job.get("env")]) and any(
+        _pinned_action(step)[0] == TEMPLATE_PREFIX + "setup" for step in steps
+    ):
+        return True
     return not _role_keys_scoped(job, workflow) or any(
         not _safe_target_action(step, steps[:index]) for index, step in enumerate(steps)
     )
