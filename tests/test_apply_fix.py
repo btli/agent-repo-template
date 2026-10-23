@@ -26,6 +26,11 @@ class FixAPI:
         self.move_at = None
         self.tree_reads = 0
         self.conflict = False
+        self.installation = {
+            "repository_selection": "all",
+            "total_count": 2,
+            "repositories": [{"full_name": "your-org/project"}, {"full_name": "your-org/other"}],
+        }
 
     def paginate(self, path, params=None):
         self.reads.append(path)
@@ -51,6 +56,11 @@ class FixAPI:
                 return self.pull
             return {"sha": "a" * 40}
         self.reads.append(path)
+        if path == "/installation/repositories":
+            assert self.writes == []
+            if isinstance(self.installation, Exception):
+                raise self.installation
+            return self.installation
         if path == "git/ref/heads/main":
             return {"object": {"sha": self.base}}
         if path == "contents/.github/workflows":
@@ -209,7 +219,7 @@ def test_fix_does_not_push_when_policy_or_workflow_tree_refuses(fix_case, reason
                 "workflow": "ci.yml",
                 "job": "test",
                 "rule": "secrets",
-                "detail": "UNSAFE ON SHARED APP" if reason == "shared-app" else "exposed",
+                "detail": "exposed",
                 "secrets": ["ROLE_SECRET"],
             }
         ]
@@ -227,12 +237,65 @@ def test_fix_does_not_push_when_policy_or_workflow_tree_refuses(fix_case, reason
     assert any(word in result.casefold() for word in ["dry-run", "unsafe", "moved"])
 
 
-def test_exposure_bypass_names_secrets_in_body_and_summary(fix_case):
+@pytest.mark.parametrize("mode", ["dry-run", "live"])
+@pytest.mark.parametrize(
+    "reach",
+    [
+        pytest.param(
+            {
+                "repository_selection": "all",
+                "total_count": 1,
+                "repositories": [{"full_name": "your-org/project"}],
+            },
+            id="all",
+        ),
+        pytest.param(
+            {
+                "repository_selection": "selected",
+                "total_count": 2,
+                "repositories": [
+                    {"full_name": "your-org/project"},
+                    {"full_name": "your-org/other"},
+                ],
+            },
+            id="two",
+        ),
+        pytest.param(
+            {
+                "repository_selection": "selected",
+                "total_count": 1,
+                "repositories": [{"full_name": "YOUR-ORG/PROJECT"}],
+            },
+            id="scoped-single",
+        ),
+        pytest.param(GitHubError(403, "synthetic-scan-key"), id="403"),
+        pytest.param(GitHubError(500, "synthetic-scan-key"), id="500"),
+        pytest.param(None, id="null"),
+        pytest.param([], id="array"),
+        pytest.param({}, id="missing-fields"),
+        pytest.param(
+            {
+                "repository_selection": "selected",
+                "total_count": "1",
+                "repositories": [{"full_name": "your-org/project"}],
+            },
+            id="malformed-count",
+        ),
+        pytest.param(
+            {
+                "repository_selection": "selected",
+                "total_count": 1,
+                "repositories": [{"full_name": "your-org/other"}],
+            },
+            id="different-repo",
+        ),
+    ],
+)
+def test_installation_reach_withholds_accepted_exposure(fix_case, mode, reach):
     case = fix_case
+    case["ctx"].config.raw["mode"]["fix"] = mode
     case["ctx"].config.raw["fix"]["accept_ci_exposure"] = True
-    case["preflight"].update(pass_=False)
-    case["preflight"].pop("pass_")
-    case["preflight"]["pass"] = False
+    case["api"].installation = reach
     case["preflight"]["exposures"] = [
         {
             "workflow": "ci.yml",
@@ -243,8 +306,38 @@ def test_exposure_bypass_names_secrets_in_body_and_summary(fix_case):
         }
     ]
     result = apply_case(case)
-    body = next(body for _, path, body in case["api"].writes if path == "pulls")["body"]
-    assert "ROLE_SECRET" in result and "ROLE_SECRET" in body
+    assert result == "UNSAFE ON SHARED APP: patch retained; no push."
+    assert case["api"].reads.count("/installation/repositories") == 1
+    assert all(path == "issues/12/comments" for _, path, _ in case["api"].writes)
+    assert len(case["api"].writes) == (1 if mode == "live" else 0)
+    if mode == "live":
+        assert case["api"].writes[0][2]["body"].splitlines()[0] == result
+    assert "synthetic-scan-key" not in result
+
+
+@pytest.mark.parametrize("preflight_pass", [False, True])
+def test_installation_read_requires_valid_preflight_and_ci_exposure(fix_case, preflight_pass):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    case["ctx"].config.raw["mode"]["fix"] = "dry-run"
+    case["preflight"]["pass"] = preflight_pass
+    case["preflight"]["accepted_template_exposures"] = [
+        {"rule": "template-fix-propose", "job": "propose", "secret": "AGENT_FIX_KEY"}
+    ]
+    case["preflight"]["base_sha"] = "c" * 40
+    with pytest.raises(Violation):
+        apply_case(case)
+    assert case["api"].reads == [] and case["api"].writes == []
+    case["preflight"]["base_sha"] = case["base"]
+    result = apply_case(case)
+    assert case["api"].reads == ([] if preflight_pass else ["/installation/repositories"])
+    assert result == (
+        "Fix dry-run: validated patch; no writes. "
+        if preflight_pass
+        else "UNSAFE ON SHARED APP: patch retained; no push."
+    )
+    assert case["api"].writes == []
 
 
 def test_feedback_patch_is_cumulative_but_commit_is_child_of_captured_head(fix_case):
@@ -335,7 +428,9 @@ def test_manifest_changes_gate_new_dependencies_and_require_maintainer(
         )
 
 
-def test_apply_command_uses_event_policy_and_trusted_context(fix_case, tmp_path, monkeypatch):
+def test_apply_command_uses_event_policy_and_trusted_context(
+    fix_case, tmp_path, monkeypatch, capsys
+):
     from agent_repo.commands import apply_fix
 
     case = fix_case
@@ -382,6 +477,17 @@ def test_apply_command_uses_event_policy_and_trusted_context(fix_case, tmp_path,
     assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 0
     assert policy_reads == [case["base"]]
     assert "dry-run" in (tmp_path / "summary").read_text()
+    assert case["api"].writes == []
+    assert "/installation/repositories" not in case["api"].reads
+    case["preflight"]["pass"] = False
+    case["ctx"].config.raw["fix"]["accept_ci_exposure"] = True
+    assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "UNSAFE ON SHARED APP: patch retained; no push."
+    )
+    assert (tmp_path / "summary").read_text().splitlines()[-1] == (
+        "UNSAFE ON SHARED APP: patch retained; no push."
+    )
     assert case["api"].writes == []
     trusted = json.loads(context.read_text())
     for key, value in {

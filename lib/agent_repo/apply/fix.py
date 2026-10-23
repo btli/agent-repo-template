@@ -380,11 +380,23 @@ def apply_fix(
         raise Violation("Fix refused: preflight identity or schema.")
     exposures = preflight["exposures"]
     unsafe = not preflight["pass"] or bool(exposures)
-    shared_app = any("UNSAFE ON SHARED APP" in item["detail"].upper() for item in exposures)
+    shared_app = False
+    if unsafe:
+        try:
+            ctx.github.request("GET", "/installation/repositories")
+        except GitHubError:
+            pass
+        # A repository-scoped token's response does not prove installation-wide reach.
+        shared_app = True
     bypass = ctx.config.raw["fix"]["accept_ci_exposure"] and not shared_app
     names = sorted({name for item in exposures for name in item["secrets"]})
     exposure_note = "Accepted CI exposure: " + ", ".join(names) if unsafe and bypass else ""
     if unsafe and not bypass:
+        result = (
+            "UNSAFE ON SHARED APP: patch retained; no push."
+            if shared_app
+            else "UNSAFE: patch retained; no push."
+        )
         if mode == "live":
             _enabled(ctx, issue)
             ctx.github.request(
@@ -392,11 +404,12 @@ def apply_fix(
                 f"issues/{issue}/comments",
                 body={
                     "body": (
-                        "Fix withheld: unsafe CI exposure. Patch retained for maintainer review."
+                        result + "\nFix withheld: unsafe CI exposure. "
+                        "Patch retained for maintainer review."
                     )
                 },
             )
-        return "UNSAFE: patch retained; no push."
+        return result
     if mode == "dry-run":
         return "Fix dry-run: validated patch; no writes. " + exposure_note
     _enabled(ctx, issue)
