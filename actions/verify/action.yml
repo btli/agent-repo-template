@@ -1,0 +1,22 @@
+name: Verify agent fix
+description: Prove pytest reproduction at Agent-Base and success at head without credentials.
+inputs:
+  work-path:
+    description: Head checkout with complete history.
+    required: true
+  policy-path:
+    description: Trusted default-branch policy checkout.
+    required: true
+  bot-login:
+    description: Trusted GitHub App bot login.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Verify fix
+      shell: bash
+      env:
+        VERIFY_WORK: ${{ inputs.work-path }}
+        VERIFY_POLICY: ${{ inputs.policy-path }}
+        AGENT_BOT_LOGIN: ${{ inputs.bot-login }}
+      run: python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" verify "$VERIFY_WORK" "$VERIFY_POLICY"

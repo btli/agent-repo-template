@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import secrets
 import sys
 from datetime import UTC, datetime
@@ -42,7 +44,56 @@ def _write_outputs(result: GateResult) -> None:
             output.write(f"{name}={value}\n")
 
 
+def _fix_context(directory: Path) -> int:
+    try:
+        issue = os.environ["GATE_FIX_ISSUE"]
+        base = os.environ["GATE_FIX_BASE"]
+        canary = os.environ["GATE_FIX_CANARY"]
+        run_id = os.environ["GITHUB_RUN_ID"]
+        if (
+            os.environ["GATE_FIX_AUTHORIZED"] != "true"
+            or re.fullmatch(r"[1-9][0-9]*", issue) is None
+            or re.fullmatch(r"[0-9a-f]{40}", base) is None
+            or re.fullmatch(r"[0-9a-f]{32}", canary) is None
+            or re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", run_id) is None
+        ):
+            raise ValueError
+        event = load_event(os.environ["GITHUB_EVENT_NAME"], Path(os.environ["GITHUB_EVENT_PATH"]))
+        token = os.environ["GITHUB_TOKEN"]
+        if event.is_pr:
+            item = GitHub(token, event.repo).request("GET", f"issues/{issue}")
+            if "pull_request" in item:
+                raise ValueError
+            title, body = item["title"], item.get("body") or ""
+        else:
+            if str(event.number) != issue:
+                raise ValueError
+            title, body = event.title, event.body
+        text = f"{title}\n\n{body}\n\n{event.comment_body or ''}"[:100000]
+        if token and token in text:
+            raise ValueError
+        directory.mkdir(parents=True, exist_ok=True)
+        if directory.is_symlink() or any(
+            (directory / name).is_symlink() for name in ("issue.txt", "canary.json")
+        ):
+            raise ValueError
+        (directory / "issue.txt").write_text(text, encoding="utf-8")
+        (directory / "canary.json").write_text(
+            json.dumps(
+                {"schema_version": "1", "run_id": run_id, "base_sha": base, "canary": canary}
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return 0
+    except Exception:
+        print("Fix context unavailable.", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[0] == "fix-context":
+        return _fix_context(Path(argv[1]))
     if len(argv) != 2 or argv[0] not in {"triage", "review", "fix"}:
         print("usage: gate <triage|review|fix> <default-branch-checkout>", file=sys.stderr)
         return 2

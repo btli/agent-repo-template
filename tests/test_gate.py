@@ -76,6 +76,8 @@ class FakeTransport:
             start = (int(query.get("page", ["1"])[0]) - 1) * 100
             data = [dict(item, user=_typed_user(item.get("user"))) for item in data]
             data = data[start : start + 100]
+        elif path == "issues/3":
+            status, data = 200, {"title": "Parser failure", "body": "Reproduce the issue."}
         elif path.startswith("git/commits/"):
             message = f"Fix the parser\n\nAgent-Base: {AGENT_BASE}\nAgent-Run: 41\n"
             status, data = 200, {"sha": path.rsplit("/", 1)[1], "message": message}
@@ -1207,3 +1209,78 @@ def test_composite_action_executes_gate_and_exposes_outputs(enabled, tmp_path, m
     assert set(action["outputs"]) == set(values)
     for key in values:
         assert action["outputs"][key]["value"] == "${{ steps.gate.outputs." + key + " }}"
+
+
+@pytest.mark.parametrize("feedback", [False, True])
+def test_fix_context_is_uploaded_by_gate_and_contains_private_canary(
+    feedback, tmp_path, monkeypatch
+):
+    from agent_repo.commands import gate
+
+    checkout, event_path, output = prepare_cli(tmp_path, monkeypatch)
+    case = (
+        feedback_case()
+        if feedback
+        else copy.deepcopy(next(c for c in CASES if c["id"] == "authorized-fix"))
+    )
+    event_path.write_text(json.dumps(case["payload"]))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    client = GitHub(TOKEN, "your-org/project", transport=FakeTransport(case))
+    monkeypatch.setattr(gate, "GitHub", lambda *args: client)
+    assert gate.main(["fix", str(checkout)]) == 0
+    values = read_outputs(output)
+    context = tmp_path / "context"
+    monkeypatch.setenv("GATE_FIX_ISSUE", values["issue"])
+    monkeypatch.setenv("GATE_FIX_CANARY", values["canary"])
+    monkeypatch.setenv("GATE_FIX_BASE", values["base_sha"])
+    monkeypatch.setenv("GATE_FIX_AUTHORIZED", values["run"])
+    # Context uses the authorized event's text, not a fresh model-written artifact.
+    assert gate.main(["fix-context", str(context)]) == 0
+    text = (context / "issue.txt").read_text()
+    assert case["payload"]["comment"]["body"] in text
+    assert values["canary"] not in text
+    canary = json.loads((context / "canary.json").read_text())
+    assert canary == {
+        "schema_version": "1",
+        "run_id": "99",
+        "base_sha": values["base_sha"],
+        "canary": values["canary"],
+    }
+    action = load_yaml(Path("actions/gate/action.yml"))
+    upload = next(
+        step
+        for step in action["runs"]["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    )
+    assert upload["if"] == "inputs.workflow == 'fix' && steps.gate.outputs.run == 'true'"
+    assert upload["with"]["name"] == "agent-fix-context-${{ github.run_id }}"
+    assert upload["with"]["path"] == "${{ runner.temp }}/agent-fix/context"
+    assert upload["with"]["retention-days"] == 1
+
+
+@pytest.mark.parametrize("problem", ["unauthorized", "canary", "identity"])
+def test_fix_context_fails_closed_without_authorized_gate_inputs(
+    problem, tmp_path, monkeypatch, capsys
+):
+    from agent_repo.commands import gate
+
+    _, _, _ = prepare_cli(tmp_path, monkeypatch)
+    for key, value in {
+        "GATE_FIX_AUTHORIZED": "true",
+        "GATE_FIX_ISSUE": "12",
+        "GATE_FIX_BASE": EVENT_SHA,
+        "GATE_FIX_CANARY": "b" * 32,
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv(
+        {
+            "unauthorized": "GATE_FIX_AUTHORIZED",
+            "canary": "GATE_FIX_CANARY",
+            "identity": "GATE_FIX_BASE",
+        }[problem],
+        TOKEN,
+    )
+    directory = tmp_path / "context"
+    assert gate.main(["fix-context", str(directory)]) == 1
+    assert not (directory / "canary.json").exists()
+    assert TOKEN not in str(capsys.readouterr())

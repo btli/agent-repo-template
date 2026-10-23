@@ -1,6 +1,39 @@
 name: Apply agent proposal
 description: Validate, scan and apply a triage artifact with trusted default-branch policy.
 inputs:
+  mode:
+    description: Proposal role, triage or fix.
+    default: triage
+  patch:
+    description: Downloaded cumulative fix patch.
+    default: ''
+  context-file:
+    description: Trusted gate canary artifact from this run.
+    default: ''
+  work-path:
+    description: Credential-free event-time work checkout.
+    default: ''
+  policy-path:
+    description: Credential-free event-time policy checkout.
+    default: ''
+  fix-issue:
+    description: Trusted gate issue output.
+    default: ''
+  base-sha:
+    description: Trusted gate base output.
+    default: ''
+  feedback-head-sha:
+    description: Trusted gate feedback head output.
+    default: ''
+  feedback-head-ref:
+    description: Trusted gate branch output.
+    default: ''
+  ci-readonly:
+    description: Confirmed read-only default CI token permissions.
+    default: 'false'
+  safe-environments:
+    description: Environments confirmed to exclude agent branches.
+    default: ''
   artifact:
     description: Path to the downloaded decision JSON.
     required: true
@@ -14,8 +47,8 @@ inputs:
     description: Trusted AGENT_BOT_LOGIN of the GitHub App that posts comments.
     required: true
   canary:
-    description: Canary for this proposal run.
-    required: true
+    description: Canary for this triage proposal run.
+    default: ''
   capped:
     description: Trusted gate cycle-cap result.
     default: 'false'
@@ -26,6 +59,7 @@ runs:
   using: composite
   steps:
     - name: Apply triage
+      if: inputs.mode == 'triage'
       shell: bash
       env:
         PYTHONPATH: ${{ github.action_path }}/../../lib
@@ -37,3 +71,23 @@ runs:
         AGENT_CAPPED: ${{ inputs.capped }}
         AGENT_OFF_AUTHORIZED: ${{ inputs.off-authorized }}
       run: python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" apply "$AGENT_ARTIFACT"
+
+    - name: Apply fix
+      if: inputs.mode == 'fix'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        AGENT_SCAN_KEYS: ${{ inputs.scan-keys }}
+        AGENT_BOT_LOGIN: ${{ inputs.bot-login }}
+        FIX_ARTIFACT: ${{ inputs.artifact }}
+        FIX_PATCH: ${{ inputs.patch }}
+        FIX_WORK: ${{ inputs.work-path }}
+        FIX_CONTEXT: ${{ inputs.context-file }}
+        FIX_ISSUE: ${{ inputs.fix-issue }}
+        FIX_BASE: ${{ inputs.base-sha }}
+        FIX_HEAD: ${{ inputs.feedback-head-sha }}
+        FIX_REF: ${{ inputs.feedback-head-ref }}
+        AGENT_TEMPLATE_REF: ${{ github.action_ref }}
+        AGENT_CI_DEFAULT_TOKEN_READONLY: ${{ inputs.ci-readonly }}
+        AGENT_SAFE_ENVIRONMENTS: ${{ inputs.safe-environments }}
+      run: python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" apply_fix "$FIX_ARTIFACT" "$FIX_PATCH" "$FIX_WORK" "$FIX_CONTEXT"

@@ -52,9 +52,10 @@ def test_rendered_consumer_preflight_and_role_key_scope(mutation, tmp_path):
         for path in (rendered / "consumer/.github/workflows").glob("*.yml")
     }
     context = PreflightContext("main", template_ref=template_ref)
-    assert analyze(workflows, context) == []
-    fixture = load_yaml(Path("tests/fixtures/preflight/template_fix_propose.yml"))
-    workflows["agent-fix.yml"] = fixture
+    canonical = load_yaml(Path("tests/fixtures/preflight/template_fix_propose.yml"))
+    fixture = workflows["agent-fix.yml"]
+    assert fixture["jobs"]["gate"] == canonical["jobs"]["gate"]
+    assert fixture["jobs"]["propose"] == canonical["jobs"]["propose"]
     result = analyze(workflows, context)
     assert [(item.rule, item.job, item.secrets) for item in result] == [
         ("template-fix-propose", "propose", ("AGENT_FIX_KEY",))
@@ -387,3 +388,50 @@ def test_render_consumer_rejects_destination_outside_system_temporary_directory(
     monkeypatch.setattr(render_module.tempfile, "gettempdir", lambda: str(tmp_path / "system-temp"))
     with pytest.raises(ValueError, match="system temporary directory"):
         render_consumer("f" * 40, "v0.0.0", temporary_parent=tmp_path)
+
+
+def test_rendered_fix_apply_and_verify_boundaries(tmp_path):
+    from tools.render_consumer import render_consumer
+
+    rendered = render_consumer("b" * 40, "v0.0.0", temporary_parent=tmp_path)
+    fix = load_yaml(rendered / "consumer/.github/workflows/agent-fix.yml")
+    assert fix["on"] == {"issue_comment": {"types": ["created"]}, "issues": {"types": ["labeled"]}}
+    apply = fix["jobs"]["apply"]
+    assert apply["needs"] == ["gate", "propose"]
+    assert apply["if"] == "needs.propose.result == 'success'"
+    assert apply["environment"] == "agent-apply" and "concurrency" not in apply
+    checkouts = [
+        step for step in apply["steps"] if step.get("uses", "").startswith("actions/checkout@")
+    ]
+    assert {step["with"]["path"] for step in checkouts} == {"work", "policy"}
+    assert all(step["with"]["persist-credentials"] is False for step in checkouts)
+    token = next(step for step in apply["steps"] if step.get("id") == "app-token")
+    assert {
+        key: value for key, value in token["with"].items() if key.startswith("permission-")
+    } == {
+        "permission-contents": "write",
+        "permission-pull-requests": "write",
+        "permission-issues": "write",
+    }
+    context = next(step for step in apply["steps"] if step.get("name") == "Download gate context")
+    assert context["with"]["name"] == "agent-fix-context-${{ github.run_id }}"
+    action = load_yaml(Path("actions/apply/action.yml"))
+    command = next(step for step in action["runs"]["steps"] if step.get("name") == "Apply fix")
+    assert command["if"] == "inputs.mode == 'fix'"
+    assert 'agent_repo_cli.py" apply_fix' in command["run"]
+    assert command["env"]["FIX_CONTEXT"] == "${{ inputs.context-file }}"
+    verify = load_yaml(rendered / "consumer/.github/workflows/agent-verify.yml")
+    assert set(verify["on"]) == {"pull_request"} and not (verify["on"]["pull_request"] or {}).get(
+        "branches"
+    )
+    job = verify["jobs"]["verify"]
+    assert job["permissions"] == {"contents": "read"}
+    for expression in [
+        "startsWith(github.head_ref, 'agent/fix-')",
+        "github.event.pull_request.head.repo.full_name == github.repository",
+        "github.event.pull_request.base.ref == github.event.repository.default_branch",
+        "github.event.pull_request.user.type == 'Bot'",
+    ]:
+        assert expression in job["if"]
+    assert "secrets." not in json.dumps(verify)
+    assert "setup" not in json.dumps(job["steps"])
