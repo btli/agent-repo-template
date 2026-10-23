@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from agent_repo.charter import _sections, lint_charter
+from agent_repo.preflight import PreflightContext, analyze
 from agent_repo.schema import load_schema, validate
 from agent_repo.yamljson import load_yaml
 
@@ -27,6 +28,59 @@ def test_rendered_consumer_policy_is_valid_and_stays_in_temporary_directory(tmp_
     assert not rendered.is_relative_to(Path.cwd() / ".github")
     assert validate(config, load_schema("config")) == []
     assert lint_charter(charter) == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "setup_key",
+        "job_key",
+        "workflow_key",
+        "second_model",
+        "key_input",
+        "dynamic_setup_key",
+    ],
+)
+def test_rendered_consumer_preflight_and_role_key_scope(mutation, tmp_path):
+    from tools.render_consumer import render_consumer
+
+    template_ref = "43c2d3b58ce3ebccd38d9ee2a05464966b6a94da"
+    rendered = render_consumer(template_ref, "v0.0.0", temporary_parent=tmp_path)
+    workflows = {
+        path.name: load_yaml(path)
+        for path in (rendered / "consumer/.github/workflows").glob("*.yml")
+    }
+    context = PreflightContext("main", template_ref=template_ref)
+    assert analyze(workflows, context) == []
+    fixture = load_yaml(Path("tests/fixtures/preflight/template_fix_propose.yml"))
+    workflows["agent-fix.yml"] = fixture
+    result = analyze(workflows, context)
+    assert [(item.rule, item.job, item.secrets) for item in result] == [
+        ("template-fix-propose", "propose", ("AGENT_FIX_KEY",))
+    ]
+    propose = fixture["jobs"]["propose"]
+    assert propose["steps"][4]["with"]["agent-timeout"] < propose["timeout-minutes"] * 60 - 240
+    if mutation:
+        job = workflows["agent-review.yml"]["jobs"]["agent-propose-review"]
+        key = {"LLM_API_KEY": "${{ secrets.AGENT_REVIEW_KEY }}"}
+        if mutation == "setup_key":
+            job["steps"][1]["env"] = key
+        elif mutation == "dynamic_setup_key":
+            job["steps"][1]["env"] = {"LLM_API_KEY": "${{ secrets[vars.ROLE_KEY] }}"}
+        elif mutation == "job_key":
+            job["env"] = key
+        elif mutation == "workflow_key":
+            workflows["agent-review.yml"]["env"] = key
+        elif mutation == "second_model":
+            job["steps"].append(dict(job["steps"][2]))
+        else:
+            job["steps"][2]["with"]["extra"] = "${{ secrets.AGENT_REVIEW_KEY }}"
+        result = analyze(workflows, context)
+        assert any(
+            item.workflow == "agent-review.yml" and item.rule == "pull_request_target"
+            for item in result
+        )
 
 
 def test_rendered_workflow_has_no_template_tokens(tmp_path: Path):

@@ -9,7 +9,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from agent_repo.github import GitHub
-from agent_repo.preflight import PreflightContext, analyze
+from agent_repo.preflight import FIX_RULE, PreflightContext, analyze
+from agent_repo.schema import load_schema, validate
 from agent_repo.yamljson import load_yaml
 
 
@@ -75,12 +76,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--output", type=Path, default=Path("preflight.json"))
     parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
     parser.add_argument("--base-sha", default=os.environ.get("GITHUB_SHA", ""))
+    parser.add_argument("--template-ref")
     args = parser.parse_args(argv)
     artifact = {
+        "schema_version": "1",
         "run_id": args.run_id,
         "base_sha": args.base_sha,
         "workflow_tree_sha": None,
         "exposures": [],
+        "accepted_template_exposures": [],
         "pass": False,
     }
     result = 0
@@ -95,15 +99,24 @@ def main(argv: list[str]) -> int:
             args.agent_ref_glob,
             args.token_readonly,
             frozenset(args.safe_environment),
+            args.template_ref,
         )
         exposures = analyze(workflows, context)
         artifact["workflow_tree_sha"] = tree_sha
-        artifact["exposures"] = [asdict(item) for item in exposures]
-        artifact["pass"] = not exposures
+        for item in exposures:
+            if item.rule == FIX_RULE:
+                artifact["accepted_template_exposures"].append(
+                    {"rule": item.rule, "job": item.job, "secret": "AGENT_FIX_KEY"}
+                )
+            else:
+                artifact["exposures"].append({**asdict(item), "secrets": list(item.secrets)})
+        artifact["pass"] = not artifact["exposures"]
     except Exception:
         print("Preflight could not verify consumer workflows.", file=sys.stderr)
         result = 1
     try:
+        if validate(artifact, load_schema("preflight")):
+            raise ValueError("invalid preflight artifact")
         serialized = json.dumps(artifact, indent=2) + "\n"
         if args.output.is_symlink():
             raise OSError("output must not be a symlink")
@@ -117,6 +130,15 @@ def main(argv: list[str]) -> int:
         print("Preflight could not write its result.", file=sys.stderr)
         result = 1
     try:
+        for _accepted in artifact["accepted_template_exposures"]:
+            message = (
+                "Accepted template exposure: template-fix-propose "
+                "job=propose secret=AGENT_FIX_KEY\n"
+            )
+            print(message, end="")
+            if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+                with Path(summary).open("a") as handle:
+                    handle.write(message)
         output = f"pass={str(artifact['pass']).lower()}\n"
         if github_output := os.environ.get("GITHUB_OUTPUT"):
             with Path(github_output).open("a") as handle:

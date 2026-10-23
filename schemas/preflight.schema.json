@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "base_sha", "workflow_tree_sha", "exposures", "accepted_template_exposures", "pass"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "run_id": {"type": "string"},
+    "base_sha": {"type": "string", "pattern": "^([0-9a-f]{40})?$"},
+    "workflow_tree_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "pass": {"type": "boolean"},
+    "exposures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workflow", "job", "rule", "detail", "secrets"],
+        "properties": {
+          "workflow": {"type": "string"},
+          "job": {"type": "string"},
+          "rule": {"enum": ["permissions", "id-token", "secrets", "runner", "workflow_run", "pull_request_target", "agent-apply", "reusable_workflow"]},
+          "detail": {"type": "string"},
+          "secrets": {"type": "array", "items": {"type": "string", "pattern": "^([A-Z_][A-Z_0-9]*|\\*)$"}}
+        }
+      }
+    },
+    "accepted_template_exposures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule", "job", "secret"],
+        "properties": {
+          "rule": {"enum": ["template-fix-propose"]},
+          "job": {"const": "propose"},
+          "secret": {"const": "AGENT_FIX_KEY"}
+        }
+      }
+    }
+  }
+}
