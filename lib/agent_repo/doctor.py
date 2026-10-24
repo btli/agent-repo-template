@@ -309,7 +309,12 @@ def run_doctor(
             report.error(f"Missing variable {name}; rerun bootstrap to set it.")
     gateway = variables.get("AGENT_GATEWAY_URL")
     allowed = variables.get("AGENT_FIX_ALLOWED_ENDPOINTS")
-    if gateway and allowed is not None and valid_https_url(gateway):
+    if gateway and not valid_https_url(gateway):
+        report.error(
+            "AGENT_GATEWAY_URL must be an https URL without credentials or query; "
+            "rerun bootstrap with --gateway-url."
+        )
+    elif gateway and allowed is not None:
         if gateway_endpoint(gateway) not in allowed.split():
             report.error(
                 "AGENT_FIX_ALLOWED_ENDPOINTS does not allow the gateway "

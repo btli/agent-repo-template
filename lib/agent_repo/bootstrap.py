@@ -65,7 +65,9 @@ CONTRIBUTING_SECTION = "CONTRIBUTING.agents.md"
 SHA = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
-SECRET_LOOKING = re.compile(r"gh[pousr]_|github_pat_|sk-|xox[abprs]-|AKIA|-----BEGIN|dapi", re.I)
+SECRET_LOOKING = re.compile(
+    r"(?:^|[^A-Za-z0-9])(?:gh[pousr]_|github_pat_|sk-|xox[abprs]-|AKIA|dapi)|-----BEGIN", re.I
+)
 RULESETS_UNAVAILABLE = (
     "Rulesets are unavailable for this repository; bootstrap cannot protect non-agent refs."
 )
@@ -160,13 +162,14 @@ def valid_https_url(value: object) -> bool:
         return False
     parsed = urlsplit(value)
     try:
-        # Reading the port raises ValueError when it is not a number or is out of range.
-        _ = parsed.port
+        # Reading the port raises ValueError when it is not a number or is above 65535.
+        port = parsed.port
     except ValueError:
         return False
     return (
         parsed.scheme == "https"
         and bool(parsed.hostname)
+        and port != 0
         and not (parsed.username or parsed.password or parsed.query or parsed.fragment)
     )
 
@@ -242,17 +245,20 @@ def blob_sha(data: bytes) -> str:
     return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
 
 
-def read_tree(gh: Gh, repo: str, commit: str) -> tuple[str, dict[str, str]]:
+def read_tree(gh: Gh, repo: str, commit: str) -> tuple[str, dict[str, str], dict[str, tuple]]:
+    """Return the tree SHA, blob SHAs by path, and every leaf entry as (type, mode, SHA)."""
     tree = gh.get(f"repos/{repo}/git/trees/{commit}?recursive=1")
     entries = _field(tree, "tree")
     if _field(tree, "truncated") is not False or not isinstance(entries, list):
         raise BootstrapError("The repository tree is too large to read.")
-    files = {
-        entry["path"]: entry["sha"]
+    # Directory entries follow from the leaves under them, so only leaves are compared.
+    leaves = {
+        entry["path"]: (entry.get("type"), entry.get("mode"), entry.get("sha"))
         for entry in entries
-        if isinstance(entry, dict) and entry.get("type") == "blob"
+        if isinstance(entry, dict) and entry.get("type") != "tree"
     }
-    return _sha(_field(tree, "sha")), files
+    files = {path: sha for path, (kind, _, sha) in leaves.items() if kind == "blob"}
+    return _sha(_field(tree, "sha")), files, leaves
 
 
 def read_blob(gh: Gh, repo: str, sha: str) -> bytes:
@@ -301,6 +307,7 @@ class Target:
     files: dict[str, str]
     admin: bool
     owner_type: object
+    leaves: dict[str, tuple]
 
 
 def read_target(gh: Gh, repo: str) -> Target:
@@ -309,9 +316,10 @@ def read_target(gh: Gh, repo: str) -> Target:
     if not isinstance(branch, str):
         raise BootstrapError("Cannot read the target repository.")
     head = _sha(_field(gh.get(f"repos/{repo}/git/ref/heads/{quote(branch)}"), "object", "sha"))
-    tree_sha, files = read_tree(gh, repo, head)
+    tree_sha, files, leaves = read_tree(gh, repo, head)
     admin = _field(info, "permissions", "admin") is True
-    return Target(repo, branch, head, tree_sha, files, admin, _field(info, "owner", "type"))
+    owner_type = _field(info, "owner", "type")
+    return Target(repo, branch, head, tree_sha, files, admin, owner_type, leaves)
 
 
 def file_content(gh: Gh, target: Target, path: str) -> bytes | None:
@@ -724,9 +732,9 @@ def plan_proposal(
         return f"gh pr close {_field(pull, 'number')} --repo {repo}"
 
     if existing:
-        _, branch_files = read_tree(gh, repo, _sha(_field(existing[0], "object", "sha")))
-        expected = {**target.files, **{path: blob_sha(data) for path, data in changes.items()}}
-        if branch_files != expected:
+        _, _, branch_leaves = read_tree(gh, repo, _sha(_field(existing[0], "object", "sha")))
+        planned = {path: ("blob", "100644", blob_sha(data)) for path, data in changes.items()}
+        if branch_leaves != {**target.leaves, **planned}:
             plan.errors.append(
                 f"Branch {branch} already exists with other content; "
                 "merge or delete it, then rerun."
@@ -803,7 +811,9 @@ def fix_endpoints(url: str, previous_url: str | None, current: str | None) -> st
     entries = current.split()
     if previous_url is not None and valid_https_url(previous_url):
         old = gateway_endpoint(previous_url)
-        entries = [endpoint if entry == old else entry for entry in entries]
+        if old in entries:
+            entries[entries.index(old)] = endpoint
+    entries += [f"{host}:443" for host in FIX_ENDPOINT_HOSTS if f"{host}:443" not in entries]
     if endpoint not in entries:
         entries.insert(0, endpoint)
     return " ".join(entries)

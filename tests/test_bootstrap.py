@@ -348,10 +348,12 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
     stale_kind = "sk-" + "S3cr3tL00kingValue" * 2
     stale_login = "ghp_" + "S3cr3tL00kingValue" * 2
     stale_url = "https://user:" + "plainpassword@old-gateway.example.com"
+    stale_path = "https://systemone.example.com/ghp_" + "S3cr3tL00kingValue" * 2
     stale = {
         "AGENT_GATEWAY_KIND": stale_kind,
         "AGENT_BOT_LOGIN": stale_login,
         "AGENT_GATEWAY_URL": stale_url,
+        "AGENT_SYSTEM_ONE_URL": stale_path,
         "AGENT_FIX_MODEL": "gpt-4o",
     }
     responses[f"GET {TARGET}/actions/variables"] = {
@@ -388,7 +390,7 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
         assert rejected.returncode == 1
         assert fake.writes() == []
         output = result.stdout + result.stderr + rejected.stdout + rejected.stderr
-        secrets = (stale_kind, stale_login, stale_url, credential_url, secret_kind)
+        secrets = (stale_kind, stale_login, stale_url, stale_path, credential_url, secret_kind)
         for value in (*secrets, *synthetic.values()):
             assert value not in output + json.dumps(fake.journal())
 
@@ -452,24 +454,35 @@ def test_bootstrap_stops_before_any_write(tmp_path, change, message):
         assert fake.writes() == []
 
 
-@pytest.mark.parametrize("difference", [None, "extra", "missing", "contributing"])
+@pytest.mark.parametrize(
+    "difference", [None, "extra", "missing", "contributing", "submodule", "mode"]
+)
 def test_an_existing_bootstrap_branch_must_hold_exactly_the_planned_tree(tmp_path, difference):
     fake = state.FakeGitHub(tmp_path, state.empty_target())
     assert fake.run(*INSTALL).returncode == 0
-    planned = {path: state.blob_sha(text.encode()) for path, text in _tree_files(fake).items()}
-    base = {"README.md": b"# Example\n", "uv.lock": b"version = 1\n"}
-    branch = {**{path: state.blob_sha(data) for path, data in base.items()}, **planned}
+    files = {"README.md": b"# Example\n", "uv.lock": b"version = 1\n"}
+    files.update({path: text.encode() for path, text in _tree_files(fake).items()})
+    branch = {path: ("blob", "100644", state.blob_sha(data)) for path, data in files.items()}
     if difference == "extra":
-        branch["UNRELATED.md"] = state.blob_sha(b"unrelated\n")
+        branch["UNRELATED.md"] = ("blob", "100644", state.blob_sha(b"unrelated\n"))
     elif difference == "missing":
         del branch[".agents/areas.yml"]
     elif difference == "contributing":
-        branch["CONTRIBUTING.md"] = state.blob_sha(b"## Other section\n")
+        branch["CONTRIBUTING.md"] = ("blob", "100644", state.blob_sha(b"## Other section\n"))
+    elif difference == "submodule":
+        branch["vendor/lib"] = ("commit", "160000", "f" * 40)
+    elif difference == "mode":
+        branch["CONTRIBUTING.md"] = ("blob", "100755", branch["CONTRIBUTING.md"][2])
     head = "d" * 40
     fake.responses[f"GET {TARGET}/git/matching-refs/heads/{BRANCH}"] = {
         "json": [{"ref": f"refs/heads/{BRANCH}", "object": {"sha": head}}]
     }
-    entries = [{"path": path, "type": "blob", "sha": sha} for path, sha in branch.items()]
+    entries = [
+        {"path": path, "type": kind, "mode": mode, "sha": sha}
+        for path, (kind, mode, sha) in branch.items()
+    ]
+    # Directory entries follow from their contents, as in a recursive GitHub tree listing.
+    entries.append({"path": ".agents", "type": "tree", "mode": "040000", "sha": "a" * 40})
     fake.responses[f"GET {TARGET}/git/trees/{head}"] = {
         "json": {"sha": "e" * 40, "tree": entries, "truncated": False}
     }
@@ -528,12 +541,48 @@ def test_fix_endpoints_follow_the_gateway_host_and_port(tmp_path):
     )
 
     # A port that is not a number in range makes the gateway URL invalid.
-    invalid = fake.run("--plan", *with_gateway("https://gateway.example.com:99999"))
-    assert invalid.returncode == 1
-    assert (
-        "ERROR: The gateway URL must be an https URL without credentials or query."
-        in invalid.stdout.splitlines()
+    for port in ("99999", "0"):
+        invalid = fake.run("--plan", *with_gateway(f"https://gateway.example.com:{port}"))
+        assert invalid.returncode == 1
+        assert (
+            "ERROR: The gateway URL must be an https URL without credentials or query."
+            in invalid.stdout.splitlines()
+        )
+
+    # An old gateway that shared a required host gives up only its own entry.
+    shared = endpoints.replace("gateway.example.com:443", "api.github.com:443", 1)
+    assert shared.split().count("api.github.com:443") == 2
+    state.set_variables(
+        healthy,
+        {"AGENT_GATEWAY_URL": "https://api.github.com", "AGENT_FIX_ALLOWED_ENDPOINTS": shared},
     )
+    overlap = fake.run("--plan", *with_gateway("https://new-gateway.example.com"))
+    kept = endpoints.replace("gateway.example.com:443", "new-gateway.example.com:443", 1)
+    assert f"update variable AGENT_FIX_ALLOWED_ENDPOINTS = {json.dumps(kept)}" in overlap.stdout
+
+    # When the old gateway was the only GitHub API entry, the required host is restored.
+    alone = endpoints.replace("gateway.example.com:443 ", "", 1)
+    state.set_variables(healthy, {"AGENT_FIX_ALLOWED_ENDPOINTS": alone})
+    restored_host = fake.run("--plan", *with_gateway("https://new-gateway.example.com"))
+    rebuilt = alone.replace("api.github.com:443", "new-gateway.example.com:443", 1)
+    rebuilt += " api.github.com:443"
+    assert (
+        f"update variable AGENT_FIX_ALLOWED_ENDPOINTS = {json.dumps(rebuilt)}"
+        in restored_host.stdout
+    )
+
+    # A hostname that merely contains a token prefix is not a secret and still updates.
+    state.set_variables(
+        healthy,
+        {
+            "AGENT_GATEWAY_URL": "https://desk-gateway.example.com",
+            "AGENT_FIX_ALLOWED_ENDPOINTS": endpoints,
+        },
+    )
+    desk = fake.run("--plan", *with_gateway("https://new-gateway.example.com"))
+    assert desk.returncode == 0, desk.stdout + desk.stderr
+    assert 'update variable AGENT_GATEWAY_URL = "https://new-gateway.example.com"' in desk.stdout
+    assert fake.writes() == []
 
 
 def test_a_writable_default_token_is_reported_and_never_changed(tmp_path):

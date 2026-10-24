@@ -248,6 +248,8 @@ def _drift(responses: dict, change: str) -> None:
         )
     elif change == "gateway-endpoint":
         variables["AGENT_GATEWAY_URL"] = "https://gateway.example.com:8443"
+    elif change == "gateway-invalid":
+        variables["AGENT_GATEWAY_URL"] = "https://gateway.example.com:0"
     elif change == "charter":
         charter = state.consumer_files()[".agents/charter.md"].replace(b"## Mission", b"## Goal")
         _with_files(responses, _files(**{".agents/charter.md": charter}))
@@ -329,6 +331,11 @@ def _drift(responses: dict, change: str) -> None:
             "gateway-endpoint",
             "ERROR: AGENT_FIX_ALLOWED_ENDPOINTS does not allow the gateway "
             "gateway.example.com:8443; rerun bootstrap.",
+        ),
+        (
+            "gateway-invalid",
+            "ERROR: AGENT_GATEWAY_URL must be an https URL without credentials or query; "
+            "rerun bootstrap with --gateway-url.",
         ),
         (
             "safe-list-missing",
