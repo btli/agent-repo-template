@@ -3,6 +3,7 @@
 
 import json
 import os
+import signal
 import sys
 
 arguments = sys.argv[1:]
@@ -28,6 +29,10 @@ if response is None and method != "GET":
     response = {"json": responses.get("default-write", {})}
 if response is None:
     print(f"no fixture for {key}", file=sys.stderr)
+    sys.exit(1)
+if response.get("kill"):
+    # The write lands, but the bootstrap process dies before it reads the response.
+    os.kill(os.getppid(), signal.SIGKILL)
     sys.exit(1)
 if "status" in response:
     print(f"gh: request failed (HTTP {response['status']})", file=sys.stderr)

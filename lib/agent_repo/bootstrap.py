@@ -562,7 +562,17 @@ class Plan:
 def _delete_by_name(listing: str, items: str, name: str, endpoint: str) -> str:
     """Rollback for a created resource whose id only the write response carries."""
     select = shlex.quote(f"{items} | select(.name == {json.dumps(name)}) | .id")
-    return f"gh api {listing} --jq {select} | xargs -I{{}} gh api -X DELETE {endpoint}/{{}}"
+    return (
+        f"gh api --paginate {listing} --jq {select} | xargs -I{{}} gh api -X DELETE {endpoint}/{{}}"
+    )
+
+
+def _created_id(created: object, key: str = "id") -> int:
+    """A created resource's id; without one only its lookup rollback can undo the write."""
+    value = _field(created, key)
+    if type(value) is not int or value < 1:
+        raise BootstrapError("GitHub returned no id for a created resource.")
+    return value
 
 
 def plan_labels(gh: Gh, repo: str, names: list[str], plan: Plan) -> None:
@@ -631,7 +641,7 @@ def plan_environments(
                     f"{endpoint}/deployment-branch-policies",
                     {"name": default_branch, "type": "branch"},
                 )
-                policy = _field(created, "id")
+                policy = _created_id(created)
                 return f"gh api -X DELETE {endpoint}/deployment-branch-policies/{policy}"
 
             policies_endpoint = f"{endpoint}/deployment-branch-policies"
@@ -704,7 +714,7 @@ def plan_rulesets(gh: Gh, repo: str, rulesets: dict[str, dict], plan: Plan) -> N
 
             def create(body=body) -> str:
                 created = gh.write("POST", f"repos/{repo}/rulesets", body)
-                return f"gh api -X DELETE repos/{repo}/rulesets/{_field(created, 'id')}"
+                return f"gh api -X DELETE repos/{repo}/rulesets/{_created_id(created)}"
 
             listing = f"repos/{repo}/rulesets"
             plan.add(
@@ -806,7 +816,7 @@ def plan_proposal(
                 "draft": True,
             },
         )
-        return f"gh pr close {_field(pull, 'number')} --repo {repo}"
+        return f"gh pr close {_created_id(pull, 'number')} --repo {repo}"
 
     if existing:
         _, _, branch_entries = read_tree(gh, repo, _sha(_field(existing[0], "object", "sha")))

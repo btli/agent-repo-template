@@ -188,9 +188,16 @@ def test_install_lands_files_on_a_draft_pr_branch_and_journals_every_write(tmp_p
     # One journal entry per mutation; creating the branch writes a tree, a commit and the ref.
     assert len(done) == len(writes) - 2
     assert all(entry["description"] for entry in done)
-    assert f"gh api -X DELETE {TARGET}/git/refs/heads/{BRANCH}" in [
-        entry["rollback"] for entry in done
-    ]
+    rollbacks = [entry["rollback"] for entry in done]
+    assert f"gh api -X DELETE {TARGET}/git/refs/heads/{BRANCH}" in rollbacks
+    # Created resources journal the exact id-based command once the response carries the id.
+    for exact in (
+        f"gh api -X DELETE {TARGET}/rulesets/101",
+        f"gh api -X DELETE {TARGET}/environments/agent-apply/deployment-branch-policies/101",
+        f"gh pr close 7 --repo {REPO}",
+    ):
+        assert exact in rollbacks
+    assert not [rollback for rollback in rollbacks if "--paginate" in rollback]
 
 
 def test_no_change_rerun_writes_nothing(tmp_path):
@@ -252,6 +259,15 @@ def test_partial_failure_prints_rollback_and_a_rerun_resumes(tmp_path):
     assert rollback.index("AGENT_FIX_MODEL") < rollback.index("type%3Abug")
     assert not [call for call in fake.writes() if call["endpoint"] == f"{TARGET}/pulls"]
 
+    # A second failed run lists its own rollbacks, then each earlier one once; only the two
+    # interrupted ruleset writes stay possibly applied.
+    again = fake.run(*INSTALL).stdout.split("Rollback commands, newest first:", 1)[1]
+    first_lines = rollback.splitlines()[1:-1]
+    again_lines = again.splitlines()[1:-1]
+    assert again_lines == first_lines + first_lines
+    marked = [line for line in again_lines if "(possibly applied)" in line]
+    assert len(marked) == 2 and all(f"{TARGET}/rulesets" in line for line in marked)
+
     resumed = state.healthy_target()
     resumed[f"GET {TARGET}/rulesets"] = {"json": []}
     state.set_files(resumed, {"README.md": b"# Example\n", "uv.lock": b"version = 1\n"})
@@ -292,7 +308,7 @@ def test_an_unexpected_failure_after_a_write_prints_rollback_commands(tmp_path, 
         # The created ruleset's id is unknown, so its rollback finds the ruleset by name.
         select = '.[] | select(.name == "agent-repo-template branches") | .id'
         assert rollback[1] == (
-            f"  (possibly applied) gh api {TARGET}/rulesets --jq '{select}' "
+            f"  (possibly applied) gh api --paginate {TARGET}/rulesets --jq '{select}' "
             f"| xargs -I{{}} gh api -X DELETE {TARGET}/rulesets/{{}}"
         )
         assert f"  {first_label}" in rollback
@@ -302,11 +318,17 @@ def test_an_unexpected_failure_after_a_write_prints_rollback_commands(tmp_path, 
     assert not [call for call in fake.writes() if call["endpoint"] == f"{TARGET}/pulls"]
 
 
-def test_a_failure_while_journaling_a_write_prints_rollback_commands(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("event", ["done", "failed"])
+def test_a_failure_while_journaling_a_write_prints_rollback_commands(
+    tmp_path, monkeypatch, capsys, event
+):
     from agent_repo import bootstrap
     from agent_repo.commands.bootstrap import main
 
-    fake = state.FakeGitHub(tmp_path, state.empty_target())
+    responses = state.empty_target()
+    if event == "failed":
+        responses[f"POST {TARGET}/labels"] = {"raw": "ff"}
+    fake = state.FakeGitHub(tmp_path, responses)
     fake.state_path.write_text(json.dumps(fake.responses))
     for key, value in {
         "PATH": str(fake.bin),
@@ -317,10 +339,10 @@ def test_a_failure_while_journaling_a_write_prints_rollback_commands(tmp_path, m
         monkeypatch.setenv(key, value)
     record = bootstrap.Journal.record
 
-    def failing_record(self, event, **fields):
-        if event == "done":
+    def failing_record(self, recorded, **fields):
+        if recorded == event:
             raise OSError("synthetic journal failure")
-        record(self, event, **fields)
+        record(self, recorded, **fields)
 
     monkeypatch.setattr(bootstrap.Journal, "record", failing_record)
 
@@ -333,6 +355,59 @@ def test_a_failure_while_journaling_a_write_prints_rollback_commands(tmp_path, m
     assert rollback[1] == f"  (possibly applied) {first_label}"
     assert "synthetic" not in output.out + output.err and "Traceback" not in output.err
     assert len(fake.writes()) == 1
+
+
+@pytest.mark.parametrize("created", ["policy", "ruleset", "pull"])
+def test_a_created_resource_without_an_id_keeps_its_lookup_rollback(tmp_path, created):
+    responses = state.empty_target()
+    endpoint, lookup = {
+        "policy": (
+            f"{TARGET}/environments/agent-propose-triage/deployment-branch-policies",
+            '.branch_policies[] | select(.name == "main") | .id',
+        ),
+        "ruleset": (
+            f"{TARGET}/rulesets",
+            '.[] | select(.name == "agent-repo-template branches") | .id',
+        ),
+        "pull": (f"{TARGET}/pulls", None),
+    }[created]
+    # The write succeeds, but its response carries no id for an exact rollback.
+    responses[f"POST {endpoint}"] = {"json": {}}
+    fake = state.FakeGitHub(tmp_path, responses)
+
+    result = fake.run(*INSTALL)
+
+    assert result.returncode == 1
+    rollback = result.stdout.split("Rollback commands, newest first:", 1)[1].splitlines()
+    expected = (
+        f"gh pr close {BRANCH} --repo {REPO}"
+        if lookup is None
+        else f"gh api --paginate {endpoint} --jq '{lookup}' "
+        f"| xargs -I{{}} gh api -X DELETE {endpoint}/{{}}"
+    )
+    assert rollback[1] == f"  (possibly applied) {expected}"
+    recorded = result.stdout + json.dumps(fake.journal())
+    assert "/None" not in recorded and "close None" not in recorded
+
+
+def test_a_run_that_dies_mid_write_leaves_its_rollback_for_the_next_run(tmp_path):
+    responses = state.empty_target()
+    responses[f"POST {TARGET}/labels"] = {"kill": True}
+    fake = state.FakeGitHub(tmp_path, responses)
+    first_label = f"gh api -X DELETE {TARGET}/labels/{quote(state.labels()[0], safe='')}"
+
+    died = fake.run(*INSTALL)
+
+    assert died.returncode != 0
+    assert [entry["event"] for entry in fake.journal()] == ["start", "pending"]
+    responses[f"POST {TARGET}/labels"] = {"json": {}}
+    responses[f"POST {TARGET}/rulesets"] = {"status": 422}
+
+    failed = fake.run(*INSTALL)
+
+    rollback = failed.stdout.split("Rollback commands, newest first:", 1)[1].splitlines()
+    # The oldest entry is the write the dead run started, which may have landed.
+    assert rollback[-2] == f"  (possibly applied) {first_label}"
 
 
 def test_ref_resolves_through_upstream_and_ignores_a_tampered_local_tag(tmp_path):
