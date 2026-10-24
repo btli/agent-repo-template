@@ -25,6 +25,7 @@ APP_IDENTITY_UNKNOWN = (
     "GitHub App identity unknown: pass --app-slug and --app-client-id from the App's settings page."
 )
 BRANCH = f"bootstrap/agent-repo-template-{VERSION}"
+WEB = "https://github.com"
 APP_LOOKUP_FAILED = (
     "GET /apps/{app_slug} failed with an error other than a private App's 404; "
     "bootstrap cannot cross-check the App."
@@ -67,6 +68,8 @@ def test_plan_previews_every_mutation_with_read_calls_only(tmp_path):
     assert "open draft pull request" in output
     assert f"gh secret set AGENT_TRIAGE_KEY --repo {REPO} --env agent-propose-triage" in output
     assert f"gh secret set AGENT_SYSTEM_ONE_KEY --repo {REPO} --env agent-propose-triage" in output
+    install = f"Install the GitHub App on {REPO} only: {WEB}/apps/example-agent/installations/new"
+    assert install in output.splitlines()
     assert not (fake.home / ".agent-repo-template").exists()
     endpoints = _endpoints(fake.calls())
     assert {"GET users/example-agent%5Bbot%5D", "GET apps/example-agent"} <= set(endpoints)
@@ -105,6 +108,9 @@ def test_app_identity_needs_both_flags_and_a_bot_account_or_refuses_every_write(
 
         assert result.returncode == 1
         assert f"ERROR: {message}" in result.stdout.splitlines()
+        assert (
+            "Create it with ./bootstrap.sh app-link --owner your-org" in result.stdout.splitlines()
+        )
         assert fake.writes() == []
         assert not [call for call in fake.calls() if "installations" in call["endpoint"]]
 
@@ -367,6 +373,28 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
     secret_kind = "sk-" + "KINDsynthetic" * 2
     replacements = {state.GATEWAY_URL: credential_url, "databricks": secret_kind}
     leaky = [replacements.get(argument, argument) for argument in INSTALL]
+    token_path_url = "https://new-gateway.example.com/path/ghp_" + "SYNTHETICabcdef0123456789"
+    system_one_token = "https://systemone.example.com/sk-" + "SYNTHETICabcdef0123456789"
+    token_client = "ghp_" + "SyntheticNotARealToken0123456789"
+    secret_client = "0123abcd" * 5
+    dotted_client = "Iv23li.dapi" + "0123456789abcdef"
+    client_invalid = (
+        "GitHub App client id must have the Iv... form; copy the Client ID from the "
+        "App's settings page, never a client secret."
+    )
+    proposed = {
+        token_path_url: (
+            state.GATEWAY_URL,
+            "The gateway URL must be an https URL without credentials or query.",
+        ),
+        system_one_token: (
+            "https://systemone.example.com",
+            "The System One URL must be an https URL without credentials.",
+        ),
+        token_client: ("Iv23liExample", client_invalid),
+        secret_client: ("Iv23liExample", client_invalid),
+        dotted_client: ("Iv23liExample", client_invalid),
+    }
 
     # A previous value that is secret-looking or fails its own rule stops the install before any
     # write, because its rollback command could not be printed safely.
@@ -386,16 +414,23 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
 
     # A rejected gateway URL or kind is never queued, so it is never printed or journaled.
     fake.responses = state.empty_target()
-    for arguments in (("--plan", *leaky), leaky):
-        rejected = fake.run(*arguments, env=synthetic)
+    variants = [leaky] + [
+        [value if argument == flag else argument for argument in INSTALL]
+        for value, (flag, _) in proposed.items()
+    ]
+    for variant, message in zip(variants, [None, *(m for _, m in proposed.values())], strict=True):
+        for arguments in (("--plan", *variant), variant):
+            rejected = fake.run(*arguments, env=synthetic)
 
-        assert rejected.returncode == 1
-        assert fake.writes() == []
-        output = result.stdout + result.stderr + rejected.stdout + rejected.stderr
-        secrets = (stale_kind, stale_login, stale_url, stale_path, stale_pem, credential_url)
-        secrets += (secret_kind,)
-        for value in (*secrets, *synthetic.values()):
-            assert value not in output + json.dumps(fake.journal())
+            assert rejected.returncode == 1
+            assert fake.writes() == []
+            if message:
+                assert f"ERROR: {message}" in rejected.stdout.splitlines()
+            output = result.stdout + result.stderr + rejected.stdout + rejected.stderr
+            secrets = (stale_kind, stale_login, stale_url, stale_path, stale_pem, credential_url)
+            secrets += (secret_kind, *proposed)
+            for value in (*secrets, *synthetic.values()):
+                assert value not in output + json.dumps(fake.journal())
 
 
 @pytest.mark.parametrize(
@@ -421,6 +456,11 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
             ".agents/config.yml is not a valid agent configuration; fix it or pass --force.",
         ),
         ("empty-labels", ".agents/labels.yml must hold a labels list."),
+        (
+            "live-config",
+            "A first install must start every role in dry-run, but .agents/config.yml sets a "
+            "role live; edit the config or pass --force to replace it.",
+        ),
     ],
 )
 def test_bootstrap_stops_before_any_write(tmp_path, change, message):
@@ -442,6 +482,11 @@ def test_bootstrap_stops_before_any_write(tmp_path, change, message):
         responses[f"GET {TARGET}/git/trees/{head}"] = {
             "json": {"sha": "e" * 40, "tree": [], "truncated": False}
         }
+    elif change == "live-config":
+        live = state.consumer_files()[".agents/config.yml"].replace(
+            b"  fix: dry-run", b"  fix: live"
+        )
+        state.set_files(responses, {"README.md": b"# Example\n", ".agents/config.yml": live})
     else:
         # A zero-byte retained file is validated as itself, never replaced by the default.
         path = ".agents/config.yml" if change == "empty-config" else ".agents/labels.yml"
@@ -456,9 +501,32 @@ def test_bootstrap_stops_before_any_write(tmp_path, change, message):
         assert "Bootstrap made no changes." in result.stdout
         assert fake.writes() == []
 
+    if change == "live-config":
+        # --force replaces the live config, and an established install keeps its modes.
+        assert fake.run("--plan", *INSTALL, "--force").returncode == 0
+        established = state.healthy_target()
+        files = {"README.md": b"# Example\n", **state.consumer_files()}
+        state.set_files(established, {**files, ".agents/config.yml": live})
+        fake.responses = established
+        kept = fake.run("--plan", *INSTALL)
+        assert kept.returncode == 0, kept.stdout + kept.stderr
+        assert "Kept existing .agents/config.yml; pass --force to replace it." in kept.stdout
+
 
 @pytest.mark.parametrize(
-    "difference", [None, "extra", "missing", "contributing", "submodule", "mode", "empty-tree"]
+    "difference",
+    [
+        None,
+        "extra",
+        "missing",
+        "contributing",
+        "submodule",
+        "mode",
+        "empty-tree",
+        "draft-pr",
+        "ready-pr",
+        "wrong-base-pr",
+    ],
 )
 def test_an_existing_bootstrap_branch_must_hold_exactly_the_planned_tree(tmp_path, difference):
     fake = state.FakeGitHub(tmp_path, state.empty_target())
@@ -499,17 +567,36 @@ def test_an_existing_bootstrap_branch_must_hold_exactly_the_planned_tree(tmp_pat
     fake.responses[f"GET {TARGET}/git/trees/{head}"] = {
         "json": {"sha": "e" * 40, "tree": entries, "truncated": False}
     }
-    fake.responses[f"GET {TARGET}/pulls"] = {"json": []}
+    pulls = {
+        "draft-pr": (True, "main"),
+        "ready-pr": (False, "main"),
+        "wrong-base-pr": (True, "dev"),
+    }
+    open_pulls = []
+    if difference in pulls:
+        draft, base = pulls[difference]
+        open_pulls = [{"number": 8, "draft": draft, "base": {"ref": base}}]
+    fake.responses[f"GET {TARGET}/pulls"] = {"json": open_pulls}
+    preview = difference in (None, "draft-pr")
 
-    result = fake.run(*(("--plan", *INSTALL) if difference is None else INSTALL))
+    result = fake.run(*(("--plan", *INSTALL) if preview else INSTALL))
 
     refusal = (
         f"ERROR: Branch {BRANCH} already exists with other content; merge or delete it, then rerun."
     )
-    if difference is None:
+    pull_refusal = (
+        f"ERROR: The open pull request from {BRANCH} must be a draft into main; "
+        "convert or close it, then rerun."
+    )
+    if preview:
         assert result.returncode == 0, result.stdout + result.stderr
-        assert f"open draft pull request from {BRANCH} into main" in result.stdout
+        opens = f"open draft pull request from {BRANCH} into main" in result.stdout
+        assert opens is (difference is None)
         assert "create branch" not in result.stdout
+    elif difference in pulls:
+        assert result.returncode == 1
+        assert pull_refusal in result.stdout.splitlines()
+        assert fake.writes() == []
     else:
         assert result.returncode == 1
         assert refusal in result.stdout.splitlines()

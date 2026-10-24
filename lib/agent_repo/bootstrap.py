@@ -77,6 +77,14 @@ APP_IDENTITY_UNKNOWN = (
 )
 APP_SLUG_MISSING = "GitHub App identity incomplete: pass --app-slug."
 APP_CLIENT_ID_MISSING = "GitHub App identity incomplete: pass --app-client-id."
+APP_CLIENT_ID_INVALID = (
+    "GitHub App client id must have the Iv... form; copy the Client ID from the "
+    "App's settings page, never a client secret."
+)
+INITIAL_LIVE = (
+    "A first install must start every role in dry-run, but .agents/config.yml sets a role live; "
+    "edit the config or pass --force to replace it."
+)
 APP_BOT_MISSING = "GitHub App bot account not found: GET /users/{app_slug}[bot] must return a Bot."
 APP_BOT_LOOKUP_FAILED = (
     "GET /users/{app_slug}[bot] failed with an error other than 404; "
@@ -345,6 +353,8 @@ def resolve_app(gh: Gh, slug: str | None, client_id: str | None) -> App:
         raise BootstrapError(APP_SLUG_MISSING)
     if not client_id:
         raise BootstrapError(APP_CLIENT_ID_MISSING)
+    if re.fullmatch(r"Iv[0-9A-Za-z.]{8,40}", client_id) is None or SECRET_LOOKING.search(client_id):
+        raise BootstrapError(APP_CLIENT_ID_INVALID)
     login = f"{slug}[bot]"
     try:
         bot = gh.get(f"users/{_quote(login)}")
@@ -751,7 +761,16 @@ def plan_proposal(
             )
             return
         owner = repo.split("/", 1)[0]
-        if gh.items(f"repos/{repo}/pulls?state=open&head={_quote(owner)}:{_quote(branch)}"):
+        pulls = gh.items(f"repos/{repo}/pulls?state=open&head={_quote(owner)}:{_quote(branch)}")
+        if pulls:
+            if not all(
+                pull.get("draft") is True and _field(pull, "base", "ref") == target.default_branch
+                for pull in pulls
+            ):
+                plan.errors.append(
+                    f"The open pull request from {branch} must be a draft into "
+                    f"{target.default_branch}; convert or close it, then rerun."
+                )
             return
     else:
 
@@ -874,6 +893,8 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
     wanted: dict[str, str] = {}
     if "AGENTS_ENABLED" not in existing:
         wanted["AGENTS_ENABLED"] = "true"
+        if any(mode != "dry-run" for mode in config["mode"].values()):
+            plan.errors.append(INITIAL_LIVE)
     if app is not None:
         wanted["AGENT_BOT_LOGIN"] = f"{app.slug}[bot]"
         wanted["AGENT_APP_CLIENT_ID"] = app.client_id
@@ -884,7 +905,7 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
         plan.errors.append("The gateway kind must be databricks or litellm.")
     elif kind is not None:
         wanted["AGENT_GATEWAY_KIND"] = kind
-    if url is not None and not valid_https_url(url):
+    if url is not None and (not valid_https_url(url) or SECRET_LOOKING.search(url)):
         plan.errors.append("The gateway URL must be an https URL without credentials or query.")
         url = None
     elif url is not None:
@@ -893,7 +914,9 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
         system_one = _gateway(
             "AGENT_SYSTEM_ONE_URL", "--system-one-url", options.system_one_url, existing, plan
         )
-        if system_one is not None and not valid_https_url(system_one):
+        if system_one is not None and (
+            not valid_https_url(system_one) or SECRET_LOOKING.search(system_one)
+        ):
             plan.errors.append("The System One URL must be an https URL without credentials.")
         elif system_one is not None:
             wanted["AGENT_SYSTEM_ONE_URL"] = system_one
@@ -914,6 +937,13 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
         if path.startswith(".github/workflows/")
     }
     plan.notes.append(f"Mode: {'LLM-only (no System One)' if llm_only else 'System One'}.")
+    if app is not None:
+        plan.notes.append(
+            f"Install the GitHub App on {repo} only: "
+            f"{GITHUB_WEB}/apps/{_quote(app.slug)}/installations/new"
+        )
+    else:
+        plan.notes.append(f"Create it with ./bootstrap.sh app-link --owner {repo.split('/', 1)[0]}")
     areas = sorted({path.split("/", 1)[0] for path in target.files if "/" in path})
     areas = [name for name in areas if not name.startswith(".")]
     if areas:
