@@ -20,6 +20,7 @@ from agent_repo.bootstrap import (
     _quote,
     environment_is_safe,
     file_content,
+    gateway_endpoint,
     load_yaml_bytes,
     model_values,
     read_blob,
@@ -32,6 +33,7 @@ from agent_repo.bootstrap import (
     ruleset_body,
     ruleset_shape,
     token_readonly,
+    valid_https_url,
     valid_model,
     workflow_secrets,
 )
@@ -305,6 +307,14 @@ def run_doctor(
     for name in VERIFIED_VARIABLES:
         if name not in variables:
             report.error(f"Missing variable {name}; rerun bootstrap to set it.")
+    gateway = variables.get("AGENT_GATEWAY_URL")
+    allowed = variables.get("AGENT_FIX_ALLOWED_ENDPOINTS")
+    if gateway and allowed is not None and valid_https_url(gateway):
+        if gateway_endpoint(gateway) not in allowed.split():
+            report.error(
+                "AGENT_FIX_ALLOWED_ENDPOINTS does not allow the gateway "
+                f"{gateway_endpoint(gateway)}; rerun bootstrap."
+            )
     if variables.get("AGENTS_ENABLED", "true") != "true":
         report.warn("AGENTS_ENABLED is not true, so every agent workflow is off.")
     if config is not None:

@@ -76,6 +76,7 @@ def test_plan_previews_every_mutation_with_read_calls_only(tmp_path):
 def test_app_identity_needs_both_flags_and_a_bot_account_or_refuses_every_write(tmp_path):
     responses = state.empty_target()
     responses["GET users/missing-agent%5Bbot%5D"] = {"status": 404}
+    responses["GET users/limited-agent%5Bbot%5D"] = {"status": 429}
     responses["GET users/human-agent%5Bbot%5D"] = {
         "json": {"login": "human-agent[bot]", "type": "User"}
     }
@@ -94,6 +95,11 @@ def test_app_identity_needs_both_flags_and_a_bot_account_or_refuses_every_write(
         (("--plan", *without, *client), "GitHub App identity incomplete: pass --app-slug."),
         ((*without, "--app-slug", "missing-agent", *client), bot_missing),
         (("--plan", *without, "--app-slug", "human-agent", *client), bot_missing),
+        (
+            ("--plan", *without, "--app-slug", "limited-agent", *client),
+            "GET /users/{app_slug}[bot] failed with an error other than 404; "
+            "bootstrap cannot confirm the App's bot account.",
+        ),
     ):
         result = fake.run(*arguments)
 
@@ -339,22 +345,52 @@ def test_candidate_installs_a_commit_on_upstream_main_with_its_version_comment(t
 
 def test_no_secret_value_is_printed_or_journaled(tmp_path):
     responses = state.empty_target()
-    stale_secret = "ghp_" + "S3cr3tL00kingValue" * 2
-    responses[f"GET {TARGET}/actions/variables"] = {
-        "json": {"variables": [{"name": "AGENT_BOT_LOGIN", "value": stale_secret}]}
+    stale_kind = "sk-" + "S3cr3tL00kingValue" * 2
+    stale_login = "ghp_" + "S3cr3tL00kingValue" * 2
+    stale_url = "https://user:" + "plainpassword@old-gateway.example.com"
+    stale = {
+        "AGENT_GATEWAY_KIND": stale_kind,
+        "AGENT_BOT_LOGIN": stale_login,
+        "AGENT_GATEWAY_URL": stale_url,
+        "AGENT_FIX_MODEL": "gpt-4o",
     }
-    responses[f"POST {TARGET}/rulesets"] = {"status": 500}
+    responses[f"GET {TARGET}/actions/variables"] = {
+        "json": {"variables": [{"name": key, "value": value} for key, value in stale.items()]}
+    }
     fake = state.FakeGitHub(tmp_path, responses)
     synthetic = {"GH_TOKEN": "gho_" + "Synthetic" * 4, "AGENT_FIX_KEY": "sk-" + "synthetic" * 4}
+    credential_url = "https://user:ghp_" + "SYNTHETICabcdef0123456789" + "@gateway.example.com"
+    secret_kind = "sk-" + "KINDsynthetic" * 2
+    replacements = {state.GATEWAY_URL: credential_url, "databricks": secret_kind}
+    leaky = [replacements.get(argument, argument) for argument in INSTALL]
 
+    # A previous value that is secret-looking or fails its own rule stops the install before any
+    # write, because its rollback command could not be printed safely.
     result = fake.run(*INSTALL, env=synthetic)
 
     assert result.returncode == 1
-    journal = json.dumps(fake.journal())
-    for value in (stale_secret, *synthetic.values()):
-        assert value not in result.stdout + result.stderr + journal
-    assert "previous value of AGENT_BOT_LOGIN withheld" in result.stdout
-    assert "update variable AGENT_BOT_LOGIN" in result.stdout
+    for name in stale:
+        assert (
+            f"ERROR: Variable {name} holds a value bootstrap cannot restore on rollback; "
+            "correct or delete it manually, then rerun."
+        ) in result.stdout.splitlines()
+    assert "withheld" not in result.stdout
+    assert fake.writes() == []
+    state.set_variables(responses, {**dict.fromkeys(stale), "AGENT_GATEWAY_KIND": "bogus"})
+    kind = fake.run("--plan", *INSTALL)
+    assert "ERROR: Variable AGENT_GATEWAY_KIND holds a value" in kind.stdout
+
+    # A rejected gateway URL or kind is never queued, so it is never printed or journaled.
+    fake.responses = state.empty_target()
+    for arguments in (("--plan", *leaky), leaky):
+        rejected = fake.run(*arguments, env=synthetic)
+
+        assert rejected.returncode == 1
+        assert fake.writes() == []
+        output = result.stdout + result.stderr + rejected.stdout + rejected.stderr
+        secrets = (stale_kind, stale_login, stale_url, credential_url, secret_kind)
+        for value in (*secrets, *synthetic.values()):
+            assert value not in output + json.dumps(fake.journal())
 
 
 @pytest.mark.parametrize(
@@ -414,6 +450,90 @@ def test_bootstrap_stops_before_any_write(tmp_path, change, message):
         assert f"ERROR: {message}" in result.stdout.splitlines()
         assert "Bootstrap made no changes." in result.stdout
         assert fake.writes() == []
+
+
+@pytest.mark.parametrize("difference", [None, "extra", "missing", "contributing"])
+def test_an_existing_bootstrap_branch_must_hold_exactly_the_planned_tree(tmp_path, difference):
+    fake = state.FakeGitHub(tmp_path, state.empty_target())
+    assert fake.run(*INSTALL).returncode == 0
+    planned = {path: state.blob_sha(text.encode()) for path, text in _tree_files(fake).items()}
+    base = {"README.md": b"# Example\n", "uv.lock": b"version = 1\n"}
+    branch = {**{path: state.blob_sha(data) for path, data in base.items()}, **planned}
+    if difference == "extra":
+        branch["UNRELATED.md"] = state.blob_sha(b"unrelated\n")
+    elif difference == "missing":
+        del branch[".agents/areas.yml"]
+    elif difference == "contributing":
+        branch["CONTRIBUTING.md"] = state.blob_sha(b"## Other section\n")
+    head = "d" * 40
+    fake.responses[f"GET {TARGET}/git/matching-refs/heads/{BRANCH}"] = {
+        "json": [{"ref": f"refs/heads/{BRANCH}", "object": {"sha": head}}]
+    }
+    entries = [{"path": path, "type": "blob", "sha": sha} for path, sha in branch.items()]
+    fake.responses[f"GET {TARGET}/git/trees/{head}"] = {
+        "json": {"sha": "e" * 40, "tree": entries, "truncated": False}
+    }
+    fake.responses[f"GET {TARGET}/pulls"] = {"json": []}
+
+    result = fake.run(*(("--plan", *INSTALL) if difference is None else INSTALL))
+
+    refusal = (
+        f"ERROR: Branch {BRANCH} already exists with other content; merge or delete it, then rerun."
+    )
+    if difference is None:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"open draft pull request from {BRANCH} into main" in result.stdout
+        assert "create branch" not in result.stdout
+    else:
+        assert result.returncode == 1
+        assert refusal in result.stdout.splitlines()
+        assert fake.writes() == []
+
+
+def test_fix_endpoints_follow_the_gateway_host_and_port(tmp_path):
+    fake = state.FakeGitHub(tmp_path, state.empty_target())
+
+    def with_gateway(url: str) -> list[str]:
+        return [url if argument == state.GATEWAY_URL else argument for argument in INSTALL]
+
+    custom_port = fake.run("--plan", *with_gateway("https://gateway.example.com:8443"))
+
+    assert custom_port.returncode == 0, custom_port.stdout + custom_port.stderr
+    seeded = state.ENDPOINTS.replace("gateway.example.com:443", "gateway.example.com:8443", 1)
+    assert f"set variable AGENT_FIX_ALLOWED_ENDPOINTS = {json.dumps(seeded)}" in custom_port.stdout
+
+    # A changed gateway replaces only the entry the previous gateway URL put there.
+    healthy = state.healthy_target()
+    endpoints = state.variables(healthy)["AGENT_FIX_ALLOWED_ENDPOINTS"]
+    state.set_variables(
+        healthy, {"AGENT_FIX_ALLOWED_ENDPOINTS": f"{endpoints} extra.example.com:443"}
+    )
+    fake.responses = healthy
+    moved = fake.run("--plan", *with_gateway("https://new-gateway.example.com"))
+
+    assert moved.returncode == 0, moved.stdout + moved.stderr
+    replaced = f"{endpoints} extra.example.com:443".replace(
+        "gateway.example.com:443", "new-gateway.example.com:443", 1
+    )
+    assert 'update variable AGENT_GATEWAY_URL = "https://new-gateway.example.com"' in moved.stdout
+    assert f"update variable AGENT_FIX_ALLOWED_ENDPOINTS = {json.dumps(replaced)}" in moved.stdout
+    assert fake.writes() == []
+
+    # Rerunning with the configured gateway restores its entry when the allowlist lost it.
+    state.set_variables(healthy, {"AGENT_GATEWAY_URL": "https://gateway.example.com:8443"})
+    repaired = fake.run("--plan", *with_gateway("https://gateway.example.com:8443"))
+    restored = f"gateway.example.com:8443 {endpoints} extra.example.com:443"
+    assert (
+        f"update variable AGENT_FIX_ALLOWED_ENDPOINTS = {json.dumps(restored)}" in repaired.stdout
+    )
+
+    # A port that is not a number in range makes the gateway URL invalid.
+    invalid = fake.run("--plan", *with_gateway("https://gateway.example.com:99999"))
+    assert invalid.returncode == 1
+    assert (
+        "ERROR: The gateway URL must be an https URL without credentials or query."
+        in invalid.stdout.splitlines()
+    )
 
 
 def test_a_writable_default_token_is_reported_and_never_changed(tmp_path):

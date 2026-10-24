@@ -59,6 +59,10 @@ EXPOSURES = {
         UNDECLARED_CI,
         "ERROR: CI exposure: ci.yml job deploy rule permissions reaches no named secret.",
     ),
+    "token-variable-false": (
+        UNDECLARED_CI,
+        "ERROR: CI exposure: ci.yml job deploy rule permissions reaches no named secret.",
+    ),
 }
 MODEL_RULE = "is not an Anthropic-family gateway model id."
 
@@ -242,6 +246,8 @@ def _drift(responses: dict, change: str) -> None:
                 for name in ("AGENT_TRIAGE_MODEL", "AGENT_REVIEW_MODEL", "AGENT_FIX_MODEL")
             }
         )
+    elif change == "gateway-endpoint":
+        variables["AGENT_GATEWAY_URL"] = "https://gateway.example.com:8443"
     elif change == "charter":
         charter = state.consumer_files()[".agents/charter.md"].replace(b"## Mission", b"## Goal")
         _with_files(responses, _files(**{".agents/charter.md": charter}))
@@ -320,6 +326,11 @@ def _drift(responses: dict, change: str) -> None:
         ("runner", "ERROR: Self-hosted runner build-1 uses the GitHub-hosted label ubuntu-24.04."),
         ("charter", "ERROR: Charter: missing required heading: Mission"),
         (
+            "gateway-endpoint",
+            "ERROR: AGENT_FIX_ALLOWED_ENDPOINTS does not allow the gateway "
+            "gateway.example.com:8443; rerun bootstrap.",
+        ),
+        (
             "safe-list-missing",
             "ERROR: Missing variable AGENT_SAFE_ENVIRONMENTS; rerun bootstrap to set it.",
         ),
@@ -393,6 +404,7 @@ def test_llm_only_mode_needs_no_system_one_key_and_warns_about_close(tmp_path):
         ("User", None, "deploy-secret", True, ASSUMED),
         ("User", None, "listed-staging", False, ASSUMED),
         ("User", None, "writable-token", False, ASSUMED),
+        ("User", None, "token-variable-false", False, ASSUMED),
     ],
 )
 def test_unknown_app_reach_is_shared_whenever_consumer_ci_exposes_credentials(
@@ -415,6 +427,8 @@ def test_unknown_app_reach_is_shared_whenever_consumer_ci_exposes_credentials(
         responses[f"GET {TARGET}/actions/permissions/workflow"] = {
             "json": {"default_workflow_permissions": "write"}
         }
+    elif exposed == "token-variable-false":
+        state.set_variables(responses, {"AGENT_CI_DEFAULT_TOKEN_READONLY": "false"})
     responses[f"GET {TARGET}"]["json"]["owner"]["type"] = owner
     if listing is not None:
         responses[ORG_INSTALLATIONS] = listing

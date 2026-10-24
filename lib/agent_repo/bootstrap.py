@@ -76,6 +76,10 @@ APP_IDENTITY_UNKNOWN = (
 APP_SLUG_MISSING = "GitHub App identity incomplete: pass --app-slug."
 APP_CLIENT_ID_MISSING = "GitHub App identity incomplete: pass --app-client-id."
 APP_BOT_MISSING = "GitHub App bot account not found: GET /users/{app_slug}[bot] must return a Bot."
+APP_BOT_LOOKUP_FAILED = (
+    "GET /users/{app_slug}[bot] failed with an error other than 404; "
+    "bootstrap cannot confirm the App's bot account."
+)
 APP_MISMATCH = "The public GET /apps/{app_slug} does not match --app-slug and --app-client-id."
 APP_LOOKUP_FAILED = (
     "GET /apps/{app_slug} failed with an error other than a private App's 404; "
@@ -155,11 +159,22 @@ def valid_https_url(value: object) -> bool:
     if not isinstance(value, str):
         return False
     parsed = urlsplit(value)
+    try:
+        # Reading the port raises ValueError when it is not a number or is out of range.
+        _ = parsed.port
+    except ValueError:
+        return False
     return (
         parsed.scheme == "https"
         and bool(parsed.hostname)
         and not (parsed.username or parsed.password or parsed.query or parsed.fragment)
     )
+
+
+def gateway_endpoint(url: str) -> str:
+    """The harden-runner allowlist entry for a valid https gateway URL."""
+    parsed = urlsplit(url)
+    return f"{parsed.hostname}:{parsed.port or 443}"
 
 
 def _sha(value: object) -> str:
@@ -321,8 +336,10 @@ def resolve_app(gh: Gh, slug: str | None, client_id: str | None) -> App:
     login = f"{slug}[bot]"
     try:
         bot = gh.get(f"users/{_quote(login)}")
-    except GhError:
-        raise BootstrapError(APP_BOT_MISSING) from None
+    except GhError as error:
+        raise BootstrapError(
+            APP_BOT_MISSING if error.status == 404 else APP_BOT_LOOKUP_FAILED
+        ) from None
     found = _field(bot, "login")
     if (
         _field(bot, "type") != "Bot"
@@ -565,6 +582,20 @@ def plan_environments(
     return sorted(safe)
 
 
+GATEWAY_KINDS = ("databricks", "litellm")
+# Rules a previous value must pass before a rollback command may print it.
+VARIABLE_RULES = {
+    "AGENT_GATEWAY_URL": valid_https_url,
+    "AGENT_SYSTEM_ONE_URL": valid_https_url,
+    "AGENT_GATEWAY_KIND": lambda value: value in GATEWAY_KINDS,
+    **{name: valid_model for name in MODEL_VARIABLES.values()},
+}
+
+
+def restorable(name: str, value: str) -> bool:
+    return not SECRET_LOOKING.search(value) and VARIABLE_RULES.get(name, lambda _: True)(value)
+
+
 def plan_variables(
     gh: Gh, repo: str, existing: dict[str, str], wanted: dict[str, str], plan: Plan
 ) -> None:
@@ -579,13 +610,16 @@ def plan_variables(
                 return f"gh api -X DELETE {endpoint}/{name}"
 
             plan.add(f"set variable {name} = {_shown(value)}", create)
+        elif not restorable(name, existing[name]):
+            plan.errors.append(
+                f"Variable {name} holds a value bootstrap cannot restore on rollback; "
+                "correct or delete it manually, then rerun."
+            )
         else:
             previous = existing[name]
 
             def update(name=name, value=value, previous=previous) -> str:
                 gh.write("PATCH", f"{endpoint}/{name}", {"name": name, "value": value})
-                if SECRET_LOOKING.search(previous):
-                    return f"# previous value of {name} withheld because it looks like a credential"
                 return f"gh api -X PATCH {endpoint}/{name} -f value={shlex.quote(previous)}"
 
             plan.add(f"update variable {name} = {_shown(value)}", update)
@@ -691,7 +725,8 @@ def plan_proposal(
 
     if existing:
         _, branch_files = read_tree(gh, repo, _sha(_field(existing[0], "object", "sha")))
-        if any(branch_files.get(path) != blob_sha(data) for path, data in changes.items()):
+        expected = {**target.files, **{path: blob_sha(data) for path, data in changes.items()}}
+        if branch_files != expected:
             plan.errors.append(
                 f"Branch {branch} already exists with other content; "
                 "merge or delete it, then rerun."
@@ -760,6 +795,20 @@ def _require_admin(gh: Gh, repo: str) -> Target:
     return target
 
 
+def fix_endpoints(url: str, previous_url: str | None, current: str | None) -> str:
+    """Seed the allowlist, or swap the old gateway entry for the new one and keep the rest."""
+    endpoint = gateway_endpoint(url)
+    if current is None:
+        return " ".join([endpoint, *(f"{host}:443" for host in FIX_ENDPOINT_HOSTS)])
+    entries = current.split()
+    if previous_url is not None and valid_https_url(previous_url):
+        old = gateway_endpoint(previous_url)
+        entries = [endpoint if entry == old else entry for entry in entries]
+    if endpoint not in entries:
+        entries.insert(0, endpoint)
+    return " ".join(entries)
+
+
 def _gateway(name: str, flag: str, given: str | None, existing: dict, plan: Plan) -> str | None:
     value = given if given is not None else existing.get(name)
     if value is None:
@@ -811,13 +860,15 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
         plan.lines.append(f"GitHub App {app.slug} has client id {app.client_id}.")
     kind = _gateway("AGENT_GATEWAY_KIND", "--gateway-kind", options.gateway_kind, existing, plan)
     url = _gateway("AGENT_GATEWAY_URL", "--gateway-url", options.gateway_url, existing, plan)
-    if kind is not None and kind not in {"databricks", "litellm"}:
+    if kind is not None and kind not in GATEWAY_KINDS:
         plan.errors.append("The gateway kind must be databricks or litellm.")
+    elif kind is not None:
+        wanted["AGENT_GATEWAY_KIND"] = kind
     if url is not None and not valid_https_url(url):
         plan.errors.append("The gateway URL must be an https URL without credentials or query.")
-    for name, value in (("AGENT_GATEWAY_KIND", kind), ("AGENT_GATEWAY_URL", url)):
-        if value is not None:
-            wanted[name] = value
+        url = None
+    elif url is not None:
+        wanted["AGENT_GATEWAY_URL"] = url
     if not llm_only:
         system_one = _gateway(
             "AGENT_SYSTEM_ONE_URL", "--system-one-url", options.system_one_url, existing, plan
@@ -827,9 +878,10 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
         elif system_one is not None:
             wanted["AGENT_SYSTEM_ONE_URL"] = system_one
     wanted.update(models)
-    if "AGENT_FIX_ALLOWED_ENDPOINTS" not in existing and valid_https_url(url):
-        hosts = (urlsplit(url).hostname, *FIX_ENDPOINT_HOSTS)
-        wanted["AGENT_FIX_ALLOWED_ENDPOINTS"] = " ".join(f"{host}:443" for host in hosts)
+    if url is not None:
+        wanted["AGENT_FIX_ALLOWED_ENDPOINTS"] = fix_endpoints(
+            url, existing.get("AGENT_GATEWAY_URL"), existing.get("AGENT_FIX_ALLOWED_ENDPOINTS")
+        )
     wanted["AGENT_SAFE_ENVIRONMENTS"] = "\n".join(safe)
     wanted["AGENT_CI_DEFAULT_TOKEN_READONLY"] = "true" if readonly else "false"
     plan_variables(gh, repo, existing, wanted, plan)
