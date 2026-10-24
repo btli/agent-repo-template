@@ -56,7 +56,12 @@ def test_lint_accepts_rendered_consumer_workflows(tmp_path: Path):
     rendered = render_consumer("a" * 40, "v0.0.0", temporary_parent=tmp_path)
     workflows = sorted((rendered / "consumer/.github/workflows").glob("*.yml"))
 
-    assert {path.name for path in workflows} == {"agent-review.yml", "agent-triage.yml"}
+    assert {path.name for path in workflows} == {
+        "agent-review.yml",
+        "agent-triage.yml",
+        "agent-fix.yml",
+        "agent-verify.yml",
+    }
     assert lint(workflows) == []
 
 

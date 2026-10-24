@@ -68,3 +68,23 @@ runs:
         AGENT_BOT_LOGIN: ${{ inputs.bot-login }}
         GITHUB_TOKEN: ${{ inputs.token }}
       run: python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" gate "$GATE_WORKFLOW" "$GITHUB_WORKSPACE/agent-gate-default"
+
+    - name: Prepare authorized fix context
+      if: inputs.workflow == 'fix' && steps.gate.outputs.run == 'true'
+      shell: bash
+      env:
+        GATE_FIX_AUTHORIZED: ${{ steps.gate.outputs.run }}
+        GATE_FIX_ISSUE: ${{ steps.gate.outputs.issue }}
+        GATE_FIX_BASE: ${{ steps.gate.outputs.base_sha }}
+        GATE_FIX_CANARY: ${{ steps.gate.outputs.canary }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        FIX_CONTEXT_DIR: ${{ runner.temp }}/agent-fix/context
+      run: python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" gate fix-context "$FIX_CONTEXT_DIR"
+    - name: Share authorized fix context
+      if: inputs.workflow == 'fix' && steps.gate.outputs.run == 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: agent-fix-context-${{ github.run_id }}
+        path: ${{ runner.temp }}/agent-fix/context
+        if-no-files-found: error
+        retention-days: 1
