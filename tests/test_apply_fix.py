@@ -26,6 +26,7 @@ class FixAPI:
         self.move_at = None
         self.tree_reads = 0
         self.conflict = False
+        self.ref_move_on_read = None
         self.installation = {
             "repository_selection": "all",
             "total_count": 2,
@@ -70,6 +71,9 @@ class FixAPI:
                 "sha": ("d" * 40 if self.move_at == self.tree_reads else self.tree),
             }
         if path.startswith("git/ref/heads/agent"):
+            self.ref_reads += 1
+            if self.ref_move_on_read == self.ref_reads:
+                self.ref = "a" * 40
             if not self.ref:
                 raise GitHubError(404)
             return {"object": {"sha": self.ref}}
@@ -332,11 +336,11 @@ def test_installation_read_requires_valid_preflight_and_ci_exposure(fix_case, pr
     case["preflight"]["base_sha"] = case["base"]
     result = apply_case(case)
     assert case["api"].reads == ([] if preflight_pass else ["/installation/repositories"])
-    assert result == (
-        "Fix dry-run: validated patch; no writes. "
-        if preflight_pass
-        else "UNSAFE ON SHARED APP: patch retained; no push."
-    )
+    if preflight_pass:
+        assert result.startswith("Fix dry-run: validated patch; no writes.")
+        assert "template-fix-propose" in result and "AGENT_FIX_KEY" in result
+    else:
+        assert result == "UNSAFE ON SHARED APP: patch retained; no push."
     assert case["api"].writes == []
 
 
@@ -366,17 +370,25 @@ def test_feedback_patch_is_cumulative_but_commit_is_child_of_captured_head(fix_c
 @pytest.mark.parametrize("existing_pr", [False, True])
 def test_existing_bot_ref_recovers_missing_pr_or_links_existing_draft(fix_case, existing_pr):
     case = fix_case
-    case["api"].ref = "c" * 40
-    case["api"].commits["c" * 40] = {
-        "message": f"Fix #12\n\nAgent-Base: {case['base']}\n"
+    git(case["repo"], "add", "lib.py")
+    message = (
+        f"Fix #12\n\nAgent-Base: {case['base']}\n"
         "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
-    }
+    )
+    git(case["repo"], "commit", "-qm", message)
+    case["api"].ref = git(case["repo"], "rev-parse", "HEAD").strip()
+    case["api"].commits[case["api"].ref] = {"message": message}
     if existing_pr:
         case["api"].pull = case["api"].agent_pull(case["api"].ref)
     result = apply_case(case)
     assert not any(path in {"git/refs", "git/commits"} for _, path, _ in case["api"].writes)
     assert sum(path == "pulls" for _, path, _ in case["api"].writes) == (0 if existing_pr else 1)
     assert "draft" in result.casefold()
+    if existing_pr:
+        assert not any(path.startswith("git/commits/") for path in case["api"].reads)
+    else:
+        body = next(body for _, path, body in case["api"].writes if path == "pulls")
+        assert "Agent-Run: prior" in body["body"]
 
 
 @pytest.mark.parametrize("feedback", [False, True])
@@ -479,6 +491,11 @@ def test_apply_command_uses_event_policy_and_trusted_context(
     assert "dry-run" in (tmp_path / "summary").read_text()
     assert case["api"].writes == []
     assert "/installation/repositories" not in case["api"].reads
+    case["preflight"]["accepted_template_exposures"] = [
+        {"rule": "template-fix-propose", "job": "propose", "secret": "AGENT_FIX_KEY"}
+    ]
+    assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 0
+    assert "AGENT_FIX_KEY" in (tmp_path / "summary").read_text()
     case["preflight"]["pass"] = False
     case["ctx"].config.raw["fix"]["accept_ci_exposure"] = True
     assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 0
@@ -490,6 +507,14 @@ def test_apply_command_uses_event_policy_and_trusted_context(
     )
     assert case["api"].writes == []
     trusted = json.loads(context.read_text())
+    apply_calls = []
+    original_apply = apply_fix.apply_fix
+
+    def tracked_apply(*args, **kwargs):
+        apply_calls.append(args)
+        return original_apply(*args, **kwargs)
+
+    monkeypatch.setattr(apply_fix, "apply_fix", tracked_apply)
     for key, value in {
         "schema_version": "other",
         "run_id": "other",
@@ -499,9 +524,27 @@ def test_apply_command_uses_event_policy_and_trusted_context(
         context.write_text(json.dumps({**trusted, key: value}))
         assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 1
         assert case["api"].writes == []
+        assert apply_calls == []
     context.unlink()
     assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 1
     assert case["api"].writes == []
+
+
+def test_invalid_node_id_is_rejected_before_tree_validation(fix_case, monkeypatch):
+    from agent_repo.apply import fix
+
+    case = fix_case
+    case["artifact"]["tests"] = ["--help"]
+    calls = []
+
+    def validate(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("tree validation reached")
+
+    monkeypatch.setattr(fix, "validate_tree", validate)
+    with pytest.raises(fix.Violation, match="invalid pytest node ids"):
+        apply_case(case)
+    assert calls == [] and case["api"].writes == []
 
 
 @pytest.mark.parametrize("phase", [2, 3])
@@ -563,3 +606,270 @@ def test_area_owner_review_includes_users_and_repository_teams(fix_case):
         body for _, path, body in case["api"].writes if path == "pulls/24/requested_reviewers"
     )
     assert request == {"reviewers": ["maintainer"], "team_reviewers": ["core-team"]}
+
+
+def test_new_draft_discloses_accepted_template_exposure(fix_case):
+    case = fix_case
+    case["preflight"]["accepted_template_exposures"] = [
+        {"rule": "template-fix-propose", "job": "propose", "secret": "AGENT_FIX_KEY"}
+    ]
+    result = apply_case(case)
+    body = next(body["body"] for _, path, body in case["api"].writes if path == "pulls")
+    note = "Accepted template exposure: rule=template-fix-propose job=propose secret=AGENT_FIX_KEY"
+    assert note in result and note in body
+
+
+def test_feedback_update_discloses_accepted_template_exposure_in_pr_body(fix_case):
+    case = fix_case
+    head = case["base"]
+    case["api"].ref = head
+    case["api"].pull = case["api"].agent_pull(head)
+    case["api"].commits[head] = {
+        "message": f"Fix #12\n\nAgent-Base: {head}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    }
+    case["ctx"] = replace(case["ctx"], event=replace(case["ctx"].event, is_pr=True, number=24))
+    case["preflight"]["accepted_template_exposures"] = [
+        {"rule": "template-fix-propose", "job": "propose", "secret": "AGENT_FIX_KEY"}
+    ]
+    result = apply_case(case, feedback_head=head, feedback_ref="agent/fix-12")
+    body = next(body["body"] for _, path, body in case["api"].writes if path == "pulls/24")
+    assert "AGENT_FIX_KEY" in result and "AGENT_FIX_KEY" in body
+    assert next(path for _, path, _ in case["api"].writes if path.startswith("git/refs/"))
+
+
+def test_recovery_uses_published_manifest_and_fixed_description(fix_case):
+    from agent_repo.config import Area
+
+    case = fix_case
+    repo = case["repo"]
+    git(repo, "checkout", "--", "lib.py")
+    (repo / "package.json").write_text('{"dependencies":{"old":"1"}}\n')
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "manifest base")
+    base = git(repo, "rev-parse", "HEAD").strip()
+    case["base"] = base
+    case["api"].base = base
+    case["ctx"] = replace(case["ctx"], base_sha=base)
+    case["preflight"]["base_sha"] = base
+    (repo / "lib.py").write_text("def add(a, b):\n    return a + b\n")
+    case["artifact"], case["patch"] = build_artifact(repo, base, "run-1", answer(base))
+    git(repo, "checkout", "--", "lib.py")
+    (repo / "package.json").write_text('{"dependencies":{"old":"2"}}\n')
+    git(repo, "add", ".")
+    message = (
+        f"Fix #12\n\nAgent-Base: {base}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    )
+    git(repo, "commit", "-qm", message)
+    head = git(repo, "rev-parse", "HEAD").strip()
+    case["api"].ref = head
+    case["api"].commits[head] = {"message": message}
+    case["ctx"] = replace(
+        case["ctx"],
+        config=replace(
+            case["ctx"].config,
+            areas=(Area("manifest", "Manifest", ("package.json",), ("@maintainer",), False),),
+        ),
+    )
+    case["preflight"]["accepted_template_exposures"] = [
+        {"rule": "template-fix-propose", "job": "propose", "secret": "AGENT_FIX_KEY"}
+    ]
+    result = apply_case(case)
+    pull = next(body for _, path, body in case["api"].writes if path == "pulls")
+    labels = next(
+        body["labels"] for _, path, body in case["api"].writes if path.endswith("/labels")
+    )
+    reviewers = next(
+        body for _, path, body in case["api"].writes if path.endswith("/requested_reviewers")
+    )
+    assert "needs-maintainer" in labels and reviewers["reviewers"] == ["maintainer"]
+    assert f"Agent-Base: {base}" in pull["body"] and "Agent-Run: prior" in pull["body"]
+    assert "AGENT_FIX_KEY" in pull["body"] and "AGENT_FIX_KEY" in result
+    assert case["artifact"]["summary"] not in pull["body"]
+    assert case["api"].ref_reads >= 2
+
+
+def test_existing_draft_links_when_its_base_predates_event_base(fix_case):
+    case = fix_case
+    case["api"].ref = "c" * 40
+    case["api"].pull = case["api"].agent_pull(case["api"].ref)
+    case["api"].commits[case["api"].ref] = {
+        "message": f"Fix #12\n\nAgent-Base: {'9' * 40}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    }
+    assert case["api"].pull["html_url"] in apply_case(case)
+    assert not any(path == "git/commits/" + case["api"].ref for path in case["api"].reads)
+    assert case["api"].writes == []
+
+
+def test_recovery_ref_move_refuses_before_pull_creation(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    git(case["repo"], "add", "lib.py")
+    message = (
+        f"Fix #12\n\nAgent-Base: {case['base']}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    )
+    git(case["repo"], "commit", "-qm", message)
+    case["api"].ref = git(case["repo"], "rev-parse", "HEAD").strip()
+    case["api"].commits[case["api"].ref] = {"message": message}
+    case["api"].ref_move_on_read = 2
+    with pytest.raises(Violation, match="published ref moved"):
+        apply_case(case)
+    assert case["api"].writes == []
+
+
+def test_feedback_ref_move_after_object_creation_refuses_before_patch(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    head = case["base"]
+    case["api"].ref = head
+    case["api"].pull = case["api"].agent_pull(head)
+    case["api"].commits[head] = {
+        "message": f"Fix #12\n\nAgent-Base: {head}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    }
+    case["ctx"] = replace(case["ctx"], event=replace(case["ctx"].event, is_pr=True, number=24))
+    case["api"].ref_move_on_read = 3
+    with pytest.raises(Violation, match="feedback ref moved"):
+        apply_case(case, feedback_head=head, feedback_ref="agent/fix-12")
+    assert any(path == "git/commits" for _, path, _ in case["api"].writes)
+    assert not any(path.startswith("git/refs") for _, path, _ in case["api"].writes)
+
+
+def test_feedback_rejects_head_with_different_agent_base(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    head = case["base"]
+    case["api"].ref = head
+    case["api"].pull = case["api"].agent_pull(head)
+    case["api"].commits[head] = {
+        "message": f"Fix #12\n\nAgent-Base: {'9' * 40}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    }
+    case["ctx"] = replace(case["ctx"], event=replace(case["ctx"].event, is_pr=True, number=24))
+    with pytest.raises(Violation, match="unverified agent commit"):
+        apply_case(case, feedback_head=head, feedback_ref="agent/fix-12")
+    assert case["api"].writes == []
+
+
+def test_ref_creation_conflict_recovers_published_commit(fix_case):
+    case = fix_case
+    git(case["repo"], "checkout", "--", "lib.py")
+    (case["repo"] / "package.json").write_text("{}\n")
+    git(case["repo"], "add", "package.json")
+    message = (
+        f"Fix #12\n\nAgent-Base: {case['base']}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    )
+    git(case["repo"], "commit", "-qm", message)
+    prior = git(case["repo"], "rev-parse", "HEAD").strip()
+    case["api"].commits[prior] = {"message": message}
+    case["api"].conflict = True
+    original = case["api"].request
+
+    def request(method, path, **kwargs):
+        if method == "POST" and path == "git/refs":
+            case["api"].ref = prior
+        return original(method, path, **kwargs)
+
+    case["api"].request = request
+    assert "recovered" in apply_case(case)
+    pull = next(body for _, path, body in case["api"].writes if path == "pulls")
+    assert "Agent-Run: prior" in pull["body"] and case["artifact"]["summary"] not in pull["body"]
+    labels = next(
+        body["labels"] for _, path, body in case["api"].writes if path.endswith("/labels")
+    )
+    assert "needs-maintainer" in labels
+
+
+def test_unreadable_published_change_refuses_before_pull(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    case["api"].ref = "c" * 40
+    case["api"].commits[case["api"].ref] = {
+        "message": f"Fix #12\n\nAgent-Base: {case['base']}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    }
+    with pytest.raises(Violation, match="cannot inspect published change on agent/fix-12"):
+        apply_case(case)
+    assert case["api"].writes == []
+
+
+def test_recovery_uses_older_agent_base_after_event_base_advances(fix_case):
+    case = fix_case
+    old_base = case["base"]
+    git(case["repo"], "add", "lib.py")
+    message = (
+        f"Fix #12\n\nAgent-Base: {old_base}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    )
+    git(case["repo"], "commit", "-qm", message)
+    old_head = git(case["repo"], "rev-parse", "HEAD").strip()
+    (case["repo"] / "unrelated.txt").write_text("new base\n")
+    git(case["repo"], "add", "unrelated.txt")
+    git(case["repo"], "commit", "-qm", "advance default branch")
+    new_base = git(case["repo"], "rev-parse", "HEAD").strip()
+    (case["repo"] / "new.py").write_text("value = 1\n")
+    case["artifact"], case["patch"] = build_artifact(
+        case["repo"], new_base, "run-1", answer(new_base)
+    )
+    case["base"] = new_base
+    case["ctx"] = replace(case["ctx"], base_sha=new_base)
+    case["api"].base = new_base
+    case["preflight"]["base_sha"] = new_base
+    case["api"].ref = old_head
+    case["api"].commits[old_head] = {"message": message}
+    assert "recovered" in apply_case(case)
+    body = next(body["body"] for _, path, body in case["api"].writes if path == "pulls")
+    assert f"Agent-Base: {old_base}" in body and f"Agent-Base: {new_base}" not in body
+
+
+def test_recovery_refuses_published_protected_path(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    git(case["repo"], "checkout", "--", "lib.py")
+    (case["repo"] / "AGENTS.md").write_text("protected\n")
+    git(case["repo"], "add", "AGENTS.md")
+    message = (
+        f"Fix #12\n\nAgent-Base: {case['base']}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    )
+    git(case["repo"], "commit", "-qm", message)
+    head = git(case["repo"], "rev-parse", "HEAD").strip()
+    case["api"].ref = head
+    case["api"].commits[head] = {"message": message}
+    with pytest.raises(Violation, match="cannot inspect published change on agent/fix-12"):
+        apply_case(case)
+    assert case["api"].writes == []
+
+
+def test_feedback_update_conflict_never_claims_success(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    head = case["base"]
+    case["api"].ref = head
+    case["api"].pull = case["api"].agent_pull(head)
+    case["api"].commits[head] = {
+        "message": f"Fix #12\n\nAgent-Base: {head}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    }
+    case["ctx"] = replace(case["ctx"], event=replace(case["ctx"].event, is_pr=True, number=24))
+    original = case["api"].request
+
+    def request(method, path, **kwargs):
+        if method == "PATCH" and path == "git/refs/heads/agent/fix-12":
+            raise GitHubError(422)
+        return original(method, path, **kwargs)
+
+    case["api"].request = request
+    with pytest.raises(Violation, match="feedback ref update conflict"):
+        apply_case(case, feedback_head=head, feedback_ref="agent/fix-12")
+    assert not any(path == "pulls" for _, path, _ in case["api"].writes)

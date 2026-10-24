@@ -1,6 +1,8 @@
 import json
 import shutil
 import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_fix_artifact import git, make_repo
@@ -125,7 +127,7 @@ def test_verify_rejects_false_or_invalid_reproduction(verify_case, kind, capsys)
 
 
 @pytest.mark.parametrize("kind", ["human", "other-bot", "fork", "wrong-base", "wrong-branch"])
-def test_verify_skips_ineligible_pull_requests_before_running_code(verify_case, kind, capsys):
+def test_verify_refuses_ineligible_pull_requests_before_running_code(verify_case, kind, capsys):
     from agent_repo.commands.verify import main
 
     case = verify_case
@@ -141,8 +143,8 @@ def test_verify_skips_ineligible_pull_requests_before_running_code(verify_case, 
     else:
         pull["head"]["ref"] = "feature/fix"
     case["event"].write_text(json.dumps(case["payload"]))
-    assert main([str(case["repo"]), str(case["policy"])]) == 0
-    assert "skipped" in capsys.readouterr().out.casefold()
+    assert main([str(case["repo"]), str(case["policy"])]) == 1
+    assert "failed" in capsys.readouterr().err.casefold()
 
 
 def test_verify_rejects_a_selected_id_deselected_by_head_conftest(verify_case):
@@ -161,3 +163,93 @@ def test_verify_rejects_a_selected_id_deselected_by_head_conftest(verify_case):
     )
     amend(case, message)
     assert main([str(case["repo"]), str(case["policy"])]) == 1
+
+
+@pytest.mark.parametrize("exit_code", [2, 4, 5])
+def test_verify_rejects_red_exit_even_when_selected_id_is_collected(
+    verify_case, monkeypatch, exit_code
+):
+    from agent_repo.commands import verify
+
+    calls = []
+    original_run = verify.subprocess.run
+
+    def pytest_process(command, **kwargs):
+        if not any(value.startswith("--junitxml=") for value in command):
+            return original_run(command, **kwargs)
+        report = next(value for value in command if value.startswith("--junitxml="))
+        Path(report.split("=", 1)[1]).write_text(
+            '<testsuite><testcase classname="test_lib" name="test_add"/></testsuite>'
+        )
+        calls.append(command)
+        return SimpleNamespace(returncode=exit_code if len(calls) == 1 else 0)
+
+    monkeypatch.setattr(verify.subprocess, "run", pytest_process)
+    assert verify.main([str(verify_case["repo"]), str(verify_case["policy"])]) == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("bot_login", ["", "other", "malformed login"])
+def test_verify_missing_or_wrong_bot_login_never_runs_repository_code(
+    verify_case, monkeypatch, bot_login
+):
+    from agent_repo.commands import verify
+
+    monkeypatch.setenv("AGENT_BOT_LOGIN", bot_login)
+    calls = []
+
+    def git_command(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("repository code reached")
+
+    monkeypatch.setattr(verify, "_git", git_command)
+    assert verify.main([str(verify_case["repo"]), str(verify_case["policy"])]) == 1
+    assert calls == []
+
+
+def test_verify_rejects_base_symlink_at_overlay_destination(verify_case):
+    from agent_repo.commands.verify import main
+
+    case = verify_case
+    target = case["repo"] / "test_lib.py"
+    outside = case["repo"].parent / "outside.py"
+    outside.write_text("sentinel\n")
+    original = target.read_text()
+    target.unlink()
+    target.symlink_to(outside)
+    git(case["repo"], "add", "test_lib.py")
+    git(case["repo"], "commit", "-qm", "symlink base")
+    base = git(case["repo"], "rev-parse", "HEAD").strip()
+    target.unlink()
+    target.write_text(original)
+    message = case["message"].replace(case["base"], base)
+    git(case["repo"], "add", "test_lib.py")
+    git(case["repo"], "commit", "-qm", message)
+    case["payload"]["pull_request"]["head"]["sha"] = git(case["repo"], "rev-parse", "HEAD").strip()
+    case["event"].write_text(json.dumps(case["payload"]))
+    assert main([str(case["repo"]), str(case["policy"])]) == 1
+    assert outside.read_text() == "sentinel\n"
+
+
+def test_verify_rejects_agent_base_on_sibling_history(verify_case, monkeypatch):
+    from agent_repo.commands import verify
+
+    case = verify_case
+    original_head = case["head"]
+    git(case["repo"], "checkout", "-qb", "sibling", case["base"])
+    (case["repo"] / "sibling.txt").write_text("sibling\n")
+    git(case["repo"], "add", "sibling.txt")
+    git(case["repo"], "commit", "-qm", "sibling base")
+    sibling = git(case["repo"], "rev-parse", "HEAD").strip()
+    git(case["repo"], "checkout", "--quiet", "--detach", original_head)
+    amend(case, case["message"].replace(case["base"], sibling))
+    calls = []
+    original_run = verify._run
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(verify, "_run", run)
+    assert verify.main([str(case["repo"]), str(case["policy"])]) == 1
+    assert calls == []

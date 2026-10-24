@@ -110,8 +110,7 @@ def main(argv: list[str]) -> int:
             raise Violation("Verify refused: invalid event.")
         payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
         if not _eligible(payload):
-            print("Verify skipped: ineligible pull request.")
-            return 0
+            raise Violation("Verify refused: ineligible pull request.")
         repo = Path(argv[0]).resolve(strict=True)
         head = _sha(payload["pull_request"]["head"]["sha"])
         if _git(repo, "rev-parse", "HEAD").decode().strip() != head:

@@ -49,7 +49,8 @@ BLOCKED_GLOBS = (
 )
 AGENT_MESSAGE = re.compile(
     r"Fix #[1-9][0-9]*\n\nAgent-Base: (?P<base>[0-9a-f]{40})\n"
-    r"Agent-Run: [A-Za-z0-9_.-]{1,64}\nAgent-Tests:(?P<tests>(?: [A-Za-z0-9_./:\[\]-]+){0,20})\n?"
+    r"Agent-Run: (?P<run>[A-Za-z0-9_.-]{1,64})\n"
+    r"Agent-Tests:(?P<tests>(?: [A-Za-z0-9_./:\[\]-]+){0,20})\n?"
 )
 
 
@@ -226,14 +227,29 @@ def _ref(ctx: ApplyContext, branch: str) -> str | None:
         raise
 
 
-def _agent_commit(ctx: ApplyContext, head: str) -> None:
+def _agent_commit(ctx: ApplyContext, head: str, *, base: str | None = None) -> re.Match[str]:
     commit = ctx.github.request("GET", f"git/commits/{_sha(head)}")
     author = ctx.github.request("GET", f"commits/{head}")["author"]
     if author["type"] != "Bot" or canonical_bot_login(author["login"]) != ctx.bot_login:
         raise Violation("Fix refused: unverified agent commit.")
     match = AGENT_MESSAGE.fullmatch(commit["message"])
-    if commit["sha"] != head or not match or match["base"] != ctx.base_sha:
+    if commit["sha"] != head or not match or (base is not None and match["base"] != base):
         raise Violation("Fix refused: unverified agent commit.")
+    return match
+
+
+def _recovered_tree(repo: Path, branch: str, head: str, base: str, max_lines: int) -> ValidatedTree:
+    try:
+        patch = _git(
+            repo, "diff", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", base, head
+        ).decode("utf-8", "surrogateescape")
+        recovered = validate_tree(repo, base, patch, max_lines)
+        tree_sha = _sha(_git(repo, "rev-parse", head + "^{tree}").decode().strip())
+        if recovered.sha != tree_sha:
+            raise ValueError
+        return recovered
+    except (Violation, ValueError, UnicodeError):
+        raise Violation(f"Fix refused: cannot inspect published change on {branch}.") from None
 
 
 def _pull_identity(pull: dict, ctx: ApplyContext, issue: int, head: str) -> None:
@@ -315,6 +331,73 @@ def _decorate_pull(ctx: ApplyContext, number: int, tree: ValidatedTree) -> None:
         )
 
 
+def _accepted_template_note(preflight: dict) -> str:
+    records = preflight["accepted_template_exposures"]
+    if len(records) > 10:
+        raise Violation("Fix refused: too many accepted template exposures.")
+    return "\n".join(
+        f"Accepted template exposure: rule={item['rule']} job={item['job']} secret={item['secret']}"
+        for item in records
+    )
+
+
+def _create_recovered_pull(
+    ctx: ApplyContext,
+    repo: Path,
+    issue: int,
+    branch: str,
+    head: str,
+    note: str,
+    workflow_sha: str,
+) -> str:
+    match = _agent_commit(ctx, head)
+    recovered = _recovered_tree(
+        repo, branch, head, match["base"], ctx.config.raw["limits"]["fix_max_diff_lines"]
+    )
+    if recovered.dependencies and not ctx.config.raw["fix"]["allow_new_deps"]:
+        raise Violation(f"Fix refused: cannot inspect published change on {branch}.")
+    if _workflow_tree(ctx) != workflow_sha:
+        return "Fix dry-run: workflow tree moved before PR creation."
+    if _ref(ctx, branch) != head:
+        raise Violation(f"Fix refused: published ref moved on {branch}.")
+    body = (
+        f"Fixes #{issue}\n\nRecovered published agent fix.\n\n"
+        f"Agent-Run: {match['run']}\nAgent-Base: {match['base']}"
+    )
+    if note:
+        body += "\n\n" + note
+    pull = ctx.github.request(
+        "POST",
+        "pulls",
+        body={
+            "title": f"Fix #{issue}",
+            "body": body,
+            "head": branch,
+            "base": ctx.event.default_branch,
+            "draft": True,
+        },
+    )
+    number = pull["number"]
+    if type(number) is not int or number < 1:
+        raise Violation("Fix refused: invalid pull request.")
+    _decorate_pull(ctx, number, recovered)
+    return "Created recovered draft fix." + ("\n" + note if note else "")
+
+
+def _feedback_body_with_note(pull: dict, note: str, ctx: ApplyContext) -> str | None:
+    if not note:
+        return None
+    body = pull.get("body")
+    if not isinstance(body, str) or len(body) > 16000:
+        raise Violation("Fix refused: feedback body unavailable.")
+    if note in body:
+        return None
+    updated = body + "\n\n" + note
+    if find_leaks(updated, ctx.secrets, ctx.canary):
+        raise Violation("Fix refused: outbound scan alert.")
+    return updated
+
+
 def apply_fix(
     artifact: dict,
     patch: str | None,
@@ -352,25 +435,11 @@ def apply_fix(
         _pull_identity(
             ctx.github.request("GET", f"pulls/{ctx.event.number}"), ctx, issue, feedback_head
         )
-        _agent_commit(ctx, feedback_head)
+        _agent_commit(ctx, feedback_head, base=ctx.base_sha)
         if _ref(ctx, branch) != feedback_head:
             raise Violation("Fix refused: feedback ref moved.")
     elif ctx.event.is_pr or issue != ctx.event.number or feedback_ref:
         raise Violation("Fix refused: event identity mismatch.")
-    if artifact["status"] == "no_patch":
-        if not artifact["attempted"].strip() or patch:
-            raise Violation("Fix refused: invalid no-patch result.")
-        body = "No patch proposed.\n\n" + fenced(artifact["attempted"], 4000)
-        if mode == "live":
-            _enabled(ctx, issue)
-            ctx.github.request("POST", f"issues/{issue}/comments", body={"body": body})
-        else:
-            return body + "\n\nDry-run: no writes."
-        return "No patch proposed (" + mode + ")."
-    test_files(artifact["tests"])
-    tree = validate_tree(repo, ctx.base_sha, patch, ctx.config.raw["limits"]["fix_max_diff_lines"])
-    if tree.dependencies and not ctx.config.raw["fix"]["allow_new_deps"]:
-        raise Violation("Fix refused: new or unparsed dependencies.")
     if (
         validate(preflight, load_schema("preflight"))
         or preflight["run_id"] != ctx.run_id
@@ -378,25 +447,32 @@ def apply_fix(
         or preflight["workflow_tree_sha"] is None
     ):
         raise Violation("Fix refused: preflight identity or schema.")
+    template_note = _accepted_template_note(preflight)
+    if artifact["status"] == "no_patch":
+        if not artifact["attempted"].strip() or patch:
+            raise Violation("Fix refused: invalid no-patch result.")
+        body = "No patch proposed.\n\n" + fenced(artifact["attempted"], 4000)
+        if template_note:
+            body += "\n\n" + template_note
+        if mode == "live":
+            _enabled(ctx, issue)
+            ctx.github.request("POST", f"issues/{issue}/comments", body={"body": body})
+        else:
+            return body + "\n\nDry-run: no writes."
+        return "No patch proposed (" + mode + ")." + ("\n" + template_note if template_note else "")
+    test_files(artifact["tests"])
+    tree = validate_tree(repo, ctx.base_sha, patch, ctx.config.raw["limits"]["fix_max_diff_lines"])
+    if tree.dependencies and not ctx.config.raw["fix"]["allow_new_deps"]:
+        raise Violation("Fix refused: new or unparsed dependencies.")
     exposures = preflight["exposures"]
     unsafe = not preflight["pass"] or bool(exposures)
-    shared_app = False
     if unsafe:
         try:
             ctx.github.request("GET", "/installation/repositories")
         except GitHubError:
             pass
         # A repository-scoped token's response does not prove installation-wide reach.
-        shared_app = True
-    bypass = ctx.config.raw["fix"]["accept_ci_exposure"] and not shared_app
-    names = sorted({name for item in exposures for name in item["secrets"]})
-    exposure_note = "Accepted CI exposure: " + ", ".join(names) if unsafe and bypass else ""
-    if unsafe and not bypass:
-        result = (
-            "UNSAFE ON SHARED APP: patch retained; no push."
-            if shared_app
-            else "UNSAFE: patch retained; no push."
-        )
+        result = "UNSAFE ON SHARED APP: patch retained; no push."
         if mode == "live":
             _enabled(ctx, issue)
             ctx.github.request(
@@ -411,7 +487,9 @@ def apply_fix(
             )
         return result
     if mode == "dry-run":
-        return "Fix dry-run: validated patch; no writes. " + exposure_note
+        return "Fix dry-run: validated patch; no writes. " + (
+            "\n" + template_note if template_note else ""
+        )
     _enabled(ctx, issue)
     if _workflow_tree(ctx) != preflight["workflow_tree_sha"]:
         return "Fix dry-run: workflow tree moved before push."
@@ -419,13 +497,19 @@ def apply_fix(
     if feedback_head and existing != feedback_head:
         raise Violation("Fix refused: feedback ref moved.")
     if not feedback_head and existing:
-        _agent_commit(ctx, existing)
         pulls = ctx.github.paginate(
             "pulls", params={"state": "open", "head": ctx.event.repo.split("/")[0] + ":" + branch}
         )
         for pull in pulls:
             _pull_identity(pull, ctx, issue, existing)
-            return "Existing draft: " + pull["html_url"]
+            return (
+                "Existing draft: "
+                + pull["html_url"]
+                + ("\n" + template_note if template_note else "")
+            )
+        return _create_recovered_pull(
+            ctx, repo, issue, branch, existing, template_note, preflight["workflow_tree_sha"]
+        )
     else:
         message = (
             f"Fix #{issue}\n\nAgent-Base: {ctx.base_sha}\n"
@@ -433,10 +517,11 @@ def apply_fix(
         )
         commit = _create_commit(ctx, repo, tree, feedback_head or ctx.base_sha, message)
         # Ref and workflows are re-read after object creation, immediately before publication.
+        feedback_body = None
         if feedback_head:
-            _pull_identity(
-                ctx.github.request("GET", f"pulls/{ctx.event.number}"), ctx, issue, feedback_head
-            )
+            feedback_pull = ctx.github.request("GET", f"pulls/{ctx.event.number}")
+            _pull_identity(feedback_pull, ctx, issue, feedback_head)
+            feedback_body = _feedback_body_with_note(feedback_pull, template_note, ctx)
             if _ref(ctx, branch) != feedback_head:
                 raise Violation("Fix refused: feedback ref moved.")
         if _workflow_tree(ctx) != preflight["workflow_tree_sha"]:
@@ -453,25 +538,37 @@ def apply_fix(
         except GitHubError as error:
             if error.status != 422:
                 raise
+            if feedback_head:
+                raise Violation("Fix refused: feedback ref update conflict.") from None
             pulls = ctx.github.paginate(
                 "pulls",
                 params={"state": "open", "head": ctx.event.repo.split("/")[0] + ":" + branch},
             )
             for pull in pulls:
                 _pull_identity(pull, ctx, issue, _sha(pull["head"]["sha"]))
-                return "Existing draft: " + pull["html_url"]
+                return (
+                    "Existing draft: "
+                    + pull["html_url"]
+                    + ("\n" + template_note if template_note else "")
+                )
             current = _ref(ctx, branch)
             if current is None:
                 raise Violation("Fix refused: ref creation conflict.") from None
-            _agent_commit(ctx, current)
+            return _create_recovered_pull(
+                ctx, repo, issue, branch, current, template_note, preflight["workflow_tree_sha"]
+            )
         if feedback_head:
+            if feedback_body is not None:
+                ctx.github.request(
+                    "PATCH", f"pulls/{ctx.event.number}", body={"body": feedback_body}
+                )
             _decorate_pull(ctx, ctx.event.number, tree)
-            return "Updated draft fix. " + exposure_note
+            return "Updated draft fix." + ("\n" + template_note if template_note else "")
     if _workflow_tree(ctx) != preflight["workflow_tree_sha"]:
         return "Fix dry-run: workflow tree moved before PR creation."
     body = f"Fixes #{issue}\n\n" + fenced(artifact["summary"] + "\n\n" + artifact["rca"], 8000)
-    if exposure_note:
-        body += "\n\n" + exposure_note
+    if template_note:
+        body += "\n\n" + template_note
     if find_leaks(body, ctx.secrets, ctx.canary):
         raise Violation("Fix refused: outbound scan alert.")
     pull = ctx.github.request(
@@ -489,4 +586,4 @@ def apply_fix(
     if type(number) is not int or number < 1:
         raise Violation("Fix refused: invalid pull request.")
     _decorate_pull(ctx, number, tree)
-    return "Created draft fix. " + exposure_note
+    return "Created draft fix." + ("\n" + template_note if template_note else "")

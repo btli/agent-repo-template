@@ -1284,3 +1284,53 @@ def test_fix_context_fails_closed_without_authorized_gate_inputs(
     assert gate.main(["fix-context", str(directory)]) == 1
     assert not (directory / "canary.json").exists()
     assert TOKEN not in str(capsys.readouterr())
+
+
+def test_refused_fix_gate_writes_reason_only_summary(tmp_path, monkeypatch):
+    from agent_repo.commands import gate
+
+    checkout, event_path, output = prepare_cli(tmp_path, monkeypatch)
+    case = copy.deepcopy(next(item for item in CASES if item["id"] == "unauthorized-fix"))
+    event_path.write_text(json.dumps(case["payload"]))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    client = GitHub(TOKEN, "your-org/project", transport=FakeTransport(case))
+    monkeypatch.setattr(gate, "GitHub", lambda *args: client)
+    assert gate.main(["fix", str(checkout)]) == 0
+    assert read_outputs(output)["run"] == "false"
+    assert summary.read_text() == "Fix was not run: unauthorized.\n"
+    assert TOKEN not in summary.read_text()
+    summary.unlink()
+    assert gate.main(["review", str(checkout)]) == 0
+    assert not summary.exists()
+
+
+def test_feedback_fix_context_rejects_issue_number_that_is_a_pull_request(tmp_path, monkeypatch):
+    from agent_repo.commands import gate
+
+    checkout, event_path, output = prepare_cli(tmp_path, monkeypatch)
+    case = feedback_case()
+    event_path.write_text(json.dumps(case["payload"]))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    client = GitHub(TOKEN, "your-org/project", transport=FakeTransport(case))
+    monkeypatch.setattr(gate, "GitHub", lambda *args: client)
+    assert gate.main(["fix", str(checkout)]) == 0
+    values = read_outputs(output)
+
+    class PullIssue:
+        def request(self, method, path):
+            assert method == "GET" and path == f"issues/{values['issue']}"
+            return {"title": "Pull request", "body": "", "pull_request": {"url": "synthetic"}}
+
+    monkeypatch.setattr(gate, "GitHub", lambda *args: PullIssue())
+    for key, value in {
+        "GATE_FIX_ISSUE": values["issue"],
+        "GATE_FIX_CANARY": values["canary"],
+        "GATE_FIX_BASE": values["base_sha"],
+        "GATE_FIX_AUTHORIZED": values["run"],
+    }.items():
+        monkeypatch.setenv(key, value)
+    directory = tmp_path / "context"
+    assert gate.main(["fix-context", str(directory)]) == 1
+    assert not (directory / "issue.txt").exists()

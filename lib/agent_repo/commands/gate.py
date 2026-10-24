@@ -136,4 +136,12 @@ def main(argv: list[str]) -> int:
     except (OSError, KeyError):
         print("Gate outputs could not be written.", file=sys.stderr)
         return 1
+    if argv[0] == "fix" and not result.run and (summary := os.environ.get("GITHUB_STEP_SUMMARY")):
+        reason = result.reason if re.fullmatch(r"[a-z0-9-]{1,64}", result.reason) else "gate-error"
+        try:
+            with Path(summary).open("a", encoding="utf-8") as stream:
+                stream.write(f"Fix was not run: {reason}.\n")
+        except OSError:
+            print("Gate summary could not be written.", file=sys.stderr)
+            return 1
     return status
