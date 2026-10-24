@@ -15,11 +15,13 @@ gateway configuration.
 
 ## Budgets and alerts
 
-Configure the gateway to enforce per-key spend and rate limits, and a per-run
-token budget for each request chain. Alert at 80% of budget and attach the
-workflow run id to gateway usage records so an operator can find the matching
-Actions run. These are gateway-side controls: merged main does not enforce
-gateway spend or rate limits and does not ingest a gateway budget-alert feed.
+Configure per-key token and rate limits on the gateway and alert at 80% of the
+key's budget. The template gives each role a static key, URL, and model; it does
+not send a workflow run id to the gateway. The integration therefore cannot
+enforce per-run gateway limits or correlate requests with an Actions run.
+These limits and alerts are gateway-side controls. Main does not ingest gateway
+budget alerts or expose a CLI option that feeds them into Tier-2; triage uses
+its own workflow artifact counters.
 
 Triage additionally enforces repository-wide and per-author daily Tier-2 caps
 with workflow artifacts. Fix has no daily cap of its own. Do not treat a
@@ -35,9 +37,13 @@ and `gateway` (LiteLLM's decisions endpoint). The repository config's
 
 Removing `system_one` selects LLM-only triage. It skips System One and depends
 on the triage model path for issue classification; expect different model
-usage and budget behavior. Doctor reports LLM-only mode and warns when
-`close.enabled` is true, because automatic close decisions require extra care
-without the System One comparison.
+usage and budget behavior. LLM-only mode never automatically closes an issue:
+`close.enabled` cannot enable an automatic close, and doctor warns
+`close.enabled is true in LLM-only mode; auto-close stays off.` If a close
+proposal is present, apply presents it to a maintainer for confirmation.
+Without System One, an uncertain security answer does not take the dedicated
+`security-uncertain` escalation path; it follows ordinary low-confidence
+action routing.
 
 The config's `models.triage`, `models.review`, and `models.fix` fields seed
 `AGENT_TRIAGE_MODEL`, `AGENT_REVIEW_MODEL`, and `AGENT_FIX_MODEL` at install.

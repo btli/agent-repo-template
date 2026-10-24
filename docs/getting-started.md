@@ -11,8 +11,9 @@ the App.
   CLI (`gh`), and Mike Farah `yq` v4.
 - Sign in to `gh` as a repository administrator for the target repository.
 - Have an App owned by the target user or organization, its App slug and Client
-  ID, and an HTTPS model gateway URL. The App must be installed on the target
-  repository. Do not put an App private key or model key on the command line.
+  ID, and an HTTPS model gateway URL. Confirm the App is installed on the target
+  repository in the App's installation page; doctor does not verify installation.
+  Do not put an App private key or model key on the command line.
 - Keep `.agents/config.yml` roles in `dry-run`; this is the template default and
   first install refuses a live mode.
 
@@ -35,13 +36,18 @@ App form with the union of the role permissions and no webhook:
 ./bootstrap.sh app-link --owner your-org
 ```
 
-The preview must show all roles in dry-run, a repository-only App installation,
-the four `agent-propose-triage`, `agent-propose-review`, `agent-propose-fix`,
-and `agent-apply` environments, and the bootstrap-owned branch and tag
-rulesets. Bootstrap prints secret-setting instructions but never reads,
-creates, or prints secret values. A private App's `GET /apps/{slug}` returning
-404 is expected; bootstrap still checks the App bot account and the supplied
-Client ID.
+For a first install, check that the preview has no
+`A first install must start every role in dry-run` error. Bootstrap does not
+print each role's mode or verify the App installation. Its notes include
+`Install the GitHub App on <owner>/<repo> only` with an installation link. For
+a new install, planned changes list the four `agent-propose-triage`,
+`agent-propose-review`, `agent-propose-fix`, and `agent-apply` environments,
+the branch and tag rulesets, and a `bootstrap/agent-repo-template-<version>`
+draft-PR branch when files need updating. Already-correct resources may not
+appear in the change list. Bootstrap prints `gh secret set` commands for the
+required scopes but never reads, creates, or prints secret values. A private
+App's `GET /apps/{slug}` returning 404 is expected; bootstrap checks the App
+bot account and supplied Client ID, not installation access.
 
 To install after reviewing the preview, run the same bootstrap command without
 `--plan`. It creates or updates configuration and settings, then opens a draft
@@ -67,5 +73,5 @@ pushing to the default branch. `--plan` is the read-only preview;
 reviewing the preview.
 
 If the target repository has no App yet, register and install the App before
-re-running the preview. The App should be installed only on the target
-repository. See [GitHub App setup](github-app.md) and the [security runbook](security.md).
+re-running the preview. See [GitHub App setup](github-app.md) and the
+[security runbook](security.md).

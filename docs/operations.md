@@ -4,7 +4,7 @@
 
 | Stage | Action | Abort or reverse |
 | --- | --- | --- |
-| Preview | Run bootstrap with `--plan`; confirm all roles are dry-run and review every intended change. | Stop if the plan has errors, an unknown App identity, an unsafe ruleset state, or an unexpected file change. |
+| Preview | Run bootstrap with `--plan`; review every intended change and check that a first-install plan has no `A first install must start every role in dry-run` error. | Stop if the plan has errors, an unknown App identity, an unsafe ruleset state, or an unexpected file change. |
 | Install | Run bootstrap without `--plan`; review its branch and draft pull request. Set secrets yourself in the listed scopes. | On partial failure, use the printed rollback commands. Rerunning the same command resumes the journal. |
 | Validate | Run `./bootstrap.sh --check --repo your-org/your-repo`; resolve doctor errors and investigate CI exposure. | Do not switch any role to live while doctor reports errors or an unresolved exposure. |
 | Dry-run | Exercise issue triage, review, and fix on representative events; review summaries, artifacts, labels, and proposed patches. | Disable all roles with `AGENTS_ENABLED=false`; keep or restore each `mode` value to `dry-run`. |
@@ -15,9 +15,10 @@
 
 The catalog includes every reason `lib/agent_repo/gate.py` and its command
 wrapper can emit. `tier2-cap` and `tier2-check-failed` are additional triage
-decision-handoff reasons from `decide.py`. `ready` means the request may
-continue; `agent-off` means the authorized stop command should post its marker.
-Other reasons skip agent work.
+decision-handoff reasons from `decide.py`. Gate's `run` output is true for
+`ready`, `agent-off`, `tier2-global-cap`, and `tier2-author-cap`; `agent-off`
+records the authorized stop command. On a Tier-2 cap, the workflow still runs
+at Tier-1, and decide may hand off to a maintainer with `tier2-cap`.
 
 | Reason | Cause | Operator action |
 | --- | --- | --- |
@@ -33,7 +34,7 @@ Other reasons skip agent work.
 | `ready`, `agent-off` | A request is eligible, or an authorized `/agent off` was accepted. | Continue the eligible workflow, or confirm the off-marker was recorded. |
 | `cycle-cap` | The issue used its configured triage run cap within retained markers. | Wait for the marker window to expire or have a maintainer triage manually. Markers are retained 90 days. |
 | `debounce` | An issue edit arrived within the configured edit debounce interval. | Let the debounce period pass; do not create repeated edits to force a run. |
-| `tier2-global-cap`, `tier2-author-cap` | The repository-wide or per-author daily Tier-2 limit was reached. | Wait for the next UTC day or handle the issue manually. |
+| `tier2-global-cap`, `tier2-author-cap` | The repository-wide or per-author daily Tier-2 limit was reached. | The workflow continues without Tier-2. Decide may hand off to a maintainer with `tier2-cap`; otherwise wait for the next UTC day to regain Tier-2 capacity. |
 | `tier2-cap`, `tier2-check-failed` | Tier-2 is capped or its decide-job re-check failed. | Review the maintainer handoff; check `actions: read` and artifact counter availability. |
 | `request-budget`, `counter-overflow` | The gate exhausted its GitHub request budget or could not safely page through counter artifacts. | Retry after investigating API volume and artifact state; do not raise limits blindly. |
 | `api-error-401`, `api-error-403`, `api-error-429`, `api-error` | GitHub returned an authentication, permission, rate-limit, or other API error. | Check App/token permissions and GitHub API availability; wait on 429 before retrying. |
@@ -49,26 +50,42 @@ Fixed command-wrapper messages:
 
 ## Schema evolution
 
-Artifacts carry `schema_version`; the current emitted version is `1`, and
-readers validate against the matching schema before using an artifact. Evolve
-schemas additively. Removing a field requires a major version and a prior
-deprecation release. Readers must reject an unknown major version. Propose and
-apply changes move in lockstep so one side does not interpret an artifact the
-other side cannot validate.
+The versioned JSON artifacts are `canary.json`, `decision.json`, `fix.json`,
+`preflight.json`, and `review.json`; each carries `schema_version` and is
+validated by its reader. Evolve their schemas additively. Removing a field
+requires a major version and a prior deprecation release. Readers reject an
+unknown major version. Propose and apply changes move in lockstep.
+`triage-context.json` is unversioned; its reader requires exactly six string
+fields: `config`, `charter`, `areas`, `labels`, `contributing`, and
+`docs_index`. It rejects added fields, so change its producer and consumer
+together.
+
+## Triage workflow notes
+
+- The `agent-triage.yml` propose (decide) job needs `actions: read` for the
+  Tier-2 cap re-check.
 
 ## Fix workflow notes
-
-- The decide job needs `actions: read` for the Tier-2 cap re-check.
 - Both fix `work-path` and `policy-path` checkouts use
   `persist-credentials: false`. `commands.setup` must install dependencies
   inside the work tree; `commands.test` and `commands.lint` must not depend on
   `HOME`.
-- On `ubuntu-24.04`, bwrap preflight may need
-  `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. If bwrap
-  still cannot create namespaces, the fix agent stops rather than running
-  unsandboxed.
-- Setup refuses persisted Git credentials and URL userinfo. The fix applier
-  protects `.gitmodules`; use HTTPS submodule URLs without userinfo.
+- On `ubuntu-24.04`, fix-agent preflight runs
+  `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` itself and
+  retries bwrap. The runner must permit passwordless sudo; otherwise preflight
+  fails closed instead of running unsandboxed.
+- Both fix checkouts set `submodules: false` and
+  `persist-credentials: false`. The fix applier protects `.gitmodules` from
+  changes and rejects persisted credential settings and URL userinfo matching `://...@`;
+  there is no separate SSH-submodule refusal. `ssh://git@host/...` matches the
+  URL-userinfo guard, while submodules are not fetched by these checkouts.
+- Preflight analyzes GitHub Actions workflows only. Other CI systems that
+  build `agent/fix-*` branches are outside its coverage.
+- Rerun doctor after changing environment deployment policies, the default
+  workflow-token permissions, `AGENT_SAFE_ENVIRONMENTS`, or
+  `AGENT_CI_DEFAULT_TOKEN_READONLY`; fix apply trusts those recorded values
+  between doctor runs. The config's `commands.setup` installs inside the work
+  tree, and `commands.test` and `commands.lint` must not rely on `HOME`.
 - Any CI exposure currently yields
   `UNSAFE ON SHARED APP: patch retained; no push.` The config flag
   `fix.accept_ci_exposure` cannot override this fix-apply behavior.
@@ -80,8 +97,12 @@ the `github-actions` ecosystem, plus the Python `uv` dependencies. Its
 `directories` option supports `*`; GitHub's Actions reference uses `/` for
 workflow files and documents root action metadata scanning in the
 [Dependabot options reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#directories-or-directory).
-Consumer workflow templates use `@__TEMPLATE_SHA__` and
-`#__TEMPLATE_VERSION__` placeholders, so Dependabot cannot update those pins.
-Once each month, review the upstream release and security changes, update both
-template placeholders in consumer workflows, and run doctor. Review critical
-security updates as soon as they are announced.
+The consumer template source uses `@__TEMPLATE_SHA__` and
+`#__TEMPLATE_VERSION__` placeholders, which bootstrap replaces when rendering
+the installed workflows. Installed consumer workflows instead contain a
+resolved 40-hex action SHA and a `# vX.Y.Z` comment. Once each month, review the
+upstream release and security changes, update each installed action SHA and
+version comment together in a pull request, then run doctor and CI. You can
+also rerun bootstrap with `--ref vX.Y.Z --repo your-org/your-repo` to render a
+reviewable update pull request. Review critical security updates as soon as
+they are announced.

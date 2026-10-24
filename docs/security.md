@@ -11,8 +11,10 @@ Never paste credentials into issues, workflow inputs, or logs.
 | --- | --- | --- |
 | `AGENT_TRIAGE_KEY`, `AGENT_REVIEW_KEY`, or `AGENT_FIX_KEY` | Gateway key usage by role and run id; unexpected spend, rate, or geography; outbound scan refusal | Disable the affected virtual key within 15 minutes, issue a replacement, update its environment secret, and confirm a dry-run workflow. |
 | `AGENT_SCAN_KEYS` and the affected role key | Fix/apply scan refusal, leaked-key alert, or suspicious model output | Rotate the role key and `AGENT_SCAN_KEYS` together within 15 minutes so the scanner recognizes the replacement and the exposed value is revoked. |
-| `AGENT_APP_PRIVATE_KEY` | GitHub audit events, unexpected App-authored refs or pull requests, doctor findings, or unusual installation API activity | Revoke and replace the App key within 30 minutes. Run doctor for every repository where the App is installed, update each `agent-apply` environment, and verify all before resuming agents. |
-| Preflight read token | Unexpected workflow access or a token exposure in a job using the preflight action | Cancel the owning run immediately; its GitHub Actions token is short-lived. Confirm the job has only the repository read permissions it needs. Fix apply's preflight uses the apply App token, so treat an exposure there as an App-token incident. |
+| `AGENT_SYSTEM_ONE_KEY` | Unexpected System One provider usage or an exposed key in logs or workflow output; compare provider usage with `agent-propose-triage` Actions runs because requests carry no run-id metadata. | Within 15 minutes, revoke the key at the provider, issue a replacement, and update the `agent-propose-triage` environment secret. Main does not add it to `AGENT_SCAN_KEYS`; include it in the `agent-apply` scanner inventory to detect leaked copies, and update that entry when rotating. |
+| `AGENT_APP_PRIVATE_KEY` | GitHub audit events, unexpected App-authored refs or pull requests, doctor findings, or unusual installation API activity | Immediately set `AGENTS_ENABLED=false` and suspend every App installation. Within 30 minutes, revoke and replace the App key, update each `agent-apply` environment, then resume each installation and run doctor for every installed repository before re-enabling agents. Whether deleting the key invalidates already-minted installation tokens is unverified. |
+| Preflight read token supplied to the action | Unexpected workflow access or a token exposure in the preflight action | Within 15 minutes, cancel the owning run and revoke the token at its issuer (for a GitHub token, revoke it in the issuing account or app's token settings); issue a replacement only after reviewing scope and use. Cancelling the run does not revoke a caller-supplied token. This is distinct from fix apply's installation token. |
+| Fix apply installation token | Unexpected token use or exposure in the fix apply job | Cancel the run, revoke the outstanding installation token where possible, suspend the App installation if containment is uncertain, and rotate `AGENT_APP_PRIVATE_KEY` across every installation within 30 minutes using the App-key procedure above. |
 | CI exposure or shared App | `./bootstrap.sh --check --repo your-org/your-repo`, preflight findings, or the exact shared-App warning below | Disable agent workflows immediately, isolate the App installation, then remove the exposed workflow path and rotate any reached credentials before re-enabling. |
 
 For every rotation, one maintainer revokes or replaces the credential and the
@@ -22,12 +24,13 @@ intended scope, and doctor is clean. Disable all agent workflows with
 
 ## Shared-App warning
 
-Doctor prints `UNSAFE ON SHARED APP` when consumer CI has an ordinary credential
-exposure and the App is confirmed to reach all repositories of an organization
-or its reach cannot be read with maintainer credentials. The latter is
-reported as **assumed** shared; an organization App with
-`repository_selection=all` is **confirmed** shared. Doctor checks repository
-and environment secrets by name, not organization secrets.
+Any ordinary consumer-CI credential exposure produces `UNSAFE ON SHARED APP`.
+It is **confirmed** only when an organization installation is listed with
+`repository_selection=all`; it is **assumed** in every other case, including
+user-owned repositories, selected-repository org installations, and unreadable
+installation listings. Maintainer credentials never prove single-repository
+reach. Doctor checks repository and environment secrets by name, not
+organization secrets.
 
 Fix apply currently prints `UNSAFE ON SHARED APP: patch retained; no push.` for
 every CI exposure. A repository-scoped App token cannot prove installation-wide
@@ -67,5 +70,8 @@ names, treat each named credential as compromised: rotate it using the table
 above, remove the accepted-exposure setting, and review the workflow path
 before another run. The accepted `template-fix-propose` exposure is recorded
 by doctor and in fix output, names `AGENT_FIX_KEY`, and trusts the pinned
-template code. The template also refuses `.gitmodules` changes and Git checkout
-URL userinfo; use HTTPS submodule URLs without embedded credentials.
+template code. The template refuses `.gitmodules` changes and Git checkout URL
+userinfo matching its `://...@` guard. Fix checkouts use `submodules: false`,
+so submodules are not fetched and there is no separate SSH-submodule refusal.
+Preflight analyzes GitHub Actions only; other CI systems that build
+`agent/fix-*` branches are not covered.

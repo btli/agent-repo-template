@@ -30,12 +30,14 @@ reject duplicate headings; remove duplicates yourself.
 ## Match the configuration
 
 - `config.yml` has the `mode`, `models`, `thresholds`, `limits`, and `commands`
-  keys, plus optional `system_one` settings. It selects dry-run or live mode,
+  keys, plus the optional `system_one` key. It selects dry-run or live mode,
   model ids, thresholds, and limits.
-- `labels.yml` declares the taxonomy that triage may apply. Use `type:*`,
-  `area:*`, priority labels, and the workflow labels you want the agent to use.
-- `labels.yml` has the `labels` key. `areas.yml` has the `areas` key and gives
-  each area a description, path globs, owners, and a `sensitive` setting. Keep
+- `labels.yml` declares the taxonomy that triage may apply. The example uses
+  `type:bug`, `type:feature`, `area:core`, `P0` through `P3`, `needs-info`,
+  `needs-maintainer`, `agent:closed`, `agent:fix`, `agent:skip`, and
+  `agent:triage-capped`.
+- `labels.yml` has the `labels` key. `areas.yml` has the `areas` key; each area
+  has a description, path globs, owners, and a `sensitive` key. Keep
   paths narrow enough that reviewers can route changes to the right people.
 - Priority descriptions and the `A good report includes` checklist are sent to
   triage. Docs-index links are also candidates for a documentation reference.

@@ -26,11 +26,12 @@ variable `AGENT_BOT_LOGIN` must be the App's canonical login in
 
 ## Branch and tag rulesets
 
-Bootstrap owns a branch and a tag ruleset. The branch ruleset uses `~ALL` and
-excludes `agent/**`; the tag ruleset uses `~ALL`. Both restrict creation,
-updates, deletion, and non-fast-forward updates. Bypass is limited to human
-repository roles; the App is never granted bypass. Bootstrap fails if rulesets
-are unavailable because it cannot protect non-agent refs.
+Bootstrap owns a branch and a tag ruleset. The branch ruleset uses `~ALL`,
+excludes `agent/**`, and restricts creation, updates, deletion, and
+non-fast-forward updates. The tag ruleset uses `~ALL` and restricts creation,
+updates, and deletion. Bypass is limited to human repository roles; the App is
+never granted bypass. Bootstrap fails if rulesets are unavailable because it
+cannot protect non-agent refs.
 
 The branch creation/update restriction can also block bot branches such as
 Dependabot's. Bootstrap does not grant Dependabot bypass. Maintainers must
@@ -39,6 +40,7 @@ human-reviewed branch, or to grant a narrowly reviewed Dependabot bypass in
 repository settings. Do not grant the agent App bypass.
 
 Doctor compares the live rulesets with the bootstrap-owned pair. It also
-checks App identity, installation, action pins, and configured credentials by
-name. If the App is shared across an organization, see the meaning of
+checks the declared App identity, action pins, and configured credentials by
+name, but does not verify App installation. Confirm installation access on the
+App's installation page. If the App is shared across an organization, see the meaning of
 [`UNSAFE ON SHARED APP`](security.md#shared-app-warning).
