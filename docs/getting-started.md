@@ -55,15 +55,14 @@ the intended repository or environment scope, then run the doctor:
 Doctor checks repository and environment secrets by name; it does not count
 organization secrets. Do not enable live mode until doctor reports no errors,
 the CI exposure check is acceptable, and maintainers have reviewed the draft
-pull request. If this is a first install, every role must start in dry-run.
+pull request.
 
 ### What bootstrap changes
 
-Bootstrap requires repository admin access. It manages labels, four deployment
-environments, non-secret repository variables, and a pair of rulesets. It
-never changes the repository's default workflow-token permission. It prints
-secret commands for you to run, and it creates a branch and draft pull request
-instead of pushing to the default branch. `--plan` is the read-only preview;
+Bootstrap manages labels, four deployment environments, non-secret repository
+variables, and a pair of rulesets. It never changes the repository's default
+workflow-token permission, and it opens a draft pull request instead of
+pushing to the default branch. `--plan` is the read-only preview;
 `--force` permits replacing managed files and should be used only after
 reviewing the preview.
 

@@ -34,22 +34,18 @@ def test_document_links_resolve():
         text = source.read_text(encoding="utf-8")
         for match in re.finditer(r"(?<!!)\[[^\]]*\]\(([^)]+)\)", text):
             raw_target = match.group(1).split(maxsplit=1)[0].strip("<>")
-            if raw_target.startswith(("http://", "https://", "mailto:", "#")):
-                if raw_target.startswith("#"):
-                    target, fragment = source, unquote(raw_target[1:])
-                else:
-                    continue
-            else:
-                target_text, separator, fragment = raw_target.partition("#")
-                target = (source.parent / unquote(target_text)).resolve()
-                fragment = unquote(fragment) if separator else ""
+            if raw_target.startswith(("http://", "https://", "mailto:")):
+                continue
+            target_text, _, fragment = raw_target.partition("#")
+            target = (source.parent / unquote(target_text)).resolve() if target_text else source
+            fragment = unquote(fragment)
             if not target.is_file():
                 problems.append(f"{source.relative_to(ROOT)}: missing {raw_target}")
                 continue
             if fragment and target.suffix == ".md":
                 headings = {
-                    _slug(match.group(1))
-                    for match in re.finditer(r"^#{1,6}\s+(.+?)\s*#*\s*$", target.read_text(), re.M)
+                    _slug(title.group(1))
+                    for title in re.finditer(r"^#{1,6}\s+(.+?)\s*#*\s*$", target.read_text(), re.M)
                 }
                 if fragment not in headings:
                     problems.append(f"{source.relative_to(ROOT)}: missing anchor {raw_target}")
