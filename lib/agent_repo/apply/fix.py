@@ -93,6 +93,7 @@ def test_files(ids: list[str]) -> list[str]:
 
 def _git(repo: Path, *args: str, index: str | None = None, data: bytes | None = None) -> bytes:
     env = git_environment()
+    env["GIT_LITERAL_PATHSPECS"] = "1"
     if index:
         env["GIT_INDEX_FILE"] = index
     try:
@@ -302,6 +303,8 @@ def _create_commit(
         )
     base_tree = _git(repo, "rev-parse", ctx.base_sha + "^{tree}").decode().strip()
     value = ctx.github.request("POST", "git/trees", body={"base_tree": base_tree, "tree": entries})
+    if _sha(value["sha"]) != tree.sha:
+        raise Violation("Fix refused: published tree mismatch.")
     return _sha(
         ctx.github.request(
             "POST",
@@ -482,33 +485,37 @@ def apply_fix(
     ):
         raise Violation("Fix refused: preflight identity or schema.")
     template_note = _accepted_template_note(preflight)
+    unsafe = not preflight["pass"] or bool(preflight["exposures"])
+    unsafe_marker = "UNSAFE ON SHARED APP: patch retained; no push."
+    if unsafe:
+        try:
+            ctx.github.request("GET", "/installation/repositories")
+        except GitHubError:
+            pass
     if artifact["status"] == "no_patch":
         if not artifact["attempted"].strip() or patch:
             raise Violation("Fix refused: invalid no-patch result.")
         body = "No patch proposed.\n\n" + fenced(artifact["attempted"], 4000)
         if template_note:
             body += "\n\n" + template_note
+        if unsafe:
+            body += "\n\n" + unsafe_marker
         if mode == "live":
             _enabled(ctx, issue)
             ctx.github.request("POST", f"issues/{issue}/comments", body={"body": body})
         else:
             return body + "\n\nDry-run: no writes."
-        return "No patch proposed (" + mode + ")." + ("\n" + template_note if template_note else "")
+        result = (
+            "No patch proposed (" + mode + ")." + ("\n" + template_note if template_note else "")
+        )
+        return result + ("\n" + unsafe_marker if unsafe else "")
     test_files(artifact["tests"])
     tree = validate_tree(repo, ctx.base_sha, patch, ctx.config.raw["limits"]["fix_max_diff_lines"])
     if tree.dependencies and not ctx.config.raw["fix"]["allow_new_deps"]:
         raise Violation("Fix refused: new or unparsed dependencies.")
-    exposures = preflight["exposures"]
-    unsafe = not preflight["pass"] or bool(exposures)
     if unsafe:
-        try:
-            ctx.github.request("GET", "/installation/repositories")
-        except GitHubError:
-            pass
         # A repository-scoped token's response does not prove installation-wide reach.
-        result = "UNSAFE ON SHARED APP: patch retained; no push." + (
-            "\n" + template_note if template_note else ""
-        )
+        result = unsafe_marker + ("\n" + template_note if template_note else "")
         if mode == "live":
             _enabled(ctx, issue)
             ctx.github.request(

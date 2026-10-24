@@ -22,6 +22,8 @@ MANIFESTS = frozenset(
         "build.gradle.kts",
         "mix.exs",
         "pubspec.yaml",
+        "deno.json",
+        "deno.jsonc",
     }
 )
 

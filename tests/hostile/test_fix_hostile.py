@@ -1,3 +1,6 @@
+import base64
+from dataclasses import replace
+
 import pytest
 from test_apply_fix import apply_case
 from test_apply_fix import fix_case as fix_case
@@ -36,6 +39,40 @@ def test_protected_paths_are_refused_through_fix_apply(fix_case, path):
     with pytest.raises(Violation):
         apply_case(case)
     assert case["api"].writes == []
+
+
+def test_literal_pathspec_file_uses_its_validated_blob(fix_case):
+    from agent_repo.apply.fix import validate_tree
+
+    case = fix_case
+    repo = case["repo"]
+    git(repo, "checkout", "--", "lib.py")
+    (repo / "pkg").mkdir()
+    (repo / "pkg/package.json").write_text('{"dependencies":{}}\n')
+    git(repo, "add", "pkg/package.json")
+    git(repo, "commit", "-qm", "manifest base")
+    base = git(repo, "rev-parse", "HEAD").strip()
+    case["base"] = base
+    case["api"].base = base
+    case["ctx"] = replace(case["ctx"], base_sha=base)
+    case["artifact"]["base_sha"] = base
+    case["preflight"]["base_sha"] = base
+    case["ctx"].config.raw["fix"]["allow_new_deps"] = True
+    literal_path = ":(top)pkg/package.json"
+    content = '{"dependencies":{"left-pad":"1.0.0"}}\n'
+    case["patch"] = (
+        f"diff --git a/{literal_path} b/{literal_path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{literal_path}\n@@ -0,0 +1 @@\n+{content}"
+    )
+    tree = validate_tree(repo, base, case["patch"], 100)
+    assert tree.paths == (literal_path,)
+    assert tree.dependencies == frozenset({"left-pad"})
+    assert "draft" in apply_case(case).casefold()
+    blobs = [body for _, path, body in case["api"].writes if path == "git/blobs"]
+    assert len(blobs) == 1
+    assert base64.b64decode(blobs[0]["content"]).decode() == content
+    git_tree = next(body for _, path, body in case["api"].writes if path == "git/trees")
+    assert [entry["path"] for entry in git_tree["tree"]] == [literal_path]
 
 
 @pytest.mark.parametrize(

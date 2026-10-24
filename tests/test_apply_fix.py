@@ -30,6 +30,8 @@ class FixAPI:
         self.labels = []
         self.requested_users = []
         self.requested_teams = []
+        self.expected_tree = None
+        self.tree_response = None
         self.installation = {
             "repository_selection": "all",
             "total_count": 2,
@@ -57,6 +59,8 @@ class FixAPI:
             elif path == "git/commits":
                 self.commits["f" * 40] = body
                 return {"sha": "f" * 40}
+            elif path == "git/trees":
+                return {"sha": self.tree_response or self.expected_tree()}
             elif path == "pulls":
                 self.pull = self.agent_pull(self.ref)
                 return self.pull
@@ -168,7 +172,16 @@ def fix_case(tmp_path):
 
 
 def apply_case(case, **kwargs):
-    from agent_repo.apply.fix import apply_fix
+    from agent_repo.apply.fix import apply_fix, validate_tree
+
+    case["api"].expected_tree = lambda: (
+        validate_tree(
+            case["repo"],
+            case["ctx"].base_sha,
+            case["patch"],
+            case["ctx"].config.raw["limits"]["fix_max_diff_lines"],
+        ).sha
+    )
 
     return apply_fix(
         case["artifact"],
@@ -224,6 +237,49 @@ def test_no_patch_is_scanned_bounded_and_never_pushes(fix_case, mode):
         assert "```" in result and len(result) < 5000
     assert all(path == "issues/12/comments" for _, path, _ in case["api"].writes)
     assert len(case["api"].writes) == (1 if mode == "live" else 0)
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "live"])
+@pytest.mark.parametrize("reach", [None, GitHubError(403)], ids=["unclear", "failed"])
+@pytest.mark.parametrize("trigger", ["exposure", "failed-preflight"])
+def test_unsafe_no_patch_reads_installation_before_writes(fix_case, mode, reach, trigger):
+    case = fix_case
+    case["ctx"].config.raw["mode"]["fix"] = mode
+    case["artifact"].update(status="no_patch", attempted="Could not reproduce.")
+    case["patch"] = None
+    if trigger == "exposure":
+        case["preflight"]["exposures"] = [
+            {
+                "workflow": "ci.yml",
+                "job": "test",
+                "rule": "secrets",
+                "detail": "exposed",
+                "secrets": ["ROLE_SECRET"],
+            }
+        ]
+    else:
+        case["preflight"]["pass"] = False
+    case["api"].installation = reach
+    calls = []
+    request = case["api"].request
+
+    def record(method, path, **kwargs):
+        calls.append((method, path))
+        return request(method, path, **kwargs)
+
+    case["api"].request = record
+    result = apply_case(case)
+    marker = "UNSAFE ON SHARED APP: patch retained; no push."
+    assert marker in result
+    assert calls[0] == ("GET", "/installation/repositories")
+    if mode == "live":
+        assert calls.index(("GET", "/installation/repositories")) < calls.index(
+            ("POST", "issues/12/comments")
+        )
+        assert marker in case["api"].writes[0][2]["body"]
+        assert "Could not reproduce." in case["api"].writes[0][2]["body"]
+    else:
+        assert case["api"].writes == []
 
 
 @pytest.mark.parametrize(
@@ -465,6 +521,64 @@ def test_manifest_changes_gate_new_dependencies_and_require_maintainer(
             path == "issues/24/labels" and "needs-maintainer" in body["labels"]
             for _, path, body in case["api"].writes
         )
+
+
+@pytest.mark.parametrize("manifest", ["deno.json", "deno.jsonc", "go.mod"])
+@pytest.mark.parametrize("allow", [False, True], ids=["refuse", "label"])
+def test_unparsed_manifest_changes_follow_dependency_policy(fix_case, manifest, allow):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    content = (
+        "module example.invalid/project\nrequire example.invalid/pkg v1.0.0\n"
+        if manifest == "go.mod"
+        else '{"imports":{"example":"https://example.invalid/mod.ts"}}\n'
+    )
+    (case["repo"] / manifest).write_text(content)
+    case["artifact"], case["patch"] = build_artifact(
+        case["repo"], case["base"], "run-1", answer(case["base"])
+    )
+    case["ctx"].config.raw["fix"]["allow_new_deps"] = allow
+    if allow:
+        assert "draft" in apply_case(case).casefold()
+        assert any(
+            path == "issues/24/labels" and "needs-maintainer" in body["labels"]
+            for _, path, body in case["api"].writes
+        )
+    else:
+        with pytest.raises(Violation, match="new or unparsed dependencies"):
+            apply_case(case)
+        assert case["api"].writes == []
+
+
+def test_mismatched_git_tree_refuses_before_commit(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    case["api"].tree_response = "a" * 40
+    with pytest.raises(Violation, match="published tree mismatch"):
+        apply_case(case)
+    assert any(path == "git/trees" for _, path, _ in case["api"].writes)
+    assert not any(
+        path in {"git/commits", "git/refs", "pulls"} for _, path, _ in case["api"].writes
+    )
+
+
+def test_kill_switch_refuses_before_live_push(fix_case):
+    from agent_repo.apply.actions import _AutomationDisabled
+
+    case = fix_case
+    request = case["api"].request
+
+    def disabled(method, path, **kwargs):
+        if method == "GET" and path == "issues/12":
+            return {"labels": [{"name": "agent:skip"}], "state": "open"}
+        return request(method, path, **kwargs)
+
+    case["api"].request = disabled
+    with pytest.raises(_AutomationDisabled):
+        apply_case(case)
+    assert case["api"].writes == []
 
 
 def test_apply_command_uses_event_policy_and_trusted_context(
