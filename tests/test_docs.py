@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
+from agent_repo.bootstrap import ruleset_body
 from agent_repo.charter import lint_charter, parse_charter
 from agent_repo.yamljson import load_yaml
 
@@ -180,7 +181,6 @@ def test_documented_bootstrap_options_and_config_keys_exist():
     assert documented_keys <= known_keys, (
         f"unknown documented config keys: {documented_keys - known_keys}"
     )
-
     environments = set()
     for path in (ROOT / "consumer/.github/workflows").glob("*.yml"):
         workflow = load_yaml(path)
@@ -340,3 +340,138 @@ def test_gateway_budget_and_llm_only_docs_match_merged_behavior():
     assert "auto-close stays off" in gateway
     assert "security-uncertain" in gateway
     assert "maintainer" in gateway
+
+
+def _run_true_gate_reasons() -> set[str]:
+    tree = ast.parse((ROOT / "lib/agent_repo/gate.py").read_text(encoding="utf-8"))
+    dynamic_reasons = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.For) or not isinstance(node.target, ast.Tuple):
+            continue
+        names = [item.id if isinstance(item, ast.Name) else None for item in node.target.elts]
+        if "reason" not in names or not isinstance(node.iter, ast.Tuple):
+            continue
+        reason_index = names.index("reason")
+        for item in node.iter.elts:
+            if isinstance(item, ast.Tuple) and len(item.elts) > reason_index:
+                value = item.elts[reason_index]
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    dynamic_reasons.add(value.value)
+
+    reasons = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "result" or len(node.args) < 2:
+            continue
+        if not isinstance(node.args[0], ast.Constant) or node.args[0].value is not True:
+            continue
+        reason = node.args[1]
+        if isinstance(reason, ast.Constant) and isinstance(reason.value, str):
+            reasons.add(reason.value)
+        elif isinstance(reason, ast.Name) and reason.id == "reason":
+            reasons.update(dynamic_reasons)
+    return reasons
+
+
+def test_documented_main_contracts_match_merged_sources():
+    operations = " ".join((ROOT / "docs/operations.md").read_text(encoding="utf-8").split())
+    true_reason_sentence = operations.split("Gate's `run` output is true for ", 1)[1].split(
+        ". On a Tier-2 cap", 1
+    )[0]
+    documented_true_reasons = set(_code_spans(true_reason_sentence))
+    assert documented_true_reasons == _run_true_gate_reasons()
+
+    ruleset_doc = (
+        (ROOT / "docs/github-app.md")
+        .read_text(encoding="utf-8")
+        .split("## Branch and tag rulesets", 1)[1]
+    )
+    branch_doc, tag_and_rest = ruleset_doc.split("The tag ruleset", 1)
+    tag_doc = tag_and_rest.split("\n\n", 1)[0]
+    rule_words = {
+        "creation": "creation",
+        "update": "updates",
+        "deletion": "deletion",
+        "non_fast_forward": "non-fast-forward",
+    }
+    for target, section in (("branch", branch_doc), ("tag", tag_doc)):
+        actual = {item["type"] for item in ruleset_body(target)["rules"]}
+        documented = {rule for rule, word in rule_words.items() if word in section}
+        assert documented == actual
+
+    versioned_artifacts = {
+        f"{path.name.removesuffix('.schema.json')}.json"
+        for path in (ROOT / "schemas").glob("*.schema.json")
+        if "schema_version" in json.loads(path.read_text(encoding="utf-8")).get("required", [])
+    }
+    gate_command = (ROOT / "lib/agent_repo/commands/gate.py").read_text(encoding="utf-8")
+    if '"canary.json"' in gate_command and '"schema_version"' in gate_command:
+        versioned_artifacts.add("canary.json")
+    artifact_sentence = operations.split("The versioned JSON artifacts are ", 1)[1].split(
+        "; each carries", 1
+    )[0]
+    assert set(_code_spans(artifact_sentence)) == versioned_artifacts
+    assert "`triage-context.json` is unversioned" in operations
+
+    gateway = " ".join((ROOT / "docs/gateway.md").read_text(encoding="utf-8").split())
+    apply_source = (ROOT / "lib/agent_repo/apply/triage.py").read_text(encoding="utf-8")
+    apply_tree = ast.parse(apply_source)
+    close_guard = next(
+        node
+        for node in apply_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_can_close"
+    )
+    close_guard_source = ast.get_source_segment(apply_source, close_guard)
+    assert "is_llm_only(ctx.config)" in close_guard_source
+    assert "LLM-only mode never automatically closes an issue" in gateway
+    assert "`close.enabled` cannot enable an automatic close" in gateway
+
+    doctor_source = (ROOT / "lib/agent_repo/doctor.py").read_text(encoding="utf-8")
+    doctor_tree = ast.parse(doctor_source)
+    doctor_constants = {}
+    for node in doctor_tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+        if names and names[0] in {"UNSAFE_SHARED_APP_CONFIRMED", "UNSAFE_SHARED_APP_ASSUMED"}:
+            doctor_constants[names[0]] = "".join(
+                item.value
+                for item in ast.walk(node.value)
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            )
+    security_raw = (ROOT / "docs/security.md").read_text(encoding="utf-8")
+    security = " ".join(security_raw.split())
+    shared_app = security.split("## Shared-App warning", 1)[1].split("## ", 1)[0]
+    assert "repository_selection=all" in doctor_constants["UNSAFE_SHARED_APP_CONFIRMED"]
+    assert "repository_selection=all" in shared_app and "**confirmed** only" in shared_app
+    assert "assumed to reach other repositories" in doctor_constants["UNSAFE_SHARED_APP_ASSUMED"]
+    assert "**assumed** in every other case" in shared_app
+
+    system_one_row = next(
+        line for line in security_raw.splitlines() if line.startswith("| `AGENT_SYSTEM_ONE_KEY`")
+    )
+    assert "add its value to `AGENT_SCAN_KEYS`" in system_one_row
+    assert "Rotate the key and scanner entry together." in system_one_row
+
+    fix_notes = operations.split("## Fix workflow notes", 1)[1].split("## Dependency updates", 1)[0]
+    assert "fix-agent propose step refuses persisted credential settings" in fix_notes
+    assert "fix applier protects `.gitmodules`" in fix_notes
+    assert fix_notes.count("persist-credentials: false") == 1
+    assert fix_notes.count("commands.setup") == 1
+    assert "rerun bootstrap with `--ref" not in operations
+    assert "update each installed action SHA and version comment together" in operations
+
+
+def test_security_role_key_detection_does_not_claim_run_id():
+    security = (ROOT / "docs/security.md").read_text(encoding="utf-8")
+    role_key_row = next(
+        line
+        for line in security.splitlines()
+        if line.startswith("| `AGENT_TRIAGE_KEY`, `AGENT_REVIEW_KEY`")
+    )
+    assert "Gateway usage by role key" in role_key_row
+    assert "matching role's Actions runs because requests carry no run ID" in role_key_row
+    assert "by role and run id" not in role_key_row.lower()
+    gateway = " ".join((ROOT / "docs/gateway.md").read_text(encoding="utf-8").split())
+    assert "does not send a workflow run id to the gateway" in gateway

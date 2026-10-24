@@ -74,18 +74,16 @@ together.
   `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` itself and
   retries bwrap. The runner must permit passwordless sudo; otherwise preflight
   fails closed instead of running unsandboxed.
-- Both fix checkouts set `submodules: false` and
-  `persist-credentials: false`. The fix applier protects `.gitmodules` from
-  changes and rejects persisted credential settings and URL userinfo matching `://...@`;
-  there is no separate SSH-submodule refusal. `ssh://git@host/...` matches the
-  URL-userinfo guard, while submodules are not fetched by these checkouts.
+- Both fix checkouts set `submodules: false`. The fix-agent propose step refuses
+  persisted credential settings and URL userinfo matching `://...@`; the fix
+  applier protects `.gitmodules`. Submodules are not fetched, so there is no
+  separate SSH-submodule refusal.
 - Preflight analyzes GitHub Actions workflows only. Other CI systems that
   build `agent/fix-*` branches are outside its coverage.
 - Rerun doctor after changing environment deployment policies, the default
   workflow-token permissions, `AGENT_SAFE_ENVIRONMENTS`, or
   `AGENT_CI_DEFAULT_TOKEN_READONLY`; fix apply trusts those recorded values
-  between doctor runs. The config's `commands.setup` installs inside the work
-  tree, and `commands.test` and `commands.lint` must not rely on `HOME`.
+  between doctor runs.
 - Any CI exposure currently yields
   `UNSAFE ON SHARED APP: patch retained; no push.` The config flag
   `fix.accept_ci_exposure` cannot override this fix-apply behavior.
@@ -102,7 +100,5 @@ The consumer template source uses `@__TEMPLATE_SHA__` and
 the installed workflows. Installed consumer workflows instead contain a
 resolved 40-hex action SHA and a `# vX.Y.Z` comment. Once each month, review the
 upstream release and security changes, update each installed action SHA and
-version comment together in a pull request, then run doctor and CI. You can
-also rerun bootstrap with `--ref vX.Y.Z --repo your-org/your-repo` to render a
-reviewable update pull request. Review critical security updates as soon as
-they are announced.
+version comment together in a pull request, then run doctor and CI. Review
+critical security updates as soon as they are announced.
