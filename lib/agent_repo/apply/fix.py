@@ -385,7 +385,7 @@ def _create_recovered_pull(
     if _workflow_tree(ctx) != workflow_sha:
         return "Fix dry-run: workflow tree moved before PR creation."
     if _ref(ctx, branch) != head:
-        raise Violation(f"Fix refused: published ref moved on {branch}.")
+        raise Violation("Fix refused: published draft moved.")
     body = (
         f"Fixes #{issue}\n\nRecovered published agent fix.\n\n"
         f"Agent-Run: {match['run']}\nAgent-Base: {match['base']}"

@@ -1168,7 +1168,7 @@ def test_recovery_ref_move_refuses_before_pull_creation(fix_case):
     case["api"].ref = git(case["repo"], "rev-parse", "HEAD").strip()
     case["api"].commits[case["api"].ref] = {"message": message}
     case["api"].ref_move_on_read = 2
-    with pytest.raises(Violation, match="published ref moved"):
+    with pytest.raises(Violation, match=r"^Fix refused: published draft moved\.$"):
         apply_case(case)
     assert case["api"].writes == []
 

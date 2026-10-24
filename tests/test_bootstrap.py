@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
@@ -272,10 +272,11 @@ def test_partial_failure_prints_rollback_and_a_rerun_resumes(tmp_path):
     assert fake.journal()[-1]["event"] == "complete"
 
 
-def test_an_unexpected_failure_after_a_write_prints_rollback_commands(tmp_path):
+@pytest.mark.parametrize("endpoint", ["labels", "rulesets"])
+def test_an_unexpected_failure_after_a_write_prints_rollback_commands(tmp_path, endpoint):
     responses = state.empty_target()
-    # Output gh cannot decode fails outside the gh error path, after earlier writes landed.
-    responses[f"POST {TARGET}/rulesets"] = {"raw": "ff"}
+    # gh answers a write that landed with output it cannot decode, outside the gh error path.
+    responses[f"POST {TARGET}/{endpoint}"] = {"raw": "ff"}
     fake = state.FakeGitHub(tmp_path, responses)
 
     result = fake.run(*INSTALL)
@@ -283,12 +284,55 @@ def test_an_unexpected_failure_after_a_write_prints_rollback_commands(tmp_path):
     assert result.returncode == 1
     lines = result.stdout.splitlines()
     assert "Bootstrap stopped: an unexpected error interrupted the run." in lines
-    rollback = result.stdout.split("Rollback commands, newest first:", 1)[1]
-    assert f"gh api -X DELETE {TARGET}/labels/type%3Abug" in rollback
-    assert f"gh api -X DELETE {TARGET}/actions/variables/AGENT_FIX_MODEL" in rollback
+    rollback = result.stdout.split("Rollback commands, newest first:", 1)[1].splitlines()
+    first_label = f"gh api -X DELETE {TARGET}/labels/{quote(state.labels()[0], safe='')}"
+    if endpoint == "labels":
+        assert rollback[1] == f"  (possibly applied) {first_label}"
+    else:
+        # The created ruleset's id is unknown, so its rollback finds the ruleset by name.
+        select = '.[] | select(.name == "agent-repo-template branches") | .id'
+        assert rollback[1] == (
+            f"  (possibly applied) gh api {TARGET}/rulesets --jq '{select}' "
+            f"| xargs -I{{}} gh api -X DELETE {TARGET}/rulesets/{{}}"
+        )
+        assert f"  {first_label}" in rollback
+        assert f"  gh api -X DELETE {TARGET}/actions/variables/AGENT_FIX_MODEL" in rollback
     assert "Traceback" not in result.stderr
     assert fake.journal()[-1]["event"] == "failed"
     assert not [call for call in fake.writes() if call["endpoint"] == f"{TARGET}/pulls"]
+
+
+def test_a_failure_while_journaling_a_write_prints_rollback_commands(tmp_path, monkeypatch, capsys):
+    from agent_repo import bootstrap
+    from agent_repo.commands.bootstrap import main
+
+    fake = state.FakeGitHub(tmp_path, state.empty_target())
+    fake.state_path.write_text(json.dumps(fake.responses))
+    for key, value in {
+        "PATH": str(fake.bin),
+        "HOME": str(fake.home),
+        "FAKE_GH_STATE": str(fake.state_path),
+        "FAKE_GH_LOG": str(fake.log_path),
+    }.items():
+        monkeypatch.setenv(key, value)
+    record = bootstrap.Journal.record
+
+    def failing_record(self, event, **fields):
+        if event == "done":
+            raise OSError("synthetic journal failure")
+        record(self, event, **fields)
+
+    monkeypatch.setattr(bootstrap.Journal, "record", failing_record)
+
+    assert main(list(INSTALL)) == 1
+    output = capsys.readouterr()
+    lines = output.out.splitlines()
+    assert "Bootstrap stopped: an unexpected error interrupted the run." in lines
+    first_label = f"gh api -X DELETE {TARGET}/labels/{quote(state.labels()[0], safe='')}"
+    rollback = output.out.split("Rollback commands, newest first:", 1)[1].splitlines()
+    assert rollback[1] == f"  (possibly applied) {first_label}"
+    assert "synthetic" not in output.out + output.err and "Traceback" not in output.err
+    assert len(fake.writes()) == 1
 
 
 def test_ref_resolves_through_upstream_and_ignores_a_tampered_local_tag(tmp_path):
@@ -480,6 +524,10 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
         ),
         ("empty-labels", ".agents/labels.yml must hold a labels list."),
         ("non-utf8-contributing", "CONTRIBUTING.md is not UTF-8 text; convert it and rerun."),
+        (
+            "non-utf8-workflow",
+            ".github/workflows/agent-verify.yml is not UTF-8 text; convert it and rerun.",
+        ),
         ("predates-verify", TEMPLATE_MISMATCH),
         ("missing-action", TEMPLATE_MISMATCH),
         ("changed-template", TEMPLATE_MISMATCH),
@@ -516,6 +564,9 @@ def test_bootstrap_stops_before_any_write(tmp_path, change, message):
         state.set_files(responses, {"README.md": b"# Example\n", ".agents/config.yml": live})
     elif change == "non-utf8-contributing":
         state.set_files(responses, {"README.md": b"# Example\n", "CONTRIBUTING.md": b"Caf\xe9\n"})
+    elif change == "non-utf8-workflow":
+        workflow = {".github/workflows/agent-verify.yml": b"\xff\xfe\x80"}
+        state.set_files(responses, {"README.md": b"# Example\n", **workflow})
     elif change in {"predates-verify", "missing-action", "changed-template"}:
         # The resolved pin's upstream tree must hold these templates and every action they pin.
         tree = responses[f"GET {UPSTREAM}/git/trees/{PIN}"]["json"]["tree"]

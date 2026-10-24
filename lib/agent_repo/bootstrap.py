@@ -1,6 +1,7 @@
 """Install the template into a repository through the maintainer's own `gh` authentication."""
 
 import base64
+import contextlib
 import hashlib
 import json
 import re
@@ -542,7 +543,9 @@ def _shown(value: str) -> str:
 @dataclass
 class Mutation:
     description: str
-    perform: Callable[[], str]
+    # Journaled before the write; perform may return an exact replacement taken from the response.
+    rollback: str
+    perform: Callable[[], str | None]
 
 
 @dataclass
@@ -552,8 +555,14 @@ class Plan:
     notes: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
-    def add(self, description: str, perform: Callable[[], str]) -> None:
-        self.mutations.append(Mutation(description, perform))
+    def add(self, description: str, rollback: str, perform: Callable[[], str | None]) -> None:
+        self.mutations.append(Mutation(description, rollback, perform))
+
+
+def _delete_by_name(listing: str, items: str, name: str, endpoint: str) -> str:
+    """Rollback for a created resource whose id only the write response carries."""
+    select = shlex.quote(f"{items} | select(.name == {json.dumps(name)}) | .id")
+    return f"gh api {listing} --jq {select} | xargs -I{{}} gh api -X DELETE {endpoint}/{{}}"
 
 
 def plan_labels(gh: Gh, repo: str, names: list[str], plan: Plan) -> None:
@@ -568,21 +577,21 @@ def plan_labels(gh: Gh, repo: str, names: list[str], plan: Plan) -> None:
             continue
         if current is None:
 
-            def create(name=name) -> str:
+            def create(name=name) -> None:
                 gh.write("POST", f"repos/{repo}/labels", {"name": name, "color": "ededed"})
-                return f"gh api -X DELETE repos/{repo}/labels/{_quote(name)}"
 
-            plan.add(f"create label {name}", create)
+            rollback = f"gh api -X DELETE repos/{repo}/labels/{_quote(name)}"
+            plan.add(f"create label {name}", rollback, create)
         else:
 
-            def rename(name=name, current=current) -> str:
+            def rename(name=name, current=current) -> None:
                 gh.write("PATCH", f"repos/{repo}/labels/{_quote(current)}", {"new_name": name})
-                return (
-                    f"gh api -X PATCH repos/{repo}/labels/{_quote(name)} "
-                    f"-f new_name={shlex.quote(current)}"
-                )
 
-            plan.add(f"rename label {current} to {name}", rename)
+            rollback = (
+                f"gh api -X PATCH repos/{repo}/labels/{_quote(name)} "
+                f"-f new_name={shlex.quote(current)}"
+            )
+            plan.add(f"rename label {current} to {name}", rollback, rename)
 
 
 def plan_environments(
@@ -597,15 +606,17 @@ def plan_environments(
             existed = name in environments
             previous = json.dumps({"deployment_branch_policy": policies.get(name)})
 
-            def put(endpoint=endpoint, existed=existed, previous=previous) -> str:
+            def put(endpoint=endpoint) -> None:
                 policy = {"protected_branches": False, "custom_branch_policies": True}
                 gh.write("PUT", endpoint, {"deployment_branch_policy": policy})
-                if existed:
-                    return f"echo {shlex.quote(previous)} | gh api -X PUT {endpoint} --input -"
-                return f"gh api -X DELETE {endpoint}"
 
+            rollback = (
+                f"echo {shlex.quote(previous)} | gh api -X PUT {endpoint} --input -"
+                if existed
+                else f"gh api -X DELETE {endpoint}"
+            )
             verb = "restrict environment" if existed else "create environment"
-            plan.add(f"{verb} {name} to custom deployment branch policies", put)
+            plan.add(f"{verb} {name} to custom deployment branch policies", rollback, put)
             patterns = []
         if [pattern for pattern in patterns if pattern != wanted]:
             plan.errors.append(
@@ -623,7 +634,11 @@ def plan_environments(
                 policy = _field(created, "id")
                 return f"gh api -X DELETE {endpoint}/deployment-branch-policies/{policy}"
 
-            plan.add(f"allow deployments to {name} from {default_branch}", allow)
+            policies_endpoint = f"{endpoint}/deployment-branch-policies"
+            rollback = _delete_by_name(
+                policies_endpoint, ".branch_policies[]", default_branch, policies_endpoint
+            )
+            plan.add(f"allow deployments to {name} from {default_branch}", rollback, allow)
     safe = {name for name in ENVIRONMENTS if environment_is_safe([wanted])}
     safe |= {
         name
@@ -656,11 +671,14 @@ def plan_variables(
             continue
         if name not in existing:
 
-            def create(name=name, value=value) -> str:
+            def create(name=name, value=value) -> None:
                 gh.write("POST", endpoint, {"name": name, "value": value})
-                return f"gh api -X DELETE {endpoint}/{name}"
 
-            plan.add(f"set variable {name} = {_shown(value)}", create)
+            plan.add(
+                f"set variable {name} = {_shown(value)}",
+                f"gh api -X DELETE {endpoint}/{name}",
+                create,
+            )
         elif not restorable(name, existing[name]):
             plan.errors.append(
                 f"Variable {name} holds a value bootstrap cannot restore on rollback; "
@@ -669,11 +687,11 @@ def plan_variables(
         else:
             previous = existing[name]
 
-            def update(name=name, value=value, previous=previous) -> str:
+            def update(name=name, value=value) -> None:
                 gh.write("PATCH", f"{endpoint}/{name}", {"name": name, "value": value})
-                return f"gh api -X PATCH {endpoint}/{name} -f value={shlex.quote(previous)}"
 
-            plan.add(f"update variable {name} = {_shown(value)}", update)
+            rollback = f"gh api -X PATCH {endpoint}/{name} -f value={shlex.quote(previous)}"
+            plan.add(f"update variable {name} = {_shown(value)}", rollback, update)
 
 
 def plan_rulesets(gh: Gh, repo: str, rulesets: dict[str, dict], plan: Plan) -> None:
@@ -688,18 +706,21 @@ def plan_rulesets(gh: Gh, repo: str, rulesets: dict[str, dict], plan: Plan) -> N
                 created = gh.write("POST", f"repos/{repo}/rulesets", body)
                 return f"gh api -X DELETE repos/{repo}/rulesets/{_field(created, 'id')}"
 
-            plan.add(f"create ruleset {name}", create)
+            listing = f"repos/{repo}/rulesets"
+            plan.add(
+                f"create ruleset {name}", _delete_by_name(listing, ".[]", name, listing), create
+            )
         else:
             endpoint = f"repos/{repo}/rulesets/{current.get('id')}"
             previous = {key: current.get(key) for key in body}
 
-            def update(body=body, endpoint=endpoint, previous=previous) -> str:
+            def update(body=body, endpoint=endpoint) -> None:
                 gh.write("PUT", endpoint, body)
-                return (
-                    f"echo {shlex.quote(json.dumps(previous))} | gh api -X PUT {endpoint} --input -"
-                )
 
-            plan.add(f"update ruleset {name}", update)
+            rollback = (
+                f"echo {shlex.quote(json.dumps(previous))} | gh api -X PUT {endpoint} --input -"
+            )
+            plan.add(f"update ruleset {name}", rollback, update)
 
 
 def detect_commands(files: dict[str, str]) -> dict[str, str]:
@@ -721,21 +742,25 @@ def with_commands(data: bytes, commands: dict[str, str]) -> bytes:
     return text.encode()
 
 
+def existing_text(gh: Gh, target: Target, path: str) -> str | None:
+    """An existing target file as UTF-8 text; any other encoding stops bootstrap before a write."""
+    content = file_content(gh, target, path)
+    try:
+        return None if content is None else content.decode()
+    except UnicodeDecodeError:
+        raise BootstrapError(f"{path} is not UTF-8 text; convert it and rerun.") from None
+
+
 def plan_files(
     gh: Gh, target: Target, rendered: dict[str, bytes], force: bool
 ) -> tuple[dict[str, bytes], list[str]]:
     changes, notes = {}, []
     for path, data in rendered.items():
         if path == CONTRIBUTING_SECTION:
-            current = file_content(gh, target, "CONTRIBUTING.md") or b""
-            try:
-                existing_text = current.decode()
-            except UnicodeDecodeError:
-                raise BootstrapError(
-                    "CONTRIBUTING.md is not UTF-8 text; convert it and rerun."
-                ) from None
+            text = existing_text(gh, target, "CONTRIBUTING.md") or ""
+            current = text.encode()
             heading = data.decode().splitlines()[0]
-            if heading not in existing_text.splitlines():
+            if heading not in text.splitlines():
                 changes["CONTRIBUTING.md"] = (
                     current.rstrip(b"\n") + b"\n\n" + data if current else data
                 )
@@ -745,6 +770,9 @@ def plan_files(
         existing = target.files.get(path)
         if existing == blob_sha(data):
             continue
+        # A file equal to the rendered text is UTF-8 already; every other retained one is read.
+        if existing is not None:
+            existing_text(gh, target, path)
         if existing is None or force:
             changes[path] = data
         else:
@@ -809,7 +837,7 @@ def plan_proposal(
             return
     else:
 
-        def create_branch() -> str:
+        def create_branch() -> None:
             tree = gh.write(
                 "POST",
                 f"repos/{repo}/git/trees",
@@ -835,13 +863,17 @@ def plan_proposal(
                 f"repos/{repo}/git/refs",
                 {"ref": f"refs/heads/{branch}", "sha": _sha(_field(commit, "sha"))},
             )
-            return f"gh api -X DELETE repos/{repo}/git/refs/heads/{branch}"
 
         plan.add(
             f"create branch {branch} with {len(changes)} file(s) from {target.default_branch}",
+            f"gh api -X DELETE repos/{repo}/git/refs/heads/{branch}",
             create_branch,
         )
-    plan.add(f"open draft pull request from {branch} into {target.default_branch}", open_pull)
+    plan.add(
+        f"open draft pull request from {branch} into {target.default_branch}",
+        f"gh pr close {shlex.quote(branch)} --repo {repo}",
+        open_pull,
+    )
 
 
 @dataclass(frozen=True)
@@ -1017,22 +1049,32 @@ def journal_path(repo: str) -> Path:
 
 
 class Journal:
-    """Append-only record of completed admin writes, so a rerun can report and roll back."""
+    """Append-only record of admin writes, so a rerun can report and roll back."""
 
     def __init__(self, path: Path):
         self.path = path
 
     def pending(self) -> list[dict]:
+        """Rollback entries since the last complete run; a done entry settles its pending one."""
         if not self.path.is_file():
             return []
         entries = [json.loads(line) for line in self.path.read_text().splitlines() if line]
-        done = []
+        open_entries: list[dict] = []
         for entry in entries:
-            if entry.get("event") == "complete":
-                done = []
-            elif entry.get("event") == "done":
-                done.append(entry)
-        return done
+            event = entry.get("event")
+            if event == "complete":
+                open_entries = []
+            elif event == "pending":
+                open_entries.append(entry)
+            elif event == "done":
+                last = open_entries[-1] if open_entries else {}
+                if last.get("event") == "pending" and (
+                    last.get("description") == entry.get("description")
+                ):
+                    open_entries[-1] = entry
+                else:
+                    open_entries.append(entry)
+        return open_entries
 
     def record(self, event: str, **fields: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1060,26 +1102,36 @@ def execute(plan: Plan, repo: str, *, preview: bool, journal: Journal) -> int:
     if preview or not plan.mutations:
         return 0
     earlier = journal.pending()
-    if earlier:
-        print(f"Resuming: {len(earlier)} mutation(s) completed by an earlier run.")
-    journal.record("start", repo=repo)
-    for mutation in plan.mutations:
-        try:
-            rollback = mutation.perform()
-        except Exception as error:
-            # Only bootstrap's own errors are fixed text; anything else may carry values.
-            journal.record("failed", description=mutation.description)
-            if isinstance(error, BootstrapError):
-                print(f"Bootstrap stopped: {mutation.description} failed.")
-            else:
-                print(UNEXPECTED_FAILURE)
-            print("Rollback commands, newest first:")
-            for entry in reversed(journal.pending()):
-                print(f"  {entry['rollback']}")
-            print("Rerun the same command to resume.")
-            return 1
-        journal.record("done", description=mutation.description, rollback=rollback)
-    journal.record("complete", repo=repo)
+    completed = sum(entry.get("event") == "done" for entry in earlier)
+    if completed:
+        print(f"Resuming: {completed} mutation(s) completed by an earlier run.")
+    # Each rollback is known before its write and stays uncertain until the write is journaled.
+    rollbacks = [(entry["rollback"], entry.get("event") != "done") for entry in earlier]
+    description = ""
+    try:
+        journal.record("start", repo=repo)
+        for mutation in plan.mutations:
+            description = mutation.description
+            rollbacks.append((mutation.rollback, True))
+            journal.record("pending", description=description, rollback=mutation.rollback)
+            rollback = mutation.perform() or mutation.rollback
+            rollbacks[-1] = (rollback, True)
+            journal.record("done", description=description, rollback=rollback)
+            rollbacks[-1] = (rollback, False)
+        journal.record("complete", repo=repo)
+    except Exception as error:
+        # Only bootstrap's own errors are fixed text; anything else may carry values.
+        with contextlib.suppress(OSError):
+            journal.record("failed", description=description)
+        if isinstance(error, BootstrapError):
+            print(f"Bootstrap stopped: {description} failed.")
+        else:
+            print(UNEXPECTED_FAILURE)
+        print("Rollback commands, newest first:")
+        for rollback, uncertain in reversed(rollbacks):
+            print(f"  {'(possibly applied) ' if uncertain else ''}{rollback}")
+        print("Rerun the same command to resume.")
+        return 1
     print("Bootstrap complete.")
     return 0
 
