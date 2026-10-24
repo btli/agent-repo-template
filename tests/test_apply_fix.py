@@ -56,6 +56,8 @@ class FixAPI:
             elif path.startswith("git/refs/"):
                 assert body["force"] is False
                 self.ref = body["sha"]
+                if self.pull:
+                    self.pull["head"]["sha"] = body["sha"]
             elif path == "git/commits":
                 self.commits["f" * 40] = body
                 return {"sha": "f" * 40}
@@ -523,17 +525,30 @@ def test_manifest_changes_gate_new_dependencies_and_require_maintainer(
         )
 
 
-@pytest.mark.parametrize("manifest", ["deno.json", "deno.jsonc", "go.mod"])
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        "deno.json",
+        "deno.jsonc",
+        "go.mod",
+        "build.sbt",
+        "nested/constraints-dev.txt",
+        "requirements/base.txt",
+        "nested/requirements/dev.txt",
+    ],
+)
 @pytest.mark.parametrize("allow", [False, True], ids=["refuse", "label"])
 def test_unparsed_manifest_changes_follow_dependency_policy(fix_case, manifest, allow):
     from agent_repo.apply.fix import Violation
 
     case = fix_case
-    content = (
-        "module example.invalid/project\nrequire example.invalid/pkg v1.0.0\n"
-        if manifest == "go.mod"
-        else '{"imports":{"example":"https://example.invalid/mod.ts"}}\n'
-    )
+    content = {
+        "go.mod": "module example.invalid/project\nrequire example.invalid/pkg v1.0.0\n",
+        "build.sbt": 'libraryDependencies += "org.example" %% "new-library" % "1.0"\n',
+    }.get(manifest, '{"imports":{"example":"https://example.invalid/mod.ts"}}\n')
+    if manifest.endswith(".txt"):
+        content = "requests==2.0\n"
+    (case["repo"] / manifest).parent.mkdir(parents=True, exist_ok=True)
     (case["repo"] / manifest).write_text(content)
     case["artifact"], case["patch"] = build_artifact(
         case["repo"], case["base"], "run-1", answer(case["base"])
@@ -541,6 +556,47 @@ def test_unparsed_manifest_changes_follow_dependency_policy(fix_case, manifest, 
     case["ctx"].config.raw["fix"]["allow_new_deps"] = allow
     if allow:
         assert "draft" in apply_case(case).casefold()
+        assert any(
+            path == "issues/24/labels" and "needs-maintainer" in body["labels"]
+            for _, path, body in case["api"].writes
+        )
+    else:
+        with pytest.raises(Violation, match="new or unparsed dependencies"):
+            apply_case(case)
+        assert case["api"].writes == []
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "build-system",
+        "tool.poetry.dependencies",
+        "tool.uv.sources",
+        "tool.pdm.dev-dependencies",
+        "tool.hatch.envs.default",
+        "tool.ruff",
+    ],
+)
+@pytest.mark.parametrize("allow", [False, True], ids=["refuse", "label"])
+def test_pyproject_resolver_tables_are_unparsed_dependency_changes(fix_case, table, allow):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    repo = case["repo"]
+    before = f'[project]\nname = "x"\ndependencies = ["requests"]\n\n[{table}]\nkey = "1"\n'
+    (repo / "pyproject.toml").write_text(before)
+    git(repo, "add", "pyproject.toml")
+    git(repo, "commit", "-qm", "pyproject base")
+    base = git(repo, "rev-parse", "HEAD").strip()
+    case["base"] = base
+    case["api"].base = base
+    case["ctx"] = replace(case["ctx"], base_sha=base)
+    case["preflight"]["base_sha"] = base
+    (repo / "pyproject.toml").write_text(before + 'evilpkg = "*"\n')
+    case["artifact"], case["patch"] = build_artifact(repo, base, "run-1", answer(base))
+    case["ctx"].config.raw["fix"]["allow_new_deps"] = allow
+    if allow or table == "tool.ruff":
+        assert "Created draft fix." in apply_case(case)
         assert any(
             path == "issues/24/labels" and "needs-maintainer" in body["labels"]
             for _, path, body in case["api"].writes
@@ -667,16 +723,28 @@ def test_apply_command_uses_event_policy_and_trusted_context(
         assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 1
         assert case["api"].writes == []
         assert apply_calls == []
+    context.write_text(json.dumps(trusted))
+    monkeypatch.setenv("FIX_REF", "agent/fix-13")
+    assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 1
+    monkeypatch.setenv("FIX_REF", "agent/fix-12")
+    linked = tmp_path / "linked-fix.json"
+    linked.symlink_to(artifact)
+    assert apply_fix.main([str(linked), str(patch), str(case["repo"]), str(context)]) == 1
+    assert apply_calls == [] and case["api"].writes == []
+    assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 0
     context.unlink()
     assert apply_fix.main([str(artifact), str(patch), str(case["repo"]), str(context)]) == 1
     assert case["api"].writes == []
 
 
-def test_invalid_node_id_is_rejected_before_tree_validation(fix_case, monkeypatch):
+@pytest.mark.parametrize(
+    "node", ["--help", "tests/../test_lib.py::test_add", "tests/./test_lib.py::test_add"]
+)
+def test_invalid_node_id_is_rejected_before_tree_validation(fix_case, monkeypatch, node):
     from agent_repo.apply import fix
 
     case = fix_case
-    case["artifact"]["tests"] = ["--help"]
+    case["artifact"]["tests"] = [node]
     calls = []
 
     def validate(*args, **kwargs):
@@ -727,7 +795,8 @@ def test_ref_creation_conflict_links_existing_draft(fix_case):
     assert case["api"].reads.count("pulls/24") >= 2
 
 
-def test_existing_ref_must_have_verified_bot_authorship(fix_case):
+@pytest.mark.parametrize("forged", ["author", "commit-sha"])
+def test_existing_ref_must_have_verified_bot_authorship(fix_case, forged):
     from agent_repo.apply.fix import Violation
 
     case = fix_case
@@ -742,8 +811,10 @@ def test_existing_ref_must_have_verified_bot_authorship(fix_case):
     original = case["api"].request
 
     def request(method, path, **kwargs):
-        if method == "GET" and path.startswith("commits/"):
+        if forged == "author" and method == "GET" and path.startswith("commits/"):
             return {"author": {"type": "User", "login": "helper[bot]"}}
+        if forged == "commit-sha" and method == "GET" and path.startswith("git/commits/"):
+            return {**original(method, path, **kwargs), "sha": "c" * 40}
         return original(method, path, **kwargs)
 
     case["api"].request = request
@@ -1102,7 +1173,8 @@ def test_recovery_ref_move_refuses_before_pull_creation(fix_case):
     assert case["api"].writes == []
 
 
-def test_feedback_ref_move_after_object_creation_refuses_before_patch(fix_case):
+@pytest.mark.parametrize("move_on_read", [2, 3], ids=["before-objects", "after-objects"])
+def test_feedback_ref_move_after_object_creation_refuses_before_patch(fix_case, move_on_read):
     from agent_repo.apply.fix import Violation
 
     case = fix_case
@@ -1114,10 +1186,13 @@ def test_feedback_ref_move_after_object_creation_refuses_before_patch(fix_case):
         "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
     }
     case["ctx"] = replace(case["ctx"], event=replace(case["ctx"].event, is_pr=True, number=24))
-    case["api"].ref_move_on_read = 3
+    case["api"].ref_move_on_read = move_on_read
     with pytest.raises(Violation, match="feedback ref moved"):
         apply_case(case, feedback_head=head, feedback_ref="agent/fix-12")
-    assert any(path == "git/commits" for _, path, _ in case["api"].writes)
+    if move_on_read == 2:
+        assert case["api"].writes == []
+    else:
+        assert any(path == "git/commits" for _, path, _ in case["api"].writes)
     assert not any(path.startswith("git/refs") for _, path, _ in case["api"].writes)
 
 
@@ -1264,3 +1339,94 @@ def test_feedback_update_conflict_never_claims_success(fix_case):
     with pytest.raises(Violation, match="feedback ref update conflict"):
         apply_case(case, feedback_head=head, feedback_ref="agent/fix-12")
     assert not any(path == "pulls" for _, path, _ in case["api"].writes)
+
+
+def _move_published_head_after(case, method, target):
+    original = case["api"].request
+
+    def request(called, path, **kwargs):
+        result = original(called, path, **kwargs)
+        if called == method and path == target:
+            case["api"].ref = "a" * 40
+            if case["api"].pull:
+                case["api"].pull["head"]["sha"] = "a" * 40
+        return result
+
+    case["api"].request = request
+
+
+def _writes_after(case, target):
+    paths = [path for _, path, _ in case["api"].writes]
+    return paths[paths.index(target) + 1 :]
+
+
+@pytest.mark.parametrize(
+    "target,owned",
+    [
+        ("git/refs", False),
+        ("pulls", False),
+        ("issues/24/labels", False),
+        ("issues/24/labels", True),
+        ("pulls/24/requested_reviewers", True),
+    ],
+)
+def test_new_draft_refuses_when_published_head_moves(fix_case, target, owned):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    if owned:
+        areas = (Area("core", "Core", ("lib.py",), ("@maintainer",), False),)
+        case["ctx"] = replace(case["ctx"], config=replace(case["ctx"].config, areas=areas))
+    _move_published_head_after(case, "POST", target)
+    with pytest.raises(Violation, match="Fix refused: published draft moved."):
+        apply_case(case)
+    assert _writes_after(case, target) == []
+
+
+def test_recovered_draft_refuses_when_published_head_moves_after_creation(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    git(case["repo"], "add", "lib.py")
+    message = (
+        f"Fix #12\n\nAgent-Base: {case['base']}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    )
+    git(case["repo"], "commit", "-qm", message)
+    case["api"].ref = git(case["repo"], "rev-parse", "HEAD").strip()
+    case["api"].commits[case["api"].ref] = {"message": message}
+    _move_published_head_after(case, "POST", "pulls")
+    with pytest.raises(Violation, match="Fix refused: published draft moved."):
+        apply_case(case)
+    assert _writes_after(case, "pulls") == []
+
+
+def test_feedback_update_refuses_when_published_head_moves_after_push(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    head = case["base"]
+    case["api"].ref = head
+    case["api"].pull = case["api"].agent_pull(head)
+    case["api"].commits[head] = {
+        "message": f"Fix #12\n\nAgent-Base: {head}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    }
+    case["ctx"] = replace(case["ctx"], event=replace(case["ctx"].event, is_pr=True, number=24))
+    case["preflight"]["accepted_template_exposures"] = [
+        {"rule": "template-fix-propose", "job": "propose", "secret": "AGENT_FIX_KEY"}
+    ]
+    _move_published_head_after(case, "PATCH", "git/refs/heads/agent/fix-12")
+    with pytest.raises(Violation, match="Fix refused: published draft moved."):
+        apply_case(case, feedback_head=head, feedback_ref="agent/fix-12")
+    assert _writes_after(case, "git/refs/heads/agent/fix-12") == []
+
+
+def test_malformed_trusted_canary_refuses_before_any_request(fix_case):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    case["ctx"] = replace(case["ctx"], canary="B" * 32)
+    with pytest.raises(Violation, match="trusted inputs unavailable"):
+        apply_case(case)
+    assert case["api"].writes == [] and case["api"].reads == []

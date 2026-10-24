@@ -8,6 +8,7 @@ from pathlib import Path
 from agent_repo.bootstrap import (
     ENVIRONMENTS,
     MODEL_VARIABLES,
+    PIN,
     RULESET_NAMES,
     SHA,
     UPSTREAM,
@@ -27,6 +28,7 @@ from agent_repo.bootstrap import (
     read_environments,
     read_rulesets,
     read_target,
+    read_tree,
     read_variables,
     resolve_app,
     resolve_tag,
@@ -54,9 +56,6 @@ UNSAFE_SHARED_APP_ASSUMED = (
 )
 RULESETS_UNSAFE = (
     "UNSAFE: rulesets are unavailable, so nothing stops the GitHub App from writing non-agent refs."
-)
-PIN = re.compile(
-    r"btli/agent-repo-template/actions/([A-Za-z0-9_-]+)@([^\s#'\"]+)['\"]?(?:\s*#\s*(\S+))?", re.I
 )
 REQUIRED_VARIABLES = (
     "AGENTS_ENABLED",
@@ -113,6 +112,7 @@ def _configuration(gh: Gh, target: Target, report: Report) -> RepoConfig | None:
 def _pins(gh: Gh, texts: dict[str, bytes], report: Report) -> str | None:
     """Check every template pin upstream and return the ref preflight would run at."""
     resolved: dict[str, str | None] = {}
+    trees: dict[str, set[str]] = {}
     pins: dict[str, set[str]] = {"preflight": set(), "fix-agent": set()}
     for path, data in sorted(texts.items()):
         for line in data.decode(errors="replace").splitlines():
@@ -124,6 +124,13 @@ def _pins(gh: Gh, texts: dict[str, bytes], report: Report) -> str | None:
                 report.error(f"{path}: {action} pin is not a 40-hex commit.")
                 continue
             pins.setdefault(action, set()).add(sha)
+            if sha not in trees:
+                try:
+                    trees[sha] = set(read_tree(gh, UPSTREAM, sha)[1])
+                except BootstrapError:
+                    trees[sha] = set()
+            if f"actions/{action}/action.yml" not in trees[sha]:
+                report.error(f"{path}: {action} action is missing at its pinned commit upstream.")
             if version is None:
                 report.error(f"{path}: {action} pin has no # vX.Y.Z comment.")
                 continue

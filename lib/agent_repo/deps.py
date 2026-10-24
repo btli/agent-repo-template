@@ -24,13 +24,24 @@ MANIFESTS = frozenset(
         "pubspec.yaml",
         "deno.json",
         "deno.jsonc",
+        "build.sbt",
     }
 )
+# pyproject tables that declare build or resolver dependencies the parser does not read.
+PYPROJECT_TOOLS = ("poetry", "uv", "pdm", "hatch")
+
+
+def _requirements(path: str) -> bool:
+    parsed = PurePosixPath(path.casefold())
+    return (
+        fnmatch.fnmatchcase(parsed.name, "requirements*.txt")
+        or fnmatch.fnmatchcase(parsed.name, "constraints*.txt")
+        or (parsed.parent.name == "requirements" and parsed.suffix == ".txt")
+    )
 
 
 def is_manifest(path: str) -> bool:
-    name = PurePosixPath(path).name.casefold()
-    return name in MANIFESTS or fnmatch.fnmatchcase(name, "requirements*.txt")
+    return PurePosixPath(path).name.casefold() in MANIFESTS or _requirements(path)
 
 
 def _python_names(values: list) -> set[str]:
@@ -51,7 +62,7 @@ def _dependencies(path: str, text: str) -> set[str]:
     if not text.strip():
         return set()
     name = PurePosixPath(path).name.casefold()
-    if fnmatch.fnmatchcase(name, "requirements*.txt"):
+    if _requirements(path):
         return _python_names(
             [
                 line.split("#", 1)[0].strip()
@@ -78,10 +89,22 @@ def _dependencies(path: str, text: str) -> set[str]:
     raise ValueError
 
 
+def _resolver_tables(text: str) -> tuple:
+    data = tomllib.loads(text)
+    tools = data.get("tool", {})
+    return data.get("build-system"), {
+        key: value for key, value in tools.items() if key.startswith(PYPROJECT_TOOLS)
+    }
+
+
 def new_dependencies(path: str, before: str, after: str) -> set[str]:
     if not is_manifest(path) or before == after:
         return set()
     try:
+        if PurePosixPath(path).name.casefold() == "pyproject.toml" and (
+            _resolver_tables(before) != _resolver_tables(after)
+        ):
+            raise ValueError
         return _dependencies(path, after) - _dependencies(path, before)
     except (ValueError, TypeError, AttributeError):
         return {f"{path}: unparsed change"}

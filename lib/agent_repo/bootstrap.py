@@ -65,6 +65,9 @@ CONTRIBUTING_SECTION = "CONTRIBUTING.agents.md"
 SHA = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+PIN = re.compile(
+    r"btli/agent-repo-template/actions/([A-Za-z0-9_-]+)@([^\s#'\"]+)['\"]?(?:\s*#\s*(\S+))?", re.I
+)
 SECRET_LOOKING = re.compile(
     r"(?:^|[^A-Za-z0-9])(?:gh[pousr]_|github_pat_|sk-|xox[abprs]-|AKIA|dapi)|-----BEGIN", re.I
 )
@@ -72,6 +75,11 @@ RULESETS_UNAVAILABLE = (
     "Rulesets are unavailable for this repository; bootstrap cannot protect non-agent refs."
 )
 NOT_ON_MAIN = "Template commit is not on upstream main."
+TEMPLATE_MISMATCH = (
+    "The local template does not match the resolved version; "
+    "check out the template at that version and rerun."
+)
+UNEXPECTED_FAILURE = "Bootstrap stopped: an unexpected error interrupted the run."
 APP_IDENTITY_UNKNOWN = (
     "GitHub App identity unknown: pass --app-slug and --app-client-id from the App's settings page."
 )
@@ -251,6 +259,27 @@ def render_consumer(sha: str, version: str) -> dict[str, bytes]:
 
 def blob_sha(data: bytes) -> str:
     return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+
+def require_template_at(gh: Gh, sha: str, rendered: dict[str, bytes]) -> None:
+    """Refuse unless the pin's upstream tree holds these exact templates and every pinned action."""
+    _, upstream, _ = read_tree(gh, UPSTREAM, sha)
+    source = ROOT / "consumer"
+    templates = {
+        f"consumer/{path.relative_to(source).as_posix()}": blob_sha(path.read_bytes())
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+    actions = {
+        match[1]
+        for path, data in rendered.items()
+        if path.startswith(".github/workflows/")
+        for match in PIN.finditer(data.decode())
+    }
+    if any(upstream.get(path) != blob for path, blob in templates.items()) or any(
+        f"actions/{name}/action.yml" not in upstream for name in actions
+    ):
+        raise BootstrapError(TEMPLATE_MISMATCH)
 
 
 def read_tree(gh: Gh, repo: str, commit: str) -> tuple[str, dict[str, str], dict[str, tuple]]:
@@ -699,8 +728,14 @@ def plan_files(
     for path, data in rendered.items():
         if path == CONTRIBUTING_SECTION:
             current = file_content(gh, target, "CONTRIBUTING.md") or b""
+            try:
+                existing_text = current.decode()
+            except UnicodeDecodeError:
+                raise BootstrapError(
+                    "CONTRIBUTING.md is not UTF-8 text; convert it and rerun."
+                ) from None
             heading = data.decode().splitlines()[0]
-            if heading not in current.decode(errors="replace").splitlines():
+            if heading not in existing_text.splitlines():
                 changes["CONTRIBUTING.md"] = (
                     current.rstrip(b"\n") + b"\n\n" + data if current else data
                 )
@@ -863,6 +898,7 @@ def plan_install(gh: Gh, options: InstallOptions) -> Plan:
     plan.lines.append(message)
     rulesets = read_rulesets(gh, repo)
     rendered = render_consumer(sha, options.version)
+    require_template_at(gh, sha, rendered)
     changes, plan.notes = plan_files(gh, target, rendered, options.force)
 
     def landed(path: str) -> bytes:
@@ -1030,9 +1066,13 @@ def execute(plan: Plan, repo: str, *, preview: bool, journal: Journal) -> int:
     for mutation in plan.mutations:
         try:
             rollback = mutation.perform()
-        except BootstrapError:
+        except Exception as error:
+            # Only bootstrap's own errors are fixed text; anything else may carry values.
             journal.record("failed", description=mutation.description)
-            print(f"Bootstrap stopped: {mutation.description} failed.")
+            if isinstance(error, BootstrapError):
+                print(f"Bootstrap stopped: {mutation.description} failed.")
+            else:
+                print(UNEXPECTED_FAILURE)
             print("Rollback commands, newest first:")
             for entry in reversed(journal.pending()):
                 print(f"  {entry['rollback']}")

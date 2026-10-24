@@ -32,7 +32,9 @@ if response is None:
 if "status" in response:
     print(f"gh: request failed (HTTP {response['status']})", file=sys.stderr)
     sys.exit(1)
-if "--jq" in arguments:
+if "raw" in response:
+    sys.stdout.buffer.write(bytes.fromhex(response["raw"]))
+elif "--jq" in arguments:
     key_name = arguments[arguments.index("--jq") + 1].removeprefix(".").removesuffix("[]")
     items = response["json"][key_name] if key_name else response["json"]
     print("\n".join(json.dumps(item) for item in items))

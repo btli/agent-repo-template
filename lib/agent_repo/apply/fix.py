@@ -32,6 +32,7 @@ BLOCKED_GLOBS = (
     ".gitmodules",
     "AGENTS.md",
     "CODEOWNERS",
+    "MAINTAINERS",
     "*.lock",
     "*-lock.json",
     "*-lock.yaml",
@@ -315,13 +316,22 @@ def _create_commit(
 
 
 def _decorate_pull(
-    ctx: ApplyContext, number: int, tree: ValidatedTree, *, existing: bool = False
+    ctx: ApplyContext,
+    issue: int,
+    number: int,
+    head: str,
+    tree: ValidatedTree,
+    *,
+    existing: bool = False,
 ) -> None:
+    """Label and request review only while the branch and PR still point at `head`."""
+    branch = branch_for(issue)
     labels = ["agent:fix"] + (["needs-maintainer"] if tree.manifests else [])
     if existing:
         current_labels = {item["name"] for item in ctx.github.paginate(f"issues/{number}/labels")}
         labels = [label for label in labels if label not in current_labels]
     if labels:
+        _unchanged_published_draft(ctx, issue, branch, number, head)
         ctx.github.request("POST", f"issues/{number}/labels", body={"labels": labels})
     owners = {
         owner.removeprefix("@")
@@ -343,11 +353,13 @@ def _decorate_pull(
         users = [user for user in users if user not in current_users]
         teams = [team for team in teams if team not in current_teams]
     if users or teams:
+        _unchanged_published_draft(ctx, issue, branch, number, head)
         ctx.github.request(
             "POST",
             f"pulls/{number}/requested_reviewers",
             body={"reviewers": users, "team_reviewers": teams},
         )
+    _unchanged_published_draft(ctx, issue, branch, number, head)
 
 
 def _accepted_template_note(preflight: dict) -> str:
@@ -394,7 +406,7 @@ def _create_recovered_pull(
     number = pull["number"]
     if type(number) is not int or number < 1:
         raise Violation("Fix refused: invalid pull request.")
-    _decorate_pull(ctx, number, recovered)
+    _decorate_pull(ctx, issue, number, head, recovered)
     return "Created recovered draft fix." + ("\n" + note if note else "")
 
 
@@ -546,9 +558,7 @@ def apply_fix(
         for pull in pulls:
             _pull_identity(pull, ctx, issue, existing)
             _, published = _published_change(ctx, repo, issue, branch, existing)
-            _unchanged_published_draft(ctx, issue, branch, pull["number"], existing)
-            _decorate_pull(ctx, pull["number"], published, existing=True)
-            _unchanged_published_draft(ctx, issue, branch, pull["number"], existing)
+            _decorate_pull(ctx, issue, pull["number"], existing, published, existing=True)
             return (
                 "Existing draft: "
                 + pull["html_url"]
@@ -595,9 +605,7 @@ def apply_fix(
                 published_head = _sha(pull["head"]["sha"])
                 _pull_identity(pull, ctx, issue, published_head)
                 _, published = _published_change(ctx, repo, issue, branch, published_head)
-                _unchanged_published_draft(ctx, issue, branch, pull["number"], published_head)
-                _decorate_pull(ctx, pull["number"], published, existing=True)
-                _unchanged_published_draft(ctx, issue, branch, pull["number"], published_head)
+                _decorate_pull(ctx, issue, pull["number"], published_head, published, existing=True)
                 return (
                     "Existing draft: "
                     + pull["html_url"]
@@ -610,11 +618,12 @@ def apply_fix(
                 ctx, repo, issue, branch, current, template_note, preflight["workflow_tree_sha"]
             )
         if feedback_head:
+            _unchanged_published_draft(ctx, issue, branch, ctx.event.number, commit)
             if feedback_body is not None:
                 ctx.github.request(
                     "PATCH", f"pulls/{ctx.event.number}", body={"body": feedback_body}
                 )
-            _decorate_pull(ctx, ctx.event.number, tree)
+            _decorate_pull(ctx, issue, ctx.event.number, commit, tree)
             return "Updated draft fix." + ("\n" + template_note if template_note else "")
     if _workflow_tree(ctx) != preflight["workflow_tree_sha"]:
         return "Fix dry-run: workflow tree moved before PR creation."
@@ -623,6 +632,8 @@ def apply_fix(
         body += "\n\n" + template_note
     if find_leaks(body, ctx.secrets, ctx.canary):
         raise Violation("Fix refused: outbound scan alert.")
+    if _ref(ctx, branch) != commit:
+        raise Violation("Fix refused: published draft moved.")
     pull = ctx.github.request(
         "POST",
         "pulls",
@@ -637,5 +648,5 @@ def apply_fix(
     number = pull["number"]
     if type(number) is not int or number < 1:
         raise Violation("Fix refused: invalid pull request.")
-    _decorate_pull(ctx, number, tree)
+    _decorate_pull(ctx, issue, number, commit, tree)
     return "Created draft fix." + ("\n" + template_note if template_note else "")
