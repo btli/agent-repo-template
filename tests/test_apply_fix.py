@@ -598,9 +598,19 @@ def test_ref_creation_conflict_links_existing_draft(fix_case):
     case["api"].conflict = True
     case["api"].pull = case["api"].agent_pull(head)
     case["api"].commits[head] = {"message": message}
+    original = case["api"].request
+
+    def request(method, path, **kwargs):
+        if method == "POST" and path == "git/refs":
+            case["api"].ref = head
+        return original(method, path, **kwargs)
+
+    case["api"].request = request
     assert case["api"].pull["html_url"] in apply_case(case)
     assert not any(path == "pulls" for _, path, _ in case["api"].writes)
     assert case["api"].labels == ["agent:fix"]
+    assert case["api"].ref_reads >= 2
+    assert case["api"].reads.count("pulls/24") >= 2
 
 
 def test_existing_ref_must_have_verified_bot_authorship(fix_case):
@@ -793,6 +803,55 @@ def test_existing_draft_completes_decoration_from_published_head(fix_case, recov
             path.endswith("/labels") or path.endswith("/requested_reviewers")
             for _, path, _ in case["api"].writes
         )
+
+
+@pytest.mark.parametrize("route", ["existing-ref", "conflict"])
+@pytest.mark.parametrize("move_at", ["published-read", "after-decoration"])
+@pytest.mark.parametrize("moved", ["ref", "pull", "both"])
+def test_existing_draft_refuses_late_published_head_move(fix_case, route, move_at, moved):
+    from agent_repo.apply.fix import Violation
+
+    case = fix_case
+    git(case["repo"], "add", "lib.py")
+    message = (
+        f"Fix #12\n\nAgent-Base: {case['base']}\n"
+        "Agent-Run: prior\nAgent-Tests: tests/test_lib.py::test_add\n"
+    )
+    git(case["repo"], "commit", "-qm", message)
+    old_head = git(case["repo"], "rev-parse", "HEAD").strip()
+    (case["repo"] / "package.json").write_text("{}\n")
+    git(case["repo"], "add", "package.json")
+    git(case["repo"], "commit", "-qm", message)
+    new_head = git(case["repo"], "rev-parse", "HEAD").strip()
+    case["api"].ref = old_head if route == "existing-ref" else None
+    case["api"].pull = case["api"].agent_pull(old_head)
+    case["api"].commits[old_head] = {"message": message}
+    case["api"].conflict = route == "conflict"
+    original = case["api"].request
+
+    def move():
+        if moved in {"ref", "both"}:
+            case["api"].ref = new_head
+        if moved in {"pull", "both"}:
+            case["api"].pull["head"]["sha"] = new_head
+
+    def request(method, path, **kwargs):
+        if method == "POST" and path == "git/refs":
+            case["api"].ref = old_head
+        if move_at == "published-read" and method == "GET" and path == "git/commits/" + old_head:
+            move()
+        result = original(method, path, **kwargs)
+        if move_at == "after-decoration" and method == "POST" and path == "issues/24/labels":
+            move()
+        return result
+
+    case["api"].request = request
+    with pytest.raises(Violation, match="Fix refused: published draft moved"):
+        apply_case(case)
+    if move_at == "published-read":
+        assert case["api"].labels == []
+        assert case["api"].requested_users == []
+        assert not any(path.endswith("/requested_reviewers") for _, path, _ in case["api"].writes)
 
 
 def test_existing_draft_refuses_unreadable_published_head(fix_case):

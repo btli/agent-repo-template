@@ -407,6 +407,17 @@ def _published_change(
     return match, recovered
 
 
+def _unchanged_published_draft(
+    ctx: ApplyContext, issue: int, branch: str, number: int, head: str
+) -> None:
+    try:
+        if _ref(ctx, branch) != head:
+            raise Violation("Fix refused: published draft moved.")
+        _pull_identity(ctx.github.request("GET", f"pulls/{number}"), ctx, issue, head)
+    except (GitHubError, KeyError, TypeError, Violation):
+        raise Violation("Fix refused: published draft moved.") from None
+
+
 def _feedback_body_with_note(pull: dict, note: str, ctx: ApplyContext) -> str | None:
     if not note:
         return None
@@ -528,7 +539,9 @@ def apply_fix(
         for pull in pulls:
             _pull_identity(pull, ctx, issue, existing)
             _, published = _published_change(ctx, repo, issue, branch, existing)
+            _unchanged_published_draft(ctx, issue, branch, pull["number"], existing)
             _decorate_pull(ctx, pull["number"], published, existing=True)
+            _unchanged_published_draft(ctx, issue, branch, pull["number"], existing)
             return (
                 "Existing draft: "
                 + pull["html_url"]
@@ -575,7 +588,9 @@ def apply_fix(
                 published_head = _sha(pull["head"]["sha"])
                 _pull_identity(pull, ctx, issue, published_head)
                 _, published = _published_change(ctx, repo, issue, branch, published_head)
+                _unchanged_published_draft(ctx, issue, branch, pull["number"], published_head)
                 _decorate_pull(ctx, pull["number"], published, existing=True)
+                _unchanged_published_draft(ctx, issue, branch, pull["number"], published_head)
                 return (
                     "Existing draft: "
                     + pull["html_url"]
