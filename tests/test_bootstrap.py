@@ -349,11 +349,13 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
     stale_login = "ghp_" + "S3cr3tL00kingValue" * 2
     stale_url = "https://user:" + "plainpassword@old-gateway.example.com"
     stale_path = "https://systemone.example.com/ghp_" + "S3cr3tL00kingValue" * 2
+    stale_pem = "Iv23li " + "-----" + "BEGIN SYNTHETIC KEY-----"
     stale = {
         "AGENT_GATEWAY_KIND": stale_kind,
         "AGENT_BOT_LOGIN": stale_login,
         "AGENT_GATEWAY_URL": stale_url,
         "AGENT_SYSTEM_ONE_URL": stale_path,
+        "AGENT_APP_CLIENT_ID": stale_pem,
         "AGENT_FIX_MODEL": "gpt-4o",
     }
     responses[f"GET {TARGET}/actions/variables"] = {
@@ -390,7 +392,8 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
         assert rejected.returncode == 1
         assert fake.writes() == []
         output = result.stdout + result.stderr + rejected.stdout + rejected.stderr
-        secrets = (stale_kind, stale_login, stale_url, stale_path, credential_url, secret_kind)
+        secrets = (stale_kind, stale_login, stale_url, stale_path, stale_pem, credential_url)
+        secrets += (secret_kind,)
         for value in (*secrets, *synthetic.values()):
             assert value not in output + json.dumps(fake.journal())
 
@@ -455,7 +458,7 @@ def test_bootstrap_stops_before_any_write(tmp_path, change, message):
 
 
 @pytest.mark.parametrize(
-    "difference", [None, "extra", "missing", "contributing", "submodule", "mode"]
+    "difference", [None, "extra", "missing", "contributing", "submodule", "mode", "empty-tree"]
 )
 def test_an_existing_bootstrap_branch_must_hold_exactly_the_planned_tree(tmp_path, difference):
     fake = state.FakeGitHub(tmp_path, state.empty_target())
@@ -481,8 +484,18 @@ def test_an_existing_bootstrap_branch_must_hold_exactly_the_planned_tree(tmp_pat
         {"path": path, "type": kind, "mode": mode, "sha": sha}
         for path, (kind, mode, sha) in branch.items()
     ]
-    # Directory entries follow from their contents, as in a recursive GitHub tree listing.
-    entries.append({"path": ".agents", "type": "tree", "mode": "040000", "sha": "a" * 40})
+    # A recursive GitHub tree also lists every directory; their SHAs follow from the contents.
+    directories = {
+        "/".join(path.split("/")[:depth])
+        for path in branch
+        for depth in range(1, path.count("/") + 1)
+    }
+    if difference == "empty-tree":
+        directories.add("empty-extra")
+    entries += [
+        {"path": path, "type": "tree", "mode": "040000", "sha": "a" * 40}
+        for path in sorted(directories)
+    ]
     fake.responses[f"GET {TARGET}/git/trees/{head}"] = {
         "json": {"sha": "e" * 40, "tree": entries, "truncated": False}
     }

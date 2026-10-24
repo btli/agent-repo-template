@@ -246,19 +246,23 @@ def blob_sha(data: bytes) -> str:
 
 
 def read_tree(gh: Gh, repo: str, commit: str) -> tuple[str, dict[str, str], dict[str, tuple]]:
-    """Return the tree SHA, blob SHAs by path, and every leaf entry as (type, mode, SHA)."""
+    """Return the tree SHA, blob SHAs by path, and every entry by path as (type, mode, SHA)."""
     tree = gh.get(f"repos/{repo}/git/trees/{commit}?recursive=1")
     entries = _field(tree, "tree")
     if _field(tree, "truncated") is not False or not isinstance(entries, list):
         raise BootstrapError("The repository tree is too large to read.")
-    # Directory entries follow from the leaves under them, so only leaves are compared.
-    leaves = {
-        entry["path"]: (entry.get("type"), entry.get("mode"), entry.get("sha"))
+    # A directory's SHA follows from its contents, so directories compare by path alone.
+    by_path = {
+        entry["path"]: (
+            ("tree", None, None)
+            if entry.get("type") == "tree"
+            else (entry.get("type"), entry.get("mode"), entry.get("sha"))
+        )
         for entry in entries
-        if isinstance(entry, dict) and entry.get("type") != "tree"
+        if isinstance(entry, dict)
     }
-    files = {path: sha for path, (kind, _, sha) in leaves.items() if kind == "blob"}
-    return _sha(_field(tree, "sha")), files, leaves
+    files = {path: sha for path, (kind, _, sha) in by_path.items() if kind == "blob"}
+    return _sha(_field(tree, "sha")), files, by_path
 
 
 def read_blob(gh: Gh, repo: str, sha: str) -> bytes:
@@ -307,7 +311,7 @@ class Target:
     files: dict[str, str]
     admin: bool
     owner_type: object
-    leaves: dict[str, tuple]
+    entries: dict[str, tuple]
 
 
 def read_target(gh: Gh, repo: str) -> Target:
@@ -316,10 +320,10 @@ def read_target(gh: Gh, repo: str) -> Target:
     if not isinstance(branch, str):
         raise BootstrapError("Cannot read the target repository.")
     head = _sha(_field(gh.get(f"repos/{repo}/git/ref/heads/{quote(branch)}"), "object", "sha"))
-    tree_sha, files, leaves = read_tree(gh, repo, head)
+    tree_sha, files, entries = read_tree(gh, repo, head)
     admin = _field(info, "permissions", "admin") is True
     owner_type = _field(info, "owner", "type")
-    return Target(repo, branch, head, tree_sha, files, admin, owner_type, leaves)
+    return Target(repo, branch, head, tree_sha, files, admin, owner_type, entries)
 
 
 def file_content(gh: Gh, target: Target, path: str) -> bytes | None:
@@ -732,9 +736,15 @@ def plan_proposal(
         return f"gh pr close {_field(pull, 'number')} --repo {repo}"
 
     if existing:
-        _, _, branch_leaves = read_tree(gh, repo, _sha(_field(existing[0], "object", "sha")))
-        planned = {path: ("blob", "100644", blob_sha(data)) for path, data in changes.items()}
-        if branch_leaves != {**target.leaves, **planned}:
+        _, _, branch_entries = read_tree(gh, repo, _sha(_field(existing[0], "object", "sha")))
+        # The branch holds the base entries, each planned file and every parent directory.
+        planned = {
+            "/".join(path.split("/")[:depth]): ("tree", None, None)
+            for path in changes
+            for depth in range(1, path.count("/") + 1)
+        }
+        planned.update({path: ("blob", "100644", blob_sha(data)) for path, data in changes.items()})
+        if branch_entries != {**target.entries, **planned}:
             plan.errors.append(
                 f"Branch {branch} already exists with other content; "
                 "merge or delete it, then rerun."
