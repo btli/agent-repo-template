@@ -48,7 +48,7 @@ BLOCKED_GLOBS = (
     "**/.git/**",
 )
 AGENT_MESSAGE = re.compile(
-    r"Fix #[1-9][0-9]*\n\nAgent-Base: (?P<base>[0-9a-f]{40})\n"
+    r"Fix #(?P<issue>[1-9][0-9]*)\n\nAgent-Base: (?P<base>[0-9a-f]{40})\n"
     r"Agent-Run: (?P<run>[A-Za-z0-9_.-]{1,64})\n"
     r"Agent-Tests:(?P<tests>(?: [A-Za-z0-9_./:\[\]-]+){0,20})\n?"
 )
@@ -227,7 +227,9 @@ def _ref(ctx: ApplyContext, branch: str) -> str | None:
         raise
 
 
-def _agent_commit(ctx: ApplyContext, head: str, *, base: str | None = None) -> re.Match[str]:
+def _agent_commit(
+    ctx: ApplyContext, head: str, issue: int, *, base: str | None = None
+) -> re.Match[str]:
     commit = ctx.github.request("GET", f"git/commits/{_sha(head)}")
     author = ctx.github.request("GET", f"commits/{head}")["author"]
     if author["type"] != "Bot" or canonical_bot_login(author["login"]) != ctx.bot_login:
@@ -235,6 +237,8 @@ def _agent_commit(ctx: ApplyContext, head: str, *, base: str | None = None) -> r
     match = AGENT_MESSAGE.fullmatch(commit["message"])
     if commit["sha"] != head or not match or (base is not None and match["base"] != base):
         raise Violation("Fix refused: unverified agent commit.")
+    if int(match["issue"]) != issue:
+        raise Violation("Fix refused: agent commit issue mismatch.")
     return match
 
 
@@ -307,9 +311,15 @@ def _create_commit(
     )
 
 
-def _decorate_pull(ctx: ApplyContext, number: int, tree: ValidatedTree) -> None:
+def _decorate_pull(
+    ctx: ApplyContext, number: int, tree: ValidatedTree, *, existing: bool = False
+) -> None:
     labels = ["agent:fix"] + (["needs-maintainer"] if tree.manifests else [])
-    ctx.github.request("POST", f"issues/{number}/labels", body={"labels": labels})
+    if existing:
+        current_labels = {item["name"] for item in ctx.github.paginate(f"issues/{number}/labels")}
+        labels = [label for label in labels if label not in current_labels]
+    if labels:
+        ctx.github.request("POST", f"issues/{number}/labels", body={"labels": labels})
     owners = {
         owner.removeprefix("@")
         for area in ctx.config.areas
@@ -323,6 +333,12 @@ def _decorate_pull(ctx: ApplyContext, number: int, tree: ValidatedTree) -> None:
         for owner in owners
         if "/" in owner and owner.split("/", 1)[0].casefold() == organization
     )
+    if existing and (users or teams):
+        requested = ctx.github.request("GET", f"pulls/{number}/requested_reviewers")
+        current_users = {user["login"] for user in requested["users"]}
+        current_teams = {team["slug"] for team in requested["teams"]}
+        users = [user for user in users if user not in current_users]
+        teams = [team for team in teams if team not in current_teams]
     if users or teams:
         ctx.github.request(
             "POST",
@@ -350,12 +366,7 @@ def _create_recovered_pull(
     note: str,
     workflow_sha: str,
 ) -> str:
-    match = _agent_commit(ctx, head)
-    recovered = _recovered_tree(
-        repo, branch, head, match["base"], ctx.config.raw["limits"]["fix_max_diff_lines"]
-    )
-    if recovered.dependencies and not ctx.config.raw["fix"]["allow_new_deps"]:
-        raise Violation(f"Fix refused: cannot inspect published change on {branch}.")
+    match, recovered = _published_change(ctx, repo, issue, branch, head)
     if _workflow_tree(ctx) != workflow_sha:
         return "Fix dry-run: workflow tree moved before PR creation."
     if _ref(ctx, branch) != head:
@@ -382,6 +393,18 @@ def _create_recovered_pull(
         raise Violation("Fix refused: invalid pull request.")
     _decorate_pull(ctx, number, recovered)
     return "Created recovered draft fix." + ("\n" + note if note else "")
+
+
+def _published_change(
+    ctx: ApplyContext, repo: Path, issue: int, branch: str, head: str
+) -> tuple[re.Match[str], ValidatedTree]:
+    match = _agent_commit(ctx, head, issue)
+    recovered = _recovered_tree(
+        repo, branch, head, match["base"], ctx.config.raw["limits"]["fix_max_diff_lines"]
+    )
+    if recovered.dependencies and not ctx.config.raw["fix"]["allow_new_deps"]:
+        raise Violation(f"Fix refused: cannot inspect published change on {branch}.")
+    return match, recovered
 
 
 def _feedback_body_with_note(pull: dict, note: str, ctx: ApplyContext) -> str | None:
@@ -435,7 +458,7 @@ def apply_fix(
         _pull_identity(
             ctx.github.request("GET", f"pulls/{ctx.event.number}"), ctx, issue, feedback_head
         )
-        _agent_commit(ctx, feedback_head, base=ctx.base_sha)
+        _agent_commit(ctx, feedback_head, issue, base=ctx.base_sha)
         if _ref(ctx, branch) != feedback_head:
             raise Violation("Fix refused: feedback ref moved.")
     elif ctx.event.is_pr or issue != ctx.event.number or feedback_ref:
@@ -472,7 +495,9 @@ def apply_fix(
         except GitHubError:
             pass
         # A repository-scoped token's response does not prove installation-wide reach.
-        result = "UNSAFE ON SHARED APP: patch retained; no push."
+        result = "UNSAFE ON SHARED APP: patch retained; no push." + (
+            "\n" + template_note if template_note else ""
+        )
         if mode == "live":
             _enabled(ctx, issue)
             ctx.github.request(
@@ -502,6 +527,8 @@ def apply_fix(
         )
         for pull in pulls:
             _pull_identity(pull, ctx, issue, existing)
+            _, published = _published_change(ctx, repo, issue, branch, existing)
+            _decorate_pull(ctx, pull["number"], published, existing=True)
             return (
                 "Existing draft: "
                 + pull["html_url"]
@@ -545,7 +572,10 @@ def apply_fix(
                 params={"state": "open", "head": ctx.event.repo.split("/")[0] + ":" + branch},
             )
             for pull in pulls:
-                _pull_identity(pull, ctx, issue, _sha(pull["head"]["sha"]))
+                published_head = _sha(pull["head"]["sha"])
+                _pull_identity(pull, ctx, issue, published_head)
+                _, published = _published_change(ctx, repo, issue, branch, published_head)
+                _decorate_pull(ctx, pull["number"], published, existing=True)
                 return (
                     "Existing draft: "
                     + pull["html_url"]
