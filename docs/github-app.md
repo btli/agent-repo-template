@@ -41,6 +41,7 @@ repository settings. Do not grant the agent App bypass.
 
 Doctor compares the live rulesets with the bootstrap-owned pair. It also
 checks the declared App identity, action pins, and configured credentials by
-name, but does not verify App installation. Confirm installation access on the
-App's installation page. If the App is shared across an organization, see the meaning of
+name, but does not verify App installation; confirm access on the App's
+installation page. Doctor reports when an action is missing at its pinned
+upstream commit. If the App is shared across an organization, see the meaning of
 [`UNSAFE ON SHARED APP`](security.md#shared-app-warning).

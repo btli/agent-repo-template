@@ -5,10 +5,10 @@
 | Stage | Action | Abort or reverse |
 | --- | --- | --- |
 | Preview | Run bootstrap with `--plan`; review every intended change and check that a first-install plan has no `A first install must start every role in dry-run` error. | Stop if the plan has errors, an unknown App identity, an unsafe ruleset state, or an unexpected file change. |
-| Install | Run bootstrap without `--plan`; review its branch and draft pull request. Set secrets yourself in the listed scopes. | On partial failure, use the printed rollback commands. Rerunning the same command resumes the journal. |
+| Install | Run bootstrap without `--plan`; review its branch and draft pull request. Set secrets yourself in the listed scopes. | On failure, bootstrap prints every rollback newest first, marks the interrupted step possibly applied, and exits 1. A run killed mid-write leaves a pending journal entry; the next run carries it forward and lists it as possibly applied if that run fails. Rerun the same command to resume. |
 | Validate | Run `./bootstrap.sh --check --repo your-org/your-repo`; resolve doctor errors and investigate CI exposure. | Do not switch any role to live while doctor reports errors or an unresolved exposure. |
-| Dry-run | Exercise issue triage, review, and fix on representative events; review summaries, artifacts, labels, and proposed patches. | Disable all roles with `AGENTS_ENABLED=false`; keep or restore each `mode` value to `dry-run`. |
-| Live | After maintainers approve the setup PR and review dry-run outputs, change only the intended role to live. Human review and merge remain required. | Set `AGENTS_ENABLED=false` immediately for an incident; rotate reached credentials and review App-authored refs before re-enabling. |
+| Dry-run | Exercise issue triage, review, and fix; run `scripts/dry-run-report.py --repo your-org/your-repo --tier2-budget-alerts N` before switching triage live. | Abort for `any out-of-policy action`; `dry-run agreement on type or area under 80% after 50 issues`; `a reopen rate above 5% for agent:closed`; or `a Tier-2 key reaching 80% of its budget twice in one week`. For the Tier-2 alert criterion, set `triage.rca_authors: known`. |
+| Live | After maintainers approve the setup PR and review dry-run outputs with no abort criteria, change only the intended role to live. Human review and merge remain required. | Set `AGENTS_ENABLED=false` immediately for an incident; rotate reached credentials and review App-authored refs before re-enabling. |
 | Template update | Review the upstream template diff and update consumer action pins in a normal pull request. | Revert the consumer PR or pin the last reviewed release; do not push changes directly to the default branch. |
 
 ## Gate reasons and fixed messages
@@ -47,6 +47,7 @@ Fixed command-wrapper messages:
 | `Gate outputs could not be written.` | GitHub Actions output file is unavailable. | Check runner state and file-command permissions. |
 | `Gate summary could not be written.` | The fix gate could not append its job summary. | Inspect the runner's step-summary file and permissions. |
 | `Fix was not run: {reason}.` | The fix gate refused the request for the listed reason. | Follow the matching reason row; do not infer a successful fix from a skipped job. |
+| `Fix refused: published draft moved.` | The published fix branch changed while apply was validating it. | Stop the apply, inspect the branch and pull request, and ask a maintainer to review before retrying. |
 
 ## Schema evolution
 
@@ -74,10 +75,11 @@ together.
   `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` itself and
   retries bwrap. The runner must permit passwordless sudo; otherwise preflight
   fails closed instead of running unsandboxed.
-- Both fix checkouts set `submodules: false`. The fix-agent propose step refuses
+- Both fix checkouts leave `actions/checkout`'s `submodules` input at its
+  default (`false`). The fix-agent propose step refuses
   persisted credential settings and URL userinfo matching `://...@`; the fix
-  applier protects `.gitmodules`. Submodules are not fetched, so there is no
-  separate SSH-submodule refusal.
+  applier protects `.gitmodules` and `MAINTAINERS`. Submodules are not fetched,
+  so there is no separate SSH-submodule refusal.
 - Preflight analyzes GitHub Actions workflows only. Other CI systems that
   build `agent/fix-*` branches are outside its coverage.
 - Rerun doctor after changing environment deployment policies, the default
@@ -87,6 +89,14 @@ together.
 - Any CI exposure currently yields
   `UNSAFE ON SHARED APP: patch retained; no push.` The config flag
   `fix.accept_ci_exposure` cannot override this fix-apply behavior.
+- Dependency-change checks cover `pyproject.toml`, `package.json`, `Cargo.toml`,
+  `go.mod`, `Gemfile`, `composer.json`, `Pipfile`, `setup.py`, `setup.cfg`,
+  `environment.yml`, `environment.yaml`, `pom.xml`, `build.gradle`,
+  `build.gradle.kts`, `mix.exs`, `pubspec.yaml`, `deno.json`, `deno.jsonc`, and
+  `build.sbt`; they also cover `requirements*.txt` and `constraints*.txt` at
+  any depth, plus `*.txt` directly under `requirements/`. For `pyproject.toml`,
+  changes to `[build-system]` or `[tool.poetry]`, `[tool.uv]`, `[tool.pdm]`, or
+  `[tool.hatch]` are treated as unparsed dependency changes.
 
 ## Dependency updates
 

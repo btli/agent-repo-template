@@ -9,7 +9,7 @@ Never paste credentials into issues, workflow inputs, or logs.
 
 | Credential or signal | Detection | Revoke or contain target |
 | --- | --- | --- |
-| `AGENT_TRIAGE_KEY`, `AGENT_REVIEW_KEY`, or `AGENT_FIX_KEY` | Gateway usage by role key; compare by time with the matching role's Actions runs because requests carry no run ID; unexpected spend, rate, or geography; outbound scan refusal | Disable the affected virtual key within 15 minutes, issue a replacement, update its environment secret, and confirm a dry-run workflow. |
+| `AGENT_TRIAGE_KEY`, `AGENT_REVIEW_KEY`, or `AGENT_FIX_KEY` | Gateway usage by role key; the run ID appears in model prompt text, not structured gateway metadata, so correlate by prompt only if retained or otherwise by time against the matching role's Actions runs; unexpected spend, rate, or geography; outbound scan refusal | Disable the affected virtual key within 15 minutes, issue a replacement, update its environment secret, and confirm a dry-run workflow. |
 | `AGENT_SCAN_KEYS` and the affected role key | Fix/apply scan refusal, leaked-key alert, or suspicious model output | Rotate the role key and `AGENT_SCAN_KEYS` together within 15 minutes so the scanner recognizes the replacement and the exposed value is revoked. |
 | `AGENT_SYSTEM_ONE_KEY` | Unexpected System One provider usage or an exposed key in logs or workflow output; compare provider usage with `agent-propose-triage` Actions runs because requests carry no run-id metadata. | Within 15 minutes, revoke the key at the provider, issue a replacement, update the `agent-propose-triage` environment secret, and add its value to `AGENT_SCAN_KEYS` for `agent-apply` leak scanning. Rotate the key and scanner entry together. |
 | `AGENT_APP_PRIVATE_KEY` | GitHub audit events, unexpected App-authored refs or pull requests, doctor findings, or unusual installation API activity | Immediately set `AGENTS_ENABLED=false` and suspend every App installation. Within 30 minutes, revoke and replace the App key, update each `agent-apply` environment, then resume each installation and run doctor for every installed repository before re-enabling agents. Whether deleting the key invalidates already-minted installation tokens is unverified. |
@@ -71,7 +71,8 @@ above, remove the accepted-exposure setting, and review the workflow path
 before another run. The accepted `template-fix-propose` exposure is recorded
 by doctor and in fix output, names `AGENT_FIX_KEY`, and trusts the pinned
 template code. The template refuses `.gitmodules` changes and Git checkout URL
-userinfo matching its `://...@` guard. Fix checkouts use `submodules: false`,
-so submodules are not fetched and there is no separate SSH-submodule refusal.
+userinfo matching its `://...@` guard. Fix checkouts leave
+`actions/checkout`'s `submodules` input at its default (`false`), so submodules
+are not fetched and there is no separate SSH-submodule refusal.
 Preflight analyzes GitHub Actions only; other CI systems that build
 `agent/fix-*` branches are not covered.

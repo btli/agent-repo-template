@@ -8,6 +8,7 @@ from urllib.parse import unquote
 
 from agent_repo.bootstrap import ruleset_body
 from agent_repo.charter import lint_charter, parse_charter
+from agent_repo.prompting import render_prompt
 from agent_repo.yamljson import load_yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +117,13 @@ def test_documented_bootstrap_options_and_config_keys_exist():
         capture_output=True,
         text=True,
     ).stdout
+    dry_run_report_help = subprocess.run(
+        [sys.executable, "scripts/dry-run-report.py", "--help"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
 
     documented_commands = re.findall(r"^\s*(\./bootstrap\.sh[^\n]*)$", documented_docs, re.M)
     documented_commands += re.findall(r"`(\./bootstrap\.sh[^`]+)`", documented_docs)
@@ -133,7 +141,8 @@ def test_documented_bootstrap_options_and_config_keys_exist():
     }
     supported_flags = set(re.findall(r"--[a-z][a-z0-9-]*", bootstrap_help))
     app_link_flags = set(re.findall(r"--[a-z][a-z0-9-]*", app_link_help))
-    assert documented_flags <= supported_flags | app_link_flags
+    dry_run_report_flags = set(re.findall(r"--[a-z][a-z0-9-]*", dry_run_report_help))
+    assert documented_flags <= supported_flags | app_link_flags | dry_run_report_flags
     for command in documented_commands:
         for option in re.findall(r"--[a-z][a-z0-9-]*", command):
             help_text = app_link_help if " app-link " in f" {command} " else bootstrap_help
@@ -333,9 +342,15 @@ def test_gateway_budget_and_llm_only_docs_match_merged_behavior():
     gateway = " ".join((ROOT / "docs/gateway.md").read_text(encoding="utf-8").lower().split())
     assert "per-key token and rate limits" in gateway
     assert "80%" in gateway
-    assert "does not send a workflow run id" in gateway
-    assert "per-run gateway limits" in gateway
-    assert "does not ingest gateway budget alerts" in gateway
+    assert "run id in model prompt text" in gateway
+    assert "no structured run-id metadata" in gateway
+    assert "per-run limits" in gateway
+    assert "does not automatically ingest gateway alerts into live tier-2 caps" in gateway
+    assert "scripts/dry-run-report.py --repo your-org/your-repo --tier2-budget-alerts n" in gateway
+    assert "highest weekly per-key count" in gateway
+    assert "twice in a week" in gateway
+    assert "triage.rca_authors: known" in gateway
+    assert "manual evaluation input is separate" in gateway
     assert "never automatically closes" in gateway
     assert "auto-close stays off" in gateway
     assert "security-uncertain" in gateway
@@ -422,8 +437,23 @@ def test_documented_main_contracts_match_merged_sources():
         for node in apply_tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_can_close"
     )
-    close_guard_source = ast.get_source_segment(apply_source, close_guard)
-    assert "is_llm_only(ctx.config)" in close_guard_source
+    llm_only_guard = any(
+        isinstance(node, ast.If)
+        and any(
+            isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Name)
+            and item.func.id == "is_llm_only"
+            for item in ast.walk(node.test)
+        )
+        and any(
+            isinstance(item, ast.Return)
+            and isinstance(item.value, ast.Constant)
+            and item.value.value is False
+            for item in ast.walk(ast.Module(body=node.body, type_ignores=[]))
+        )
+        for node in ast.walk(close_guard)
+    )
+    assert llm_only_guard
     assert "LLM-only mode never automatically closes an issue" in gateway
     assert "`close.enabled` cannot enable an automatic close" in gateway
 
@@ -463,7 +493,7 @@ def test_documented_main_contracts_match_merged_sources():
     assert "update each installed action SHA and version comment together" in operations
 
 
-def test_security_role_key_detection_does_not_claim_run_id():
+def test_security_role_key_detection_matches_prompt_and_gateway_metadata():
     security = (ROOT / "docs/security.md").read_text(encoding="utf-8")
     role_key_row = next(
         line
@@ -471,7 +501,268 @@ def test_security_role_key_detection_does_not_claim_run_id():
         if line.startswith("| `AGENT_TRIAGE_KEY`, `AGENT_REVIEW_KEY`")
     )
     assert "Gateway usage by role key" in role_key_row
-    assert "matching role's Actions runs because requests carry no run ID" in role_key_row
+    assert "run ID appears in model prompt text" in role_key_row
+    assert "not structured gateway metadata" in role_key_row
     assert "by role and run id" not in role_key_row.lower()
     gateway = " ".join((ROOT / "docs/gateway.md").read_text(encoding="utf-8").split())
-    assert "does not send a workflow run id to the gateway" in gateway
+    assert "run ID in model prompt text" in gateway
+    assert "no structured run-ID metadata" in gateway
+
+    for path in (
+        ROOT / "actions/triage-agent/run.py",
+        ROOT / "actions/review-agent/run.py",
+        ROOT / "actions/fix-agent/run.py",
+    ):
+        source = path.read_text(encoding="utf-8")
+        assert "Run: {{context:run_id}}" in source
+        assert "render_prompt(" in source and 'context={"run_id":' in source
+
+
+def test_dry_run_alerts_and_abort_criteria_match_scripts():
+    gateway = " ".join((ROOT / "docs/gateway.md").read_text(encoding="utf-8").split())
+    operations = " ".join((ROOT / "docs/operations.md").read_text(encoding="utf-8").split())
+    eval_tree = ast.parse((ROOT / "scripts/eval.py").read_text(encoding="utf-8"))
+    criteria = {}
+    for node in eval_tree.body:
+        if isinstance(node, ast.Assign):
+            names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+            if names and names[0].startswith("ABORT_"):
+                criteria[names[0]] = ast.literal_eval(node.value)
+
+    for name in ("ABORT_OUT_OF_POLICY", "ABORT_AGREEMENT", "ABORT_REOPEN"):
+        criterion = criteria[name].replace("`", "").lower()
+        assert criterion in operations.lower()
+    tier2_criterion, response = criteria["ABORT_TIER2_BUDGET"].split(". The response is to ", 1)
+    assert tier2_criterion.lower() in operations.lower()
+    assert response.strip(".`").lower() in operations.lower()
+    assert (
+        "run `scripts/dry-run-report.py --repo your-org/your-repo --tier2-budget-alerts N`"
+        in operations
+    )
+    assert "highest weekly per-key count" in gateway.lower()
+    assert "separate from the live repository-wide and per-author tier-2 caps" in gateway.lower()
+
+    report_source = (ROOT / "scripts/dry-run-report.py").read_text(encoding="utf-8")
+    report_tree = ast.parse(report_source)
+    parser_argument = next(
+        node
+        for node in ast.walk(report_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--tier2-budget-alerts"
+    )
+    assert parser_argument
+    assert "Most 80% budget alerts for one key in one week" in report_source
+    assert "tier2_budget_alerts_per_week" in (ROOT / "scripts/eval.py").read_text(encoding="utf-8")
+
+
+def test_hardening_guidance_and_security_claims_match_main():
+    operations = " ".join((ROOT / "docs/operations.md").read_text(encoding="utf-8").split())
+    setup = " ".join((ROOT / "docs/getting-started.md").read_text(encoding="utf-8").split())
+    security = " ".join((ROOT / "docs/security.md").read_text(encoding="utf-8").split())
+    github_app = " ".join((ROOT / "docs/github-app.md").read_text(encoding="utf-8").split())
+
+    bootstrap_source = (ROOT / "lib/agent_repo/bootstrap.py").read_text(encoding="utf-8")
+    assert "require_template_at(gh, sha, rendered)" in bootstrap_source
+    assert "path.read_bytes()" in bootstrap_source
+    assert (
+        "The local template does not match the resolved version; "
+        "check out the template at that version and rerun." in setup
+    )
+    assert "clean checkout" in setup.lower() and "lf line endings" in setup.lower()
+    assert "Rollback commands, newest first:" in bootstrap_source
+    assert "(possibly applied) " in bootstrap_source
+    assert "journal.pending()" in bootstrap_source
+    assert "prints every rollback newest first" in operations.lower()
+    assert "marks the interrupted step possibly applied" in operations.lower()
+    assert "exits 1" in operations.lower()
+    assert "pending journal entry" in operations.lower()
+    assert (
+        "the next run carries it forward and lists it as possibly applied if that run fails"
+        in operations.lower()
+    )
+
+    doctor_source = (ROOT / "lib/agent_repo/doctor.py").read_text(encoding="utf-8")
+    assert "action is missing at its pinned commit upstream." in doctor_source
+    assert "missing at its pinned upstream commit" in github_app.lower()
+    fix_source = (ROOT / "lib/agent_repo/apply/fix.py").read_text(encoding="utf-8")
+    assert '"Fix refused: published draft moved."' in fix_source
+    assert "`Fix refused: published draft moved.`" in operations
+    blocked_start = fix_source.index("BLOCKED_GLOBS = (")
+    blocked_end = fix_source.index("\n)", blocked_start)
+    assert '"MAINTAINERS"' in fix_source[blocked_start:blocked_end]
+    assert "`MAINTAINERS`" in operations
+
+    deps_source = ast.parse((ROOT / "lib/agent_repo/deps.py").read_text(encoding="utf-8"))
+    assignments = {
+        target.id: node.value
+        for node in deps_source.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    manifests = {name.casefold() for name in ast.literal_eval(assignments["MANIFESTS"].args[0])}
+    tools = set(ast.literal_eval(assignments["PYPROJECT_TOOLS"]))
+    fix_notes = operations.split("## Fix workflow notes", 1)[1].split("## Dependency updates", 1)[0]
+    documented_manifests = {
+        span.casefold() for span in _code_spans(fix_notes) if span.casefold() in manifests
+    }
+    assert documented_manifests == manifests
+    assert "`requirements*.txt` and `constraints*.txt` at any depth" in fix_notes
+    assert "`*.txt` directly under `requirements/`" in fix_notes
+    assert "[build-system]" in fix_notes
+    documented_tools = {
+        span.removeprefix("[tool.").removesuffix("]")
+        for span in _code_spans(fix_notes)
+        if span.startswith("[tool.") and span.endswith("]")
+    }
+    assert documented_tools == tools
+    manifest_source = ast.get_source_segment(
+        (ROOT / "lib/agent_repo/deps.py").read_text(encoding="utf-8"),
+        next(
+            node
+            for node in deps_source.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_requirements"
+        ),
+    )
+    assert '"requirements*.txt"' in manifest_source
+    assert '"constraints*.txt"' in manifest_source
+    assert 'parsed.parent.name == "requirements"' in manifest_source
+
+    for workflow_path in (ROOT / "consumer/.github/workflows/agent-fix.yml",):
+        workflow = load_yaml(workflow_path)
+        checkout_steps = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if isinstance(step, dict) and str(step.get("uses", "")).startswith("actions/checkout@")
+        ]
+        assert checkout_steps and all(
+            "submodules" not in step.get("with", {}) for step in checkout_steps
+        )
+    assert "leave `actions/checkout`'s `submodules` input at its default (`false`)" in operations
+    assert "leave `actions/checkout`'s `submodules` input at its default (`false`)" in security
+
+
+def test_folded_in_documentation_contracts_match_merged_sources():
+    docs = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
+    app_doc = (ROOT / "docs/github-app.md").read_text(encoding="utf-8")
+
+    workflows = {
+        name: load_yaml(ROOT / f"consumer/.github/workflows/{name}.yml")
+        for name in ("agent-triage", "agent-review", "agent-fix")
+    }
+    app_permissions = {}
+    for name, workflow in workflows.items():
+        role = {
+            "agent-triage": "Triage apply",
+            "agent-review": "Review apply",
+            "agent-fix": "Fix apply",
+        }[name]
+        token_permissions = {}
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                if not isinstance(step, dict) or "create-github-app-token" not in str(
+                    step.get("uses", "")
+                ):
+                    continue
+                token_permissions = {
+                    key.removeprefix("permission-"): value
+                    for key, value in step.get("with", {}).items()
+                    if key.startswith("permission-")
+                }
+        assert token_permissions
+        app_permissions[role] = token_permissions
+    documented_permissions = {}
+    for row in re.findall(r"^\| (Triage apply|Review apply|Fix apply) \| ([^\n]+)", app_doc, re.M):
+        documented_permissions[row[0]] = dict(
+            item.split(": ", 1) for item in _code_spans(row[1]) if ": " in item
+        )
+    assert documented_permissions == app_permissions
+
+    doctor_source = (ROOT / "lib/agent_repo/doctor.py").read_text(encoding="utf-8")
+    assert 'endswith("[bot]")' in doctor_source
+    assert "`<app-slug>[bot]` form" in app_doc
+
+    triage_context_doc = (
+        (ROOT / "docs/operations.md")
+        .read_text(encoding="utf-8")
+        .split("`triage-context.json` is unversioned;", 1)[1]
+        .split(". It rejects added fields", 1)[0]
+    )
+    documented_context_fields = set(_code_spans(triage_context_doc))
+    triage_reader = ast.parse((ROOT / "actions/triage-agent/run.py").read_text(encoding="utf-8"))
+    reader_fields = next(
+        ast.literal_eval(node.value)
+        for node in ast.walk(triage_reader)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "required" for target in node.targets)
+    )
+    triage_workflow = load_yaml(ROOT / "consumer/.github/workflows/agent-triage.yml")
+    writer = next(
+        step["run"]
+        for job in triage_workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if isinstance(step, dict) and "run" in step and '"docs_index": docs_index' in step["run"]
+    )
+    writer_fields = set(re.findall(r'^\s+"([a-z_]+)":', writer, re.M))
+    assert documented_context_fields == reader_fields == writer_fields
+
+    triage_propose = workflows["agent-triage"]["jobs"]["propose"]
+    assert triage_propose["permissions"]["actions"] == "read"
+    assert "agent-triage.yml` propose (decide) job needs `actions: read`" in docs
+
+    dependabot = load_yaml(ROOT / ".github/dependabot.yml")
+    action_update = next(
+        item for item in dependabot["updates"] if item["package-ecosystem"] == "github-actions"
+    )
+    assert "/actions/*" in action_update["directories"]
+
+    config_schema = json.loads((ROOT / "schemas/config.schema.json").read_text(encoding="utf-8"))
+    limit_keys = set(config_schema["properties"]["limits"]["properties"])
+    assert not any("fix" in key and "day" in key for key in limit_keys)
+    assert "Fix has no daily cap of its own." in (ROOT / "docs/gateway.md").read_text(
+        encoding="utf-8"
+    )
+
+    doctor_tree = ast.parse(doctor_source)
+    secrets_function = next(
+        node
+        for node in doctor_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_secrets"
+    )
+    secrets_source = ast.get_source_segment(doctor_source, secrets_function)
+    assert "repos/{repo}/actions/secrets" in secrets_source
+    assert "repos/{repo}/environments/" in secrets_source
+    assert "orgs/" not in secrets_source
+    assert "not organization secrets" in " ".join(docs.split())
+
+    setup_source = (ROOT / "actions/setup/configure.py").read_text(encoding="utf-8")
+    setup_tree = ast.parse(setup_source)
+    gateway_config = next(
+        node.value
+        for node in ast.walk(setup_tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "config" for target in node.targets)
+        and isinstance(node.value, ast.Dict)
+    )
+    config_keys = {
+        key.value
+        for node in ast.walk(gateway_config)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant)
+    }
+    assert "run_id" not in config_keys
+    assert (
+        render_prompt(
+            "Private canary: {{canary}}\nRun: {{context:run_id}}\n",
+            canary="synthetic-canary",
+            blocks={},
+            context={"run_id": "synthetic-run-123"},
+        )
+        == "Private canary: synthetic-canary\nRun: synthetic-run-123\n"
+    )

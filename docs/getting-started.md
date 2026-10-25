@@ -19,8 +19,11 @@ the App.
 
 ## Preview an install
 
-From the template checkout, substitute your owner, repository, App identity,
-gateway details, and a 40-hex commit that is on this template's upstream `main`.
+Use a clean checkout of the template at the resolved `--ref` tag or
+`--candidate` commit, with LF line endings. Bootstrap compares the local
+consumer templates with that upstream revision and refuses with
+`The local template does not match the resolved version; check out the template at that version and rerun.`
+Otherwise substitute your owner, repository, App identity, and gateway details.
 Before a release is available, use `--candidate` with `--version`; for a
 published release use `--ref vX.Y.Z` instead. Do not combine `--ref` and
 `--candidate`.

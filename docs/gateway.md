@@ -16,12 +16,20 @@ gateway configuration.
 ## Budgets and alerts
 
 Configure per-key token and rate limits on the gateway and alert at 80% of the
-key's budget. The template gives each role a static key, URL, and model; it does
-not send a workflow run id to the gateway. The integration therefore cannot
-enforce per-run gateway limits or correlate requests with an Actions run.
-These limits and alerts are gateway-side controls. Main does not ingest gateway
-budget alerts or expose a CLI option that feeds them into Tier-2; triage uses
-its own workflow artifact counters.
+key's budget. Triage, review, and fix include the run ID in model prompt text,
+but the gateway request has no structured run-ID metadata. Per-run limits and
+reliable run correlation are unavailable; correlate by prompt content only if
+the gateway retains it, or otherwise compare key usage by time with Actions
+runs. The template does not automatically ingest gateway alerts into live
+Tier-2 caps.
+
+For a dry-run evaluation, count the 80% alerts received by each key in each
+week, then pass the highest weekly per-key count to
+`scripts/dry-run-report.py --repo your-org/your-repo --tier2-budget-alerts N`.
+The report flags an abort criterion when one Tier-2 key reaches 80% of budget
+at least twice in a week; its prescribed response is to set
+`triage.rca_authors: known`. This manual evaluation input is separate from the
+live repository-wide and per-author Tier-2 caps.
 
 Triage additionally enforces repository-wide and per-author daily Tier-2 caps
 with workflow artifacts. Fix has no daily cap of its own. Do not treat a
