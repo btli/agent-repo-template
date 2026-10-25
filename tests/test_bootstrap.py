@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
@@ -29,6 +29,10 @@ WEB = "https://github.com"
 APP_LOOKUP_FAILED = (
     "GET /apps/{app_slug} failed with an error other than a private App's 404; "
     "bootstrap cannot cross-check the App."
+)
+TEMPLATE_MISMATCH = (
+    "The local template does not match the resolved version; "
+    "check out the template at that version and rerun."
 )
 
 
@@ -184,9 +188,16 @@ def test_install_lands_files_on_a_draft_pr_branch_and_journals_every_write(tmp_p
     # One journal entry per mutation; creating the branch writes a tree, a commit and the ref.
     assert len(done) == len(writes) - 2
     assert all(entry["description"] for entry in done)
-    assert f"gh api -X DELETE {TARGET}/git/refs/heads/{BRANCH}" in [
-        entry["rollback"] for entry in done
-    ]
+    rollbacks = [entry["rollback"] for entry in done]
+    assert f"gh api -X DELETE {TARGET}/git/refs/heads/{BRANCH}" in rollbacks
+    # Created resources journal the exact id-based command once the response carries the id.
+    for exact in (
+        f"gh api -X DELETE {TARGET}/rulesets/101",
+        f"gh api -X DELETE {TARGET}/environments/agent-apply/deployment-branch-policies/101",
+        f"gh pr close 7 --repo {REPO}",
+    ):
+        assert exact in rollbacks
+    assert not [rollback for rollback in rollbacks if "--paginate" in rollback]
 
 
 def test_no_change_rerun_writes_nothing(tmp_path):
@@ -248,6 +259,15 @@ def test_partial_failure_prints_rollback_and_a_rerun_resumes(tmp_path):
     assert rollback.index("AGENT_FIX_MODEL") < rollback.index("type%3Abug")
     assert not [call for call in fake.writes() if call["endpoint"] == f"{TARGET}/pulls"]
 
+    # A second failed run lists its own rollbacks, then each earlier one once; only the two
+    # interrupted ruleset writes stay possibly applied.
+    again = fake.run(*INSTALL).stdout.split("Rollback commands, newest first:", 1)[1]
+    first_lines = rollback.splitlines()[1:-1]
+    again_lines = again.splitlines()[1:-1]
+    assert again_lines == first_lines + first_lines
+    marked = [line for line in again_lines if "(possibly applied)" in line]
+    assert len(marked) == 2 and all(f"{TARGET}/rulesets" in line for line in marked)
+
     resumed = state.healthy_target()
     resumed[f"GET {TARGET}/rulesets"] = {"json": []}
     state.set_files(resumed, {"README.md": b"# Example\n", "uv.lock": b"version = 1\n"})
@@ -266,6 +286,128 @@ def test_partial_failure_prints_rollback_and_a_rerun_resumes(tmp_path):
         f"{TARGET}/pulls",
     }
     assert fake.journal()[-1]["event"] == "complete"
+
+
+@pytest.mark.parametrize("endpoint", ["labels", "rulesets"])
+def test_an_unexpected_failure_after_a_write_prints_rollback_commands(tmp_path, endpoint):
+    responses = state.empty_target()
+    # gh answers a write that landed with output it cannot decode, outside the gh error path.
+    responses[f"POST {TARGET}/{endpoint}"] = {"raw": "ff"}
+    fake = state.FakeGitHub(tmp_path, responses)
+
+    result = fake.run(*INSTALL)
+
+    assert result.returncode == 1
+    lines = result.stdout.splitlines()
+    assert "Bootstrap stopped: an unexpected error interrupted the run." in lines
+    rollback = result.stdout.split("Rollback commands, newest first:", 1)[1].splitlines()
+    first_label = f"gh api -X DELETE {TARGET}/labels/{quote(state.labels()[0], safe='')}"
+    if endpoint == "labels":
+        assert rollback[1] == f"  (possibly applied) {first_label}"
+    else:
+        # The created ruleset's id is unknown, so its rollback finds the ruleset by name.
+        select = '.[] | select(.name == "agent-repo-template branches") | .id'
+        assert rollback[1] == (
+            f"  (possibly applied) gh api --paginate {TARGET}/rulesets --jq '{select}' "
+            f"| xargs -I{{}} gh api -X DELETE {TARGET}/rulesets/{{}}"
+        )
+        assert f"  {first_label}" in rollback
+        assert f"  gh api -X DELETE {TARGET}/actions/variables/AGENT_FIX_MODEL" in rollback
+    assert "Traceback" not in result.stderr
+    assert fake.journal()[-1]["event"] == "failed"
+    assert not [call for call in fake.writes() if call["endpoint"] == f"{TARGET}/pulls"]
+
+
+@pytest.mark.parametrize("event", ["done", "failed"])
+def test_a_failure_while_journaling_a_write_prints_rollback_commands(
+    tmp_path, monkeypatch, capsys, event
+):
+    from agent_repo import bootstrap
+    from agent_repo.commands.bootstrap import main
+
+    responses = state.empty_target()
+    if event == "failed":
+        responses[f"POST {TARGET}/labels"] = {"raw": "ff"}
+    fake = state.FakeGitHub(tmp_path, responses)
+    fake.state_path.write_text(json.dumps(fake.responses))
+    for key, value in {
+        "PATH": str(fake.bin),
+        "HOME": str(fake.home),
+        "FAKE_GH_STATE": str(fake.state_path),
+        "FAKE_GH_LOG": str(fake.log_path),
+    }.items():
+        monkeypatch.setenv(key, value)
+    record = bootstrap.Journal.record
+
+    def failing_record(self, recorded, **fields):
+        if recorded == event:
+            raise OSError("synthetic journal failure")
+        record(self, recorded, **fields)
+
+    monkeypatch.setattr(bootstrap.Journal, "record", failing_record)
+
+    assert main(list(INSTALL)) == 1
+    output = capsys.readouterr()
+    lines = output.out.splitlines()
+    assert "Bootstrap stopped: an unexpected error interrupted the run." in lines
+    first_label = f"gh api -X DELETE {TARGET}/labels/{quote(state.labels()[0], safe='')}"
+    rollback = output.out.split("Rollback commands, newest first:", 1)[1].splitlines()
+    assert rollback[1] == f"  (possibly applied) {first_label}"
+    assert "synthetic" not in output.out + output.err and "Traceback" not in output.err
+    assert len(fake.writes()) == 1
+
+
+@pytest.mark.parametrize("created", ["policy", "ruleset", "pull"])
+def test_a_created_resource_without_an_id_keeps_its_lookup_rollback(tmp_path, created):
+    responses = state.empty_target()
+    endpoint, lookup = {
+        "policy": (
+            f"{TARGET}/environments/agent-propose-triage/deployment-branch-policies",
+            '.branch_policies[] | select(.name == "main") | .id',
+        ),
+        "ruleset": (
+            f"{TARGET}/rulesets",
+            '.[] | select(.name == "agent-repo-template branches") | .id',
+        ),
+        "pull": (f"{TARGET}/pulls", None),
+    }[created]
+    # The write succeeds, but its response carries no id for an exact rollback.
+    responses[f"POST {endpoint}"] = {"json": {}}
+    fake = state.FakeGitHub(tmp_path, responses)
+
+    result = fake.run(*INSTALL)
+
+    assert result.returncode == 1
+    rollback = result.stdout.split("Rollback commands, newest first:", 1)[1].splitlines()
+    expected = (
+        f"gh pr close {BRANCH} --repo {REPO}"
+        if lookup is None
+        else f"gh api --paginate {endpoint} --jq '{lookup}' "
+        f"| xargs -I{{}} gh api -X DELETE {endpoint}/{{}}"
+    )
+    assert rollback[1] == f"  (possibly applied) {expected}"
+    recorded = result.stdout + json.dumps(fake.journal())
+    assert "/None" not in recorded and "close None" not in recorded
+
+
+def test_a_run_that_dies_mid_write_leaves_its_rollback_for_the_next_run(tmp_path):
+    responses = state.empty_target()
+    responses[f"POST {TARGET}/labels"] = {"kill": True}
+    fake = state.FakeGitHub(tmp_path, responses)
+    first_label = f"gh api -X DELETE {TARGET}/labels/{quote(state.labels()[0], safe='')}"
+
+    died = fake.run(*INSTALL)
+
+    assert died.returncode != 0
+    assert [entry["event"] for entry in fake.journal()] == ["start", "pending"]
+    responses[f"POST {TARGET}/labels"] = {"json": {}}
+    responses[f"POST {TARGET}/rulesets"] = {"status": 422}
+
+    failed = fake.run(*INSTALL)
+
+    rollback = failed.stdout.split("Rollback commands, newest first:", 1)[1].splitlines()
+    # The oldest entry is the write the dead run started, which may have landed.
+    assert rollback[-2] == f"  (possibly applied) {first_label}"
 
 
 def test_ref_resolves_through_upstream_and_ignores_a_tampered_local_tag(tmp_path):
@@ -456,6 +598,14 @@ def test_no_secret_value_is_printed_or_journaled(tmp_path):
             ".agents/config.yml is not a valid agent configuration; fix it or pass --force.",
         ),
         ("empty-labels", ".agents/labels.yml must hold a labels list."),
+        ("non-utf8-contributing", "CONTRIBUTING.md is not UTF-8 text; convert it and rerun."),
+        (
+            "non-utf8-workflow",
+            ".github/workflows/agent-verify.yml is not UTF-8 text; convert it and rerun.",
+        ),
+        ("predates-verify", TEMPLATE_MISMATCH),
+        ("missing-action", TEMPLATE_MISMATCH),
+        ("changed-template", TEMPLATE_MISMATCH),
         (
             "live-config",
             "A first install must start every role in dry-run, but .agents/config.yml sets a "
@@ -487,6 +637,24 @@ def test_bootstrap_stops_before_any_write(tmp_path, change, message):
             b"  fix: dry-run", b"  fix: live"
         )
         state.set_files(responses, {"README.md": b"# Example\n", ".agents/config.yml": live})
+    elif change == "non-utf8-contributing":
+        state.set_files(responses, {"README.md": b"# Example\n", "CONTRIBUTING.md": b"Caf\xe9\n"})
+    elif change == "non-utf8-workflow":
+        workflow = {".github/workflows/agent-verify.yml": b"\xff\xfe\x80"}
+        state.set_files(responses, {"README.md": b"# Example\n", **workflow})
+    elif change in {"predates-verify", "missing-action", "changed-template"}:
+        # The resolved pin's upstream tree must hold these templates and every action they pin.
+        tree = responses[f"GET {UPSTREAM}/git/trees/{PIN}"]["json"]["tree"]
+        dropped = {
+            "predates-verify": ("actions/verify/", "consumer/.github/workflows/agent-verify.yml"),
+            "missing-action": ("actions/verify/",),
+            "changed-template": (),
+        }[change]
+        tree[:] = [entry for entry in tree if not entry["path"].startswith(dropped)]
+        if change == "changed-template":
+            next(entry for entry in tree if entry["path"] == "consumer/.agents/config.yml")[
+                "sha"
+            ] = "0" * 40
     else:
         # A zero-byte retained file is validated as itself, never replaced by the default.
         path = ".agents/config.yml" if change == "empty-config" else ".agents/labels.yml"

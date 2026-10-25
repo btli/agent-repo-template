@@ -16,6 +16,7 @@ PIN = "4f1c9e2d8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d"
 TAG_OBJECT = "9e8d7c6b5a49382716051f2e3d4c5b6a79881726"
 BASE = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 BASE_TREE = "b2c3d4e5f60718293a4b5c6d7e8f9012345678a1"
+TEMPLATE_TREE = "c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7"
 VERSION = "v0.1.0"
 T10B = "43c2d3b58ce3ebccd38d9ee2a05464966b6a94da"
 ENVIRONMENTS = ("agent-propose-triage", "agent-propose-review", "agent-propose-fix", "agent-apply")
@@ -134,7 +135,25 @@ def labels() -> list[str]:
     return [line.strip()[2:] for line in text.splitlines() if line.startswith("  - ")]
 
 
+def template_tree() -> list[dict]:
+    """The upstream tree at the pin: this checkout's consumer templates and every action."""
+    paths = [path for path in sorted((ROOT / "consumer").rglob("*")) if path.is_file()]
+    paths += sorted(ROOT.glob("actions/*/action.yml"))
+    return [
+        {
+            "path": path.relative_to(ROOT).as_posix(),
+            "type": "blob",
+            "mode": "100644",
+            "sha": blob_sha(path.read_bytes()),
+        }
+        for path in paths
+    ]
+
+
 def _upstream(state: dict) -> None:
+    state[f"GET {UPSTREAM}/git/trees/{PIN}"] = {
+        "json": {"sha": TEMPLATE_TREE, "tree": template_tree(), "truncated": False}
+    }
     state[f"GET {UPSTREAM}/git/ref/tags/{VERSION}"] = {
         "json": {"ref": f"refs/tags/{VERSION}", "object": {"type": "tag", "sha": TAG_OBJECT}}
     }

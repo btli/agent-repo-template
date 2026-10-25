@@ -107,7 +107,24 @@ def _installation_calls(fake) -> list[str]:
 
 
 def test_a_bootstrapped_repository_passes_check_with_read_calls_only(tmp_path):
-    fake, result = _check(tmp_path, state.healthy_target())
+    responses = state.healthy_target()
+    # A human-authored agent branch head is not the App's, so doctor does not list it.
+    head = "d" * 40
+    responses[f"GET {TARGET}/git/matching-refs/heads/agent/"] = {
+        "json": [{"ref": "refs/heads/agent/fix-3", "object": {"sha": head}}]
+    }
+    responses[f"GET {TARGET}/commits/{head}"] = {
+        "json": {
+            "sha": head,
+            "author": {"login": "maintainer"},
+            "committer": {"login": "web-flow"},
+            "commit": {"message": "Fix parser\n\nAgent-Run: 555\n"},
+        }
+    }
+    responses[f"GET {TARGET}/actions/runs/555"] = {
+        "json": {"id": 555, "path": ".github/workflows/agent-triage.yml"}
+    }
+    fake, result = _check(tmp_path, responses)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK: Mode: System One" in result.stdout
@@ -250,6 +267,9 @@ def _drift(responses: dict, change: str) -> None:
         variables["AGENT_GATEWAY_URL"] = "https://gateway.example.com:8443"
     elif change == "gateway-invalid":
         variables["AGENT_GATEWAY_URL"] = "https://gateway.example.com:0"
+    elif change == "predates-verify":
+        tree = responses[f"GET {UPSTREAM}/git/trees/{PIN}"]["json"]["tree"]
+        tree[:] = [entry for entry in tree if not entry["path"].startswith("actions/verify/")]
     elif change == "charter":
         charter = state.consumer_files()[".agents/charter.md"].replace(b"## Mission", b"## Goal")
         _with_files(responses, _files(**{".agents/charter.md": charter}))
@@ -324,6 +344,11 @@ def _drift(responses: dict, change: str) -> None:
             "agent-branch",
             "ERROR: refs/heads/agent/fix-3 head is App-authored but its Agent-Run is not an "
             "agent-fix run.",
+        ),
+        (
+            "predates-verify",
+            "ERROR: .github/workflows/agent-verify.yml: verify action is missing at its pinned "
+            "commit upstream.",
         ),
         ("runner", "ERROR: Self-hosted runner build-1 uses the GitHub-hosted label ubuntu-24.04."),
         ("charter", "ERROR: Charter: missing required heading: Mission"),

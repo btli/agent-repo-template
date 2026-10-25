@@ -66,14 +66,40 @@ def amend(case, message=None):
     case["event"].write_text(json.dumps(case["payload"]))
 
 
-def test_verify_proves_red_base_and_green_head_with_only_test_overlay(verify_case, capsys):
-    from agent_repo.commands.verify import main
+def test_verify_proves_red_base_and_green_head_with_only_test_overlay(
+    verify_case, capsys, monkeypatch
+):
+    from agent_repo.commands import verify
 
     case = verify_case
-    assert main([str(case["repo"]), str(case["policy"])]) == 0
+    commands = []
+    original_run = verify.subprocess.run
+
+    def pytest_process(command, **kwargs):
+        if any(value.startswith("--junitxml=") for value in command):
+            commands.append(command)
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(verify.subprocess, "run", pytest_process)
+    assert verify.main([str(case["repo"]), str(case["policy"])]) == 0
     output = capsys.readouterr().out
     assert "red" in output.casefold() and "green" in output.casefold()
     assert git(case["repo"], "rev-parse", "HEAD").strip() == case["head"]
+    # Node ids follow an explicit separator, so pytest never reads one as an option.
+    assert len(commands) == 2
+    assert all(command[-2:] == ["--", "test_lib.py::test_add"] for command in commands)
+
+
+@pytest.mark.parametrize("node", ["sub/../test_lib.py::test_add", "sub/./test_lib.py::test_add"])
+def test_verify_rejects_dot_segment_ids_before_running_tests(verify_case, monkeypatch, node):
+    from agent_repo.commands import verify
+
+    case = verify_case
+    runs = []
+    monkeypatch.setattr(verify, "_run", lambda *args, **kwargs: runs.append(args) or True)
+    amend(case, case["message"].replace("test_lib.py::test_add", node))
+    assert verify.main([str(case["repo"]), str(case["policy"])]) == 1
+    assert runs == []
 
 
 @pytest.mark.parametrize(

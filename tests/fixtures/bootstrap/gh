@@ -3,6 +3,7 @@
 
 import json
 import os
+import signal
 import sys
 
 arguments = sys.argv[1:]
@@ -29,10 +30,16 @@ if response is None and method != "GET":
 if response is None:
     print(f"no fixture for {key}", file=sys.stderr)
     sys.exit(1)
+if response.get("kill"):
+    # The write lands, but the bootstrap process dies before it reads the response.
+    os.kill(os.getppid(), signal.SIGKILL)
+    sys.exit(1)
 if "status" in response:
     print(f"gh: request failed (HTTP {response['status']})", file=sys.stderr)
     sys.exit(1)
-if "--jq" in arguments:
+if "raw" in response:
+    sys.stdout.buffer.write(bytes.fromhex(response["raw"]))
+elif "--jq" in arguments:
     key_name = arguments[arguments.index("--jq") + 1].removeprefix(".").removesuffix("[]")
     items = response["json"][key_name] if key_name else response["json"]
     print("\n".join(json.dumps(item) for item in items))

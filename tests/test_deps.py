@@ -40,6 +40,22 @@ import pytest
             "git+https://example.invalid/new.git\n",
             {"requirements.txt: unparsed change"},
         ),
+        ("build.sbt", "", 'libraryDependencies += "a" % "b" % "1"', {"build.sbt: unparsed change"}),
+        ("deep/constraints-ci.txt", "a==1\n", "a==1\nb==2\n", {"b"}),
+        ("requirements/base.txt", "a\n", "a\nb\n", {"b"}),
+        ("docs/notes.txt", "a\n", "a\nb\n", set()),
+        (
+            "pyproject.toml",
+            '[project]\ndependencies=["a"]\n[tool.uv.sources]\na={path="x"}',
+            '[project]\ndependencies=["a"]\n[tool.uv.sources]\na={git="https://example.invalid"}',
+            {"pyproject.toml: unparsed change"},
+        ),
+        (
+            "pyproject.toml",
+            '[project]\ndependencies=["a"]\n[tool.ruff]\nline-length=99',
+            '[project]\ndependencies=["a"]\n[tool.ruff]\nline-length=100',
+            set(),
+        ),
         ("lib.py", "x", "y", set()),
     ],
 )

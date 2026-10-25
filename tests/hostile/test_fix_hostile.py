@@ -24,6 +24,8 @@ from test_fix_artifact import answer, build_artifact, git
         "nested/bun.lockb",
         "nested/CODEowners",
         ".github/CODEOWNERS",
+        "MAINTAINERS",
+        "nested/Maintainers",
     ],
 )
 def test_protected_paths_are_refused_through_fix_apply(fix_case, path):
