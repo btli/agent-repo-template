@@ -39,7 +39,7 @@ runs:
   using: composite
   steps:
     - name: Read policy from the default branch
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ inputs.default-branch }}
         path: agent-decide-default
@@ -61,14 +61,14 @@ runs:
       run: python3 "$GITHUB_ACTION_PATH/../../lib/agent_repo_cli.py" decide "$GITHUB_WORKSPACE/agent-decide-default" "$DECISION_FILE" "$DECISION_CONTEXT"
     - name: Upload global Tier 2 counter
       if: steps.decide.outputs.tier2 == 'true'
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ steps.decide.outputs.tier2-global-name }}
         path: ${{ steps.decide.outputs.tier2-counter-file }}
         retention-days: 2
     - name: Upload per-author Tier 2 counter
       if: steps.decide.outputs.tier2 == 'true'
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ steps.decide.outputs.tier2-author-name }}
         path: ${{ steps.decide.outputs.tier2-counter-file }}
