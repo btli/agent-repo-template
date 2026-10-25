@@ -4,10 +4,13 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import unquote
 
+from agent_repo.apply.triage import _can_close
 from agent_repo.bootstrap import ruleset_body
 from agent_repo.charter import lint_charter, parse_charter
+from agent_repo.config import RepoConfig
 from agent_repo.prompting import render_prompt
 from agent_repo.yamljson import load_yaml
 
@@ -346,7 +349,11 @@ def test_gateway_budget_and_llm_only_docs_match_merged_behavior():
     assert "no structured run-id metadata" in gateway
     assert "per-run limits" in gateway
     assert "does not automatically ingest gateway alerts into live tier-2 caps" in gateway
-    assert "scripts/dry-run-report.py --repo your-org/your-repo --tier2-budget-alerts n" in gateway
+    report_command = (
+        "python3 scripts/dry-run-report.py --repo your-org/your-repo "
+        "--bot-login '<app-slug>[bot]' --tier2-budget-alerts N"
+    )
+    assert report_command.lower() in gateway
     assert "highest weekly per-key count" in gateway
     assert "twice in a week" in gateway
     assert "triage.rca_authors: known" in gateway
@@ -430,30 +437,31 @@ def test_documented_main_contracts_match_merged_sources():
     assert "`triage-context.json` is unversioned" in operations
 
     gateway = " ".join((ROOT / "docs/gateway.md").read_text(encoding="utf-8").split())
-    apply_source = (ROOT / "lib/agent_repo/apply/triage.py").read_text(encoding="utf-8")
-    apply_tree = ast.parse(apply_source)
-    close_guard = next(
-        node
-        for node in apply_tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_can_close"
+    llm_only_config = RepoConfig(
+        {
+            "system_one": None,
+            "close": {"enabled": True},
+            "thresholds": {"close_min": 0.0, "close_lexical_min": 0.0},
+        },
+        (),
+        (),
     )
-    llm_only_guard = any(
-        isinstance(node, ast.If)
-        and any(
-            isinstance(item, ast.Call)
-            and isinstance(item.func, ast.Name)
-            and item.func.id == "is_llm_only"
-            for item in ast.walk(node.test)
-        )
-        and any(
-            isinstance(item, ast.Return)
-            and isinstance(item.value, ast.Constant)
-            and item.value.value is False
-            for item in ast.walk(ast.Module(body=node.body, type_ignores=[]))
-        )
-        for node in ast.walk(close_guard)
+    close_context = SimpleNamespace(
+        config=llm_only_config,
+        charter=SimpleNamespace(docs_index=[SimpleNamespace(url="https://docs.example/known")]),
+        event=SimpleNamespace(number=7),
+        github=object(),
     )
-    assert llm_only_guard
+    assert not _can_close(
+        {
+            "p": 1.0,
+            "tier2_agrees": True,
+            "kind": "out_of_scope",
+            "docs_ref": "https://docs.example/known",
+        },
+        close_context,
+        None,
+    )
     assert "LLM-only mode never automatically closes an issue" in gateway
     assert "`close.enabled` cannot enable an automatic close" in gateway
 
@@ -487,6 +495,9 @@ def test_documented_main_contracts_match_merged_sources():
     fix_notes = operations.split("## Fix workflow notes", 1)[1].split("## Dependency updates", 1)[0]
     assert "fix-agent propose step refuses persisted credential settings" in fix_notes
     assert "fix applier protects `.gitmodules`" in fix_notes
+    assert "Fix apply raises `Fix refused: published draft moved.`" in fix_notes
+    assert "agent branch or draft pull request changed after validation" in fix_notes
+    assert "inspect the branch and pull request before rerunning `/fix`" in fix_notes.lower()
     assert fix_notes.count("persist-credentials: false") == 1
     assert fix_notes.count("commands.setup") == 1
     assert "rerun bootstrap with `--ref" not in operations
@@ -535,10 +546,17 @@ def test_dry_run_alerts_and_abort_criteria_match_scripts():
     tier2_criterion, response = criteria["ABORT_TIER2_BUDGET"].split(". The response is to ", 1)
     assert tier2_criterion.lower() in operations.lower()
     assert response.strip(".`").lower() in operations.lower()
-    assert (
-        "run `scripts/dry-run-report.py --repo your-org/your-repo --tier2-budget-alerts N`"
-        in operations
+    report_command = (
+        "python3 scripts/dry-run-report.py --repo your-org/your-repo "
+        "--bot-login '<app-slug>[bot]' --tier2-budget-alerts N"
     )
+    assert f"run `{report_command}`" in operations
+    assert report_command in gateway
+    assert (
+        "any criterion reported as `not evaluated` blocks the live switch just like an abort"
+        in operations.lower()
+    )
+    assert "no abort or `not evaluated` criteria" in operations.lower()
     assert "highest weekly per-key count" in gateway.lower()
     assert "separate from the live repository-wide and per-author tier-2 caps" in gateway.lower()
 
@@ -555,7 +573,23 @@ def test_dry_run_alerts_and_abort_criteria_match_scripts():
         and node.args[0].value == "--tier2-budget-alerts"
     )
     assert parser_argument
+    bot_login_argument = next(
+        node
+        for node in ast.walk(report_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--bot-login"
+    )
+    assert bot_login_argument
     assert "Most 80% budget alerts for one key in one week" in report_source
+    assert "Not evaluated; pass --bot-login." in report_source
+    assert (
+        'results.append("- No evaluated criterion triggered." if skipped else "- None triggered.")'
+        in report_source
+    )
     assert "tier2_budget_alerts_per_week" in (ROOT / "scripts/eval.py").read_text(encoding="utf-8")
 
 
@@ -590,7 +624,6 @@ def test_hardening_guidance_and_security_claims_match_main():
     assert "missing at its pinned upstream commit" in github_app.lower()
     fix_source = (ROOT / "lib/agent_repo/apply/fix.py").read_text(encoding="utf-8")
     assert '"Fix refused: published draft moved."' in fix_source
-    assert "`Fix refused: published draft moved.`" in operations
     blocked_start = fix_source.index("BLOCKED_GLOBS = (")
     blocked_end = fix_source.index("\n)", blocked_start)
     assert '"MAINTAINERS"' in fix_source[blocked_start:blocked_end]
@@ -607,9 +640,10 @@ def test_hardening_guidance_and_security_claims_match_main():
     manifests = {name.casefold() for name in ast.literal_eval(assignments["MANIFESTS"].args[0])}
     tools = set(ast.literal_eval(assignments["PYPROJECT_TOOLS"]))
     fix_notes = operations.split("## Fix workflow notes", 1)[1].split("## Dependency updates", 1)[0]
-    documented_manifests = {
-        span.casefold() for span in _code_spans(fix_notes) if span.casefold() in manifests
-    }
+    manifest_list = fix_notes.split("Dependency-change checks cover ", 1)[1].split(
+        "; they also cover", 1
+    )[0]
+    documented_manifests = {span.casefold() for span in _code_spans(manifest_list)}
     assert documented_manifests == manifests
     assert "`requirements*.txt` and `constraints*.txt` at any depth" in fix_notes
     assert "`*.txt` directly under `requirements/`" in fix_notes
@@ -631,6 +665,7 @@ def test_hardening_guidance_and_security_claims_match_main():
     assert '"requirements*.txt"' in manifest_source
     assert '"constraints*.txt"' in manifest_source
     assert 'parsed.parent.name == "requirements"' in manifest_source
+    assert "`.gitmodules` and `MAINTAINERS` changes" in security
 
     for workflow_path in (ROOT / "consumer/.github/workflows/agent-fix.yml",):
         workflow = load_yaml(workflow_path)

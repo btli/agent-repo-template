@@ -70,7 +70,7 @@ names, treat each named credential as compromised: rotate it using the table
 above, remove the accepted-exposure setting, and review the workflow path
 before another run. The accepted `template-fix-propose` exposure is recorded
 by doctor and in fix output, names `AGENT_FIX_KEY`, and trusts the pinned
-template code. The template refuses `.gitmodules` changes and Git checkout URL
+template code. The template refuses `.gitmodules` and `MAINTAINERS` changes and Git checkout URL
 userinfo matching its `://...@` guard. Fix checkouts leave
 `actions/checkout`'s `submodules` input at its default (`false`), so submodules
 are not fetched and there is no separate SSH-submodule refusal.

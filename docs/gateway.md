@@ -25,7 +25,9 @@ Tier-2 caps.
 
 For a dry-run evaluation, count the 80% alerts received by each key in each
 week, then pass the highest weekly per-key count to
-`scripts/dry-run-report.py --repo your-org/your-repo --tier2-budget-alerts N`.
+`python3 scripts/dry-run-report.py --repo your-org/your-repo --bot-login '<app-slug>[bot]' --tier2-budget-alerts N`.
+Use the value of `AGENT_BOT_LOGIN` for `--bot-login`; its format is
+`<app-slug>[bot]`.
 The report flags an abort criterion when one Tier-2 key reaches 80% of budget
 at least twice in a week; its prescribed response is to set
 `triage.rca_authors: known`. This manual evaluation input is separate from the

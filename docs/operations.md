@@ -7,8 +7,8 @@
 | Preview | Run bootstrap with `--plan`; review every intended change and check that a first-install plan has no `A first install must start every role in dry-run` error. | Stop if the plan has errors, an unknown App identity, an unsafe ruleset state, or an unexpected file change. |
 | Install | Run bootstrap without `--plan`; review its branch and draft pull request. Set secrets yourself in the listed scopes. | On failure, bootstrap prints every rollback newest first, marks the interrupted step possibly applied, and exits 1. A run killed mid-write leaves a pending journal entry; the next run carries it forward and lists it as possibly applied if that run fails. Rerun the same command to resume. |
 | Validate | Run `./bootstrap.sh --check --repo your-org/your-repo`; resolve doctor errors and investigate CI exposure. | Do not switch any role to live while doctor reports errors or an unresolved exposure. |
-| Dry-run | Exercise issue triage, review, and fix; run `scripts/dry-run-report.py --repo your-org/your-repo --tier2-budget-alerts N` before switching triage live. | Abort for `any out-of-policy action`; `dry-run agreement on type or area under 80% after 50 issues`; `a reopen rate above 5% for agent:closed`; or `a Tier-2 key reaching 80% of its budget twice in one week`. For the Tier-2 alert criterion, set `triage.rca_authors: known`. |
-| Live | After maintainers approve the setup PR and review dry-run outputs with no abort criteria, change only the intended role to live. Human review and merge remain required. | Set `AGENTS_ENABLED=false` immediately for an incident; rotate reached credentials and review App-authored refs before re-enabling. |
+| Dry-run | Exercise issue triage, review, and fix; run `python3 scripts/dry-run-report.py --repo your-org/your-repo --bot-login '<app-slug>[bot]' --tier2-budget-alerts N` before switching triage live. Use the `AGENT_BOT_LOGIN` value, formatted as `<app-slug>[bot]`. | Abort for `any out-of-policy action`; `dry-run agreement on type or area under 80% after 50 issues`; `a reopen rate above 5% for agent:closed`; or `a Tier-2 key reaching 80% of its budget twice in one week`. For the Tier-2 alert criterion, set `triage.rca_authors: known`. Any criterion reported as `NOT EVALUATED` blocks the live switch just like an abort. |
+| Live | After maintainers approve the setup PR and review dry-run outputs with no abort or `NOT EVALUATED` criteria, change only the intended role to live. Human review and merge remain required. | Set `AGENTS_ENABLED=false` immediately for an incident; rotate reached credentials and review App-authored refs before re-enabling. |
 | Template update | Review the upstream template diff and update consumer action pins in a normal pull request. | Revert the consumer PR or pin the last reviewed release; do not push changes directly to the default branch. |
 
 ## Gate reasons and fixed messages
@@ -47,7 +47,6 @@ Fixed command-wrapper messages:
 | `Gate outputs could not be written.` | GitHub Actions output file is unavailable. | Check runner state and file-command permissions. |
 | `Gate summary could not be written.` | The fix gate could not append its job summary. | Inspect the runner's step-summary file and permissions. |
 | `Fix was not run: {reason}.` | The fix gate refused the request for the listed reason. | Follow the matching reason row; do not infer a successful fix from a skipped job. |
-| `Fix refused: published draft moved.` | The published fix branch changed while apply was validating it. | Stop the apply, inspect the branch and pull request, and ask a maintainer to review before retrying. |
 
 ## Schema evolution
 
@@ -80,6 +79,9 @@ together.
   persisted credential settings and URL userinfo matching `://...@`; the fix
   applier protects `.gitmodules` and `MAINTAINERS`. Submodules are not fetched,
   so there is no separate SSH-submodule refusal.
+- Fix apply raises `Fix refused: published draft moved.` if the agent branch or
+  draft pull request changed after validation. Inspect the branch and pull
+  request before rerunning `/fix`.
 - Preflight analyzes GitHub Actions workflows only. Other CI systems that
   build `agent/fix-*` branches are outside its coverage.
 - Rerun doctor after changing environment deployment policies, the default
