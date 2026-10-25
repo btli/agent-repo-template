@@ -55,7 +55,12 @@ bot account and supplied Client ID, not installation access.
 To install after reviewing the preview, run the same bootstrap command without
 `--plan`. It creates or updates configuration and settings, then opens a draft
 pull request for rendered files. Enter the printed secret-setting commands in
-the intended repository or environment scope, then run the doctor:
+the intended repository or environment scope. For the `agent-apply` environment,
+set `AGENT_SCAN_KEYS` to a newline-separated list of the literal values of
+`AGENT_TRIAGE_KEY`, `AGENT_REVIEW_KEY`, and `AGENT_FIX_KEY`, plus
+`AGENT_SYSTEM_ONE_KEY` when System One is enabled. Scanner checks are derived
+only from the listed values (and their supported encodings); a placeholder or
+stale entry does not cover a leaked live key. Then run the doctor:
 
 ```sh
 ./bootstrap.sh --check --repo your-org/your-repo

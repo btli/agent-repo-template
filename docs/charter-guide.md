@@ -29,9 +29,9 @@ reject duplicate headings; remove duplicates yourself.
 
 ## Match the configuration
 
-- `config.yml` has the `mode`, `models`, `thresholds`, `limits`, and `commands`
-  keys, plus the optional `system_one` key. It selects dry-run or live mode,
-  model ids, thresholds, and limits.
+- `config.yml` requires the top-level `version`, `mode`, `models`, `thresholds`,
+  `close`, `triage`, `limits`, `commands`, and `fix` keys; `system_one` is
+  optional. It selects dry-run or live mode, model ids, thresholds, and limits.
 - `labels.yml` declares the taxonomy that triage may apply. The example uses
   `type:bug`, `type:feature`, `area:core`, `P0` through `P3`, `needs-info`,
   `needs-maintainer`, `agent:closed`, `agent:fix`, `agent:skip`, and

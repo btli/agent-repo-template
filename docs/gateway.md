@@ -12,6 +12,9 @@ proposal environment. Use a distinct `AGENT_SYSTEM_ONE_KEY` in
 `agent-propose-triage` when the config enables System One. The setup action
 accepts only Anthropic-family model ids and does not write key values into its
 gateway configuration.
+Set the `agent-apply` environment's `AGENT_SCAN_KEYS` from the literal role-key
+values as described in [secret setup](getting-started.md); do not use a
+placeholder or leave a stale value when rotating a key.
 
 ## Budgets and alerts
 

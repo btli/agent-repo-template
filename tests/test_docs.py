@@ -489,8 +489,8 @@ def test_documented_main_contracts_match_merged_sources():
     system_one_row = next(
         line for line in security_raw.splitlines() if line.startswith("| `AGENT_SYSTEM_ONE_KEY`")
     )
-    assert "add its value to `AGENT_SCAN_KEYS`" in system_one_row
-    assert "Rotate the key and scanner entry together." in system_one_row
+    assert "replace its old value with the new one" in system_one_row
+    assert "`AGENT_SCAN_KEYS` secret in the same rotation" in system_one_row
 
     fix_notes = operations.split("## Fix workflow notes", 1)[1].split("## Dependency updates", 1)[0]
     assert "fix-agent propose step refuses persisted credential settings" in fix_notes
@@ -801,3 +801,89 @@ def test_folded_in_documentation_contracts_match_merged_sources():
         )
         == "Private canary: synthetic-canary\nRun: synthetic-run-123\n"
     )
+
+
+def test_scan_key_inventory_and_rotation_match_workflow_sources():
+    security = (ROOT / "docs/security.md").read_text(encoding="utf-8")
+    role_key_row = next(
+        line
+        for line in security.splitlines()
+        if line.startswith("| `AGENT_TRIAGE_KEY`, `AGENT_REVIEW_KEY`")
+    )
+    rotation_step = (
+        "replace the old value with the new one in the `agent-apply` environment's "
+        "`AGENT_SCAN_KEYS` secret in the same rotation"
+    )
+    assert rotation_step in role_key_row
+    system_one_row = next(
+        line for line in security.splitlines() if line.startswith("| `AGENT_SYSTEM_ONE_KEY`")
+    )
+    assert "replace its old value with the new one in the `agent-apply` environment's" in (
+        system_one_row
+    )
+    assert "`AGENT_SCAN_KEYS` secret in the same rotation" in system_one_row
+    scan_alert_row = next(
+        line for line in security.splitlines() if line.startswith("| `AGENT_SCAN_KEYS`")
+    )
+    assert "replace its old value with the new one" in scan_alert_row
+    assert "`agent-apply` environment's `AGENT_SCAN_KEYS` secret" in scan_alert_row
+
+    getting_started = (ROOT / "docs/getting-started.md").read_text(encoding="utf-8")
+    inventory = getting_started.split("set `AGENT_SCAN_KEYS` to", 1)[1].split(
+        "Then run the doctor:", 1
+    )[0]
+    assert "newline-separated list of the literal values" in inventory
+    assert (
+        "a placeholder or" in inventory
+        and "stale entry does not cover a leaked live key" in inventory
+    )
+
+    workflows = {
+        name: load_yaml(ROOT / f"consumer/.github/workflows/{name}.yml")
+        for name in ("agent-triage", "agent-review", "agent-fix")
+    }
+    model_secret_names = set()
+    scan_key_consumers = set()
+    model_actions = {"decide", "triage-agent", "review-agent", "fix-agent"}
+    for name, workflow in workflows.items():
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                if not isinstance(step, dict):
+                    continue
+                uses = str(step.get("uses", ""))
+                action = re.search(r"/actions/([a-z-]+)@", uses)
+                if action and action[1] in model_actions:
+                    model_secret_names.update(
+                        re.findall(r"secrets\.([A-Z][A-Z0-9_]*)", str(step.get("env", {})))
+                    )
+                with_values = step.get("with", {})
+                if isinstance(with_values, dict) and with_values.get("scan-keys") == (
+                    "${{ secrets.AGENT_SCAN_KEYS }}"
+                ):
+                    scan_key_consumers.add(name)
+    documented_secret_names = set(re.findall(r"AGENT_[A-Z0-9_]+_KEY", inventory))
+    assert model_secret_names == documented_secret_names
+    assert scan_key_consumers == set(workflows)
+
+    gateway = (ROOT / "docs/gateway.md").read_text(encoding="utf-8")
+    assert "[secret setup](getting-started.md)" in gateway
+
+
+def test_charter_guide_config_keys_match_schema():
+    schema = json.loads((ROOT / "schemas/config.schema.json").read_text(encoding="utf-8"))
+    schema_keys = set(schema["properties"])
+    required_keys = set(schema["required"])
+    config_bullet = (
+        (ROOT / "docs/charter-guide.md")
+        .read_text(encoding="utf-8")
+        .split("- `config.yml`", 1)[1]
+        .split("\n- `labels.yml`", 1)[0]
+    )
+    required_text = config_bullet.split("requires the top-level ", 1)[1].split(" keys;", 1)[0]
+    optional_text = config_bullet.split("keys;", 1)[1].split(". It selects", 1)[0]
+    documented_required = set(_code_spans(required_text))
+    documented_optional = set(_code_spans(optional_text))
+    assert "system_one` is optional" in " ".join(optional_text.split())
+    assert documented_required | documented_optional == schema_keys
+    assert documented_required == required_keys
+    assert documented_optional == schema_keys - required_keys
