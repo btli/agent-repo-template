@@ -17,7 +17,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       with:
         version: 0.13.1
         enable-cache: false
@@ -32,7 +32,7 @@ runs:
         uv --no-config pip install --python "$venv/bin/python" --require-hashes \
           --default-index https://pypi.org/simple -r "$GITHUB_ACTION_PATH/requirements-omnigent.txt"
     - name: Install integrity-locked Claude CLI
-      uses: omnigent-ai/omnigent/.github/actions/setup-harness-cli@a8676d23e88df7918f4f8ef1c7c4e3186e710354 # v0.18.0
+      uses: omnigent-ai/omnigent/.github/actions/setup-harness-cli@bfd8ab5624e34aa72c01fb451e11c2a0e1aae3ee # v0.20.0
       with:
         harness: claude
         enable-cache: false
